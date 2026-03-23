@@ -2205,6 +2205,78 @@ cleanup:
  * the cryptographic context.
  */
 
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+/*
+ * ssl_tls13_parse_ee_evidence_type_ext():
+ *
+ * Shared helper for parsing evidence_request and evidence_proposal from
+ * EncryptedExtensions.  The server sends exactly one EvidenceType entry
+ * (the format it selected during CH processing).
+ *
+ * Reads buf..end (the extension_data), extracts the single CONTENT_FORMAT
+ * entry, validates it against what we advertised in the CH, and stores it
+ * in *out_cf.
+ *
+ * Returns 0 on success, MBEDTLS_ERR_SSL_DECODE_ERROR on malformed input,
+ * MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER if the server picked a type we never
+ * offered.
+ */
+MBEDTLS_CHECK_RETURN_CRITICAL
+static int ssl_tls13_parse_ee_evidence_type_ext(
+    mbedtls_ssl_context *ssl,
+    const unsigned char *buf,
+    const unsigned char *end,
+    const mbedtls_ssl_attestation_conf *attest_conf,
+    uint16_t *out_cf)
+{
+    const unsigned char *p = buf;
+    uint16_t list_len;
+    uint8_t  type_encoding;
+    uint16_t content_format;
+    size_t i;
+
+    /* list_len (2 bytes) */
+    MBEDTLS_SSL_CHK_BUF_READ_PTR(p, end, 2);
+    list_len = MBEDTLS_GET_UINT16_BE(p, 0);
+    p += 2;
+
+    /* Expect exactly one entry: 3 bytes */
+    if (list_len != 3) {
+        MBEDTLS_SSL_DEBUG_MSG(1, ("EE evidence ext: expected list_len=3, got %u",
+                                  (unsigned) list_len));
+        MBEDTLS_SSL_PEND_FATAL_ALERT(MBEDTLS_SSL_ALERT_MSG_DECODE_ERROR,
+                                     MBEDTLS_ERR_SSL_DECODE_ERROR);
+        return MBEDTLS_ERR_SSL_DECODE_ERROR;
+    }
+
+    MBEDTLS_SSL_CHK_BUF_READ_PTR(p, end, 3);
+    type_encoding  = p[0];
+    content_format = MBEDTLS_GET_UINT16_BE(p, 1);
+
+    if (type_encoding != 0x00) {
+        MBEDTLS_SSL_DEBUG_MSG(1, ("EE evidence ext: unsupported typeEncoding %u",
+                                  (unsigned) type_encoding));
+        MBEDTLS_SSL_PEND_FATAL_ALERT(MBEDTLS_SSL_ALERT_MSG_ILLEGAL_PARAMETER,
+                                     MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER);
+        return MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER;
+    }
+
+    /* Verify the server picked something we advertised. */
+    for (i = 0; i < attest_conf->num_content_formats; i++) {
+        if (attest_conf->content_formats[i] == content_format) {
+            *out_cf = content_format;
+            return 0;
+        }
+    }
+
+    MBEDTLS_SSL_DEBUG_MSG(1, ("EE evidence ext: server selected content-format "
+                              "0x%04x that we never offered", (unsigned) content_format));
+    MBEDTLS_SSL_PEND_FATAL_ALERT(MBEDTLS_SSL_ALERT_MSG_ILLEGAL_PARAMETER,
+                                 MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER);
+    return MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER;
+}
+#endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
+
 /* Parse EncryptedExtensions message
  * struct {
  *     Extension extensions<0..2^16-1>;
@@ -2295,6 +2367,50 @@ static int ssl_tls13_parse_encrypted_extensions(mbedtls_ssl_context *ssl,
                 }
                 break;
 #endif /* MBEDTLS_SSL_RECORD_SIZE_LIMIT */
+
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+            case MBEDTLS_TLS_EXT_EVIDENCE_REQUEST:
+                MBEDTLS_SSL_DEBUG_MSG(3, ("found EE evidence_request extension"));
+                /*
+                 * Server is telling us which format it wants in our
+                 * Certificate extension → store as peer_evidence_content_format
+                 * (what *our* peer — the server — is requesting from us).
+                 */
+                if (ssl->conf->attest_conf != NULL &&
+                    ssl->conf->attest_conf->offer_evidence) {
+                    ret = ssl_tls13_parse_ee_evidence_type_ext(
+                        ssl, p, p + extension_data_len,
+                        ssl->conf->attest_conf,
+                        &handshake->peer_evidence_content_format);
+                    if (ret != 0) {
+                        MBEDTLS_SSL_DEBUG_RET(
+                            1, "ssl_tls13_parse_ee_evidence_type_ext", ret);
+                        return ret;
+                    }
+                }
+                break;
+
+            case MBEDTLS_TLS_EXT_EVIDENCE_PROPOSAL:
+                MBEDTLS_SSL_DEBUG_MSG(3, ("found EE evidence_proposal extension"));
+                /*
+                 * Server is telling us which format it will use in its own
+                 * Certificate extension → store as own_evidence_content_format
+                 * (what *we* requested from the server).
+                 */
+                if (ssl->conf->attest_conf != NULL &&
+                    ssl->conf->attest_conf->request_peer_evidence) {
+                    ret = ssl_tls13_parse_ee_evidence_type_ext(
+                        ssl, p, p + extension_data_len,
+                        ssl->conf->attest_conf,
+                        &handshake->own_evidence_content_format);
+                    if (ret != 0) {
+                        MBEDTLS_SSL_DEBUG_RET(
+                            1, "ssl_tls13_parse_ee_evidence_type_ext", ret);
+                        return ret;
+                    }
+                }
+                break;
+#endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
 
             default:
                 MBEDTLS_SSL_PRINT_EXT(
