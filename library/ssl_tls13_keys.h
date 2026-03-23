@@ -714,6 +714,51 @@ int ssl_tls13_compute_attest_binder_from_pk(
     const mbedtls_pk_context *pk,
     const unsigned char *base, size_t base_len,
     unsigned char *out, size_t out_len);
+
+/**
+ * \brief Copy the computed attestation binders out of the handshake state.
+ *
+ * Useful for testing: retrieves the s/c_attest_binder values computed during
+ * the handshake without requiring access to ssl_misc.h internals.
+ *
+ * Must be called while the handshake params are still alive (before
+ * mbedtls_ssl_handshake_free is called, i.e. immediately after
+ * mbedtls_ssl_handshake() returns 0).
+ *
+ * \param ssl             SSL context after a completed handshake.
+ * \param s_binder        Output: s_attest_binder (MBEDTLS_TLS1_3_MD_MAX_SIZE bytes).
+ * \param c_binder        Output: c_attest_binder (MBEDTLS_TLS1_3_MD_MAX_SIZE bytes).
+ * \param binder_len      Output: hash length (0 if attestation was not active).
+ */
+void ssl_tls13_get_attest_binders(
+    const mbedtls_ssl_context *ssl,
+    unsigned char s_binder[PSA_HASH_MAX_SIZE],
+    unsigned char c_binder[PSA_HASH_MAX_SIZE],
+    size_t *binder_len);
+
+/**
+ * \brief Low-level attestation binder derivation without an ssl context.
+ *
+ * Equivalent to ssl_tls13_derive_attest_binder() but takes hash_alg directly,
+ * making it callable from unit tests that cannot construct a full ssl context.
+ *
+ *   binder = HKDF-Expand-Label(base, "attestation", tik_pub_der, hash_len)
+ *
+ * \param hash_alg        PSA hash algorithm (e.g. PSA_ALG_SHA_256).
+ * \param base            Attestation base secret; must be hash_len bytes.
+ * \param base_len        Length of base (must equal PSA_HASH_LENGTH(hash_alg)).
+ * \param tik_pub_der     SubjectPublicKeyInfo DER of the TLS identity key.
+ * \param tik_pub_der_len Length of tik_pub_der (max 255 bytes per RFC 8446).
+ * \param out             Output buffer; must be >= PSA_HASH_LENGTH(hash_alg).
+ * \param out_len         Size of out.
+ *
+ * \return 0 on success, negative mbedtls error code on failure.
+ */
+int ssl_tls13_attest_binder_raw(
+    psa_algorithm_t hash_alg,
+    const unsigned char *base, size_t base_len,
+    const unsigned char *tik_pub_der, size_t tik_pub_der_len,
+    unsigned char *out, size_t out_len);
 #endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
 
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */

@@ -1937,8 +1937,25 @@ cleanup:
  *
  * \return 0 on success, negative mbedtls error code on failure.
  */
-int ssl_tls13_derive_attest_binder(
-    mbedtls_ssl_context *ssl,
+void ssl_tls13_get_attest_binders(
+    const mbedtls_ssl_context *ssl,
+    unsigned char s_binder[PSA_HASH_MAX_SIZE],
+    unsigned char c_binder[PSA_HASH_MAX_SIZE],
+    size_t *binder_len)
+{
+    if (ssl->handshake == NULL) {
+        memset(s_binder, 0, PSA_HASH_MAX_SIZE);
+        memset(c_binder, 0, PSA_HASH_MAX_SIZE);
+        *binder_len = 0;
+        return;
+    }
+    memcpy(s_binder, ssl->handshake->s_attest_binder, PSA_HASH_MAX_SIZE);
+    memcpy(c_binder, ssl->handshake->c_attest_binder, PSA_HASH_MAX_SIZE);
+    *binder_len = ssl->handshake->attest_binder_len;
+}
+
+int ssl_tls13_attest_binder_raw(
+    psa_algorithm_t hash_alg,
     const unsigned char *base, size_t base_len,
     const unsigned char *tik_pub_der, size_t tik_pub_der_len,
     unsigned char *out, size_t out_len)
@@ -1951,20 +1968,17 @@ int ssl_tls13_derive_attest_binder(
      * PSA_HASH_MAX_SIZE (64 bytes), so we open-code the PSA call here using
      * ssl_tls13_hkdf_encode_label() to build the HkdfLabel with a larger
      * stack buffer.
-     */
-    int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
-    psa_algorithm_t hash_alg = mbedtls_md_psa_alg_from_type(
-        (mbedtls_md_type_t) ssl->handshake->ciphersuite_info->mac);
-    size_t hash_len = PSA_HASH_LENGTH(hash_alg);
-    psa_status_t status;
-    psa_key_derivation_operation_t op = PSA_KEY_DERIVATION_OPERATION_INIT;
-    /*
+     *
      * HkdfLabel = uint16(hash_len) || uint8(label_len) || label ||
      *             uint8(ctx_len) || ctx
      * label = "tls13 " (6) + "attestation" (11) = 17 bytes
      * ctx   = SPKI DER, up to ~158 bytes (P-521)
      * Total: 2 + 1 + 17 + 1 + 158 = 179; use 256 for headroom.
      */
+    int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+    size_t hash_len = PSA_HASH_LENGTH(hash_alg);
+    psa_status_t status;
+    psa_key_derivation_operation_t op = PSA_KEY_DERIVATION_OPERATION_INIT;
     unsigned char hkdf_label[256];
     size_t hkdf_label_len;
 
@@ -2013,6 +2027,19 @@ int ssl_tls13_derive_attest_binder(
 cleanup:
     psa_key_derivation_abort(&op);
     return ret;
+}
+
+int ssl_tls13_derive_attest_binder(
+    mbedtls_ssl_context *ssl,
+    const unsigned char *base, size_t base_len,
+    const unsigned char *tik_pub_der, size_t tik_pub_der_len,
+    unsigned char *out, size_t out_len)
+{
+    psa_algorithm_t hash_alg = mbedtls_md_psa_alg_from_type(
+        (mbedtls_md_type_t) ssl->handshake->ciphersuite_info->mac);
+    return ssl_tls13_attest_binder_raw(hash_alg, base, base_len,
+                                       tik_pub_der, tik_pub_der_len,
+                                       out, out_len);
 }
 
 /*
