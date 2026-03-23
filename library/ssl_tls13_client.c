@@ -1262,6 +1262,9 @@ static int ssl_tls13_write_evidence_request_ext(mbedtls_ssl_context *ssl,
     *out_len = (size_t) (p - buf);
 
     mbedtls_ssl_tls13_set_hs_sent_ext_mask(ssl, MBEDTLS_TLS_EXT_EVIDENCE_REQUEST);
+    /* Sending evidence_request means we expect an attestation extension in
+     * the peer's Certificate — pre-authorise it for check_received_extension. */
+    mbedtls_ssl_tls13_set_hs_sent_ext_mask(ssl, MBEDTLS_TLS_EXT_ATTESTATION);
 
     return 0;
 }

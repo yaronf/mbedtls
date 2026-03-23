@@ -1826,6 +1826,22 @@ static int ssl_tls13_parse_client_hello(mbedtls_ssl_context *ssl,
     MBEDTLS_SSL_PRINT_EXTS(3, MBEDTLS_SSL_HS_CLIENT_HELLO,
                            handshake->received_extensions);
 
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+    /* If the server requires peer Evidence but the client sent no
+     * evidence_proposal (or it was present with no overlap), abort now. */
+    {
+        const mbedtls_ssl_attestation_conf *ac = ssl->conf->attest_conf;
+        if (ac != NULL && ac->require_peer_evidence &&
+            ssl->handshake->peer_evidence_content_format ==
+                MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE) {
+            MBEDTLS_SSL_DEBUG_MSG(1, ("require_peer_evidence set but no "
+                                      "evidence_proposal in ClientHello"));
+            MBEDTLS_SSL_PEND_ATTEST_UNSUPPORTED_EVIDENCE();
+            return MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE;
+        }
+    }
+#endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
+
     ret = mbedtls_ssl_add_hs_hdr_to_checksum(ssl,
                                              MBEDTLS_SSL_HS_CLIENT_HELLO,
                                              p - buf);
@@ -2724,6 +2740,9 @@ static int ssl_tls13_write_ee_evidence_request_ext(mbedtls_ssl_context *ssl,
     *out_len = 9;
 
     mbedtls_ssl_tls13_set_hs_sent_ext_mask(ssl, MBEDTLS_TLS_EXT_EVIDENCE_REQUEST);
+    /* Sending evidence_request means we expect an attestation extension in
+     * the peer's Certificate — pre-authorise it for check_received_extension. */
+    mbedtls_ssl_tls13_set_hs_sent_ext_mask(ssl, MBEDTLS_TLS_EXT_ATTESTATION);
 
     return 0;
 }
