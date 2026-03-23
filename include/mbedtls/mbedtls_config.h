@@ -563,6 +563,19 @@
  */
 //#define MBEDTLS_SSL_EARLY_DATA
 
+/**
+ * \def MBEDTLS_SSL_EARLY_ATTESTATION
+ *
+ * Enable support for TLS early attestation per
+ * draft-fossati-seat-early-attestation-03.
+ *
+ * Requires: MBEDTLS_SSL_PROTO_TLS1_3
+ *
+ * This is an experimental feature. Code points are temporary private-use
+ * values and will change when IANA assigns permanent values.
+ */
+#define MBEDTLS_SSL_EARLY_ATTESTATION
+
 /** \def MBEDTLS_SSL_ENCRYPT_THEN_MAC
  *
  * Enable support for Encrypt-then-MAC, RFC 7366.

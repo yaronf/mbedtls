@@ -131,6 +131,20 @@ typedef struct mbedtls_ssl_attestation_conf {
      */
     int require_peer_evidence;
 
+    /**
+     * Array of CoAP content-format values (uint16) identifying the
+     * EvidenceTypes this provider supports, in preference order.
+     * Used by the TLS stack to populate evidence_proposal (what we can
+     * produce) and evidence_request (what we accept from the peer).
+     * The TLS stack does not interpret these values; it serialises them
+     * verbatim as CONTENT_FORMAT EvidenceType entries (typeEncoding=0).
+     * Must not be NULL when offer_evidence or request_peer_evidence is set.
+     */
+    const uint16_t *content_formats;
+
+    /** Number of entries in \c content_formats. */
+    size_t num_content_formats;
+
     /** Callback: produce a CMW Evidence blob.  NULL if not attesting. */
     mbedtls_ssl_generate_evidence_t *f_generate_evidence;
 

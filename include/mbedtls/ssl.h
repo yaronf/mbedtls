@@ -36,6 +36,10 @@
 
 #include "psa/crypto.h"
 
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+#include "mbedtls/ssl_attestation.h"
+#endif
+
 /*
  * SSL Error codes
  */
@@ -1538,6 +1542,11 @@ struct mbedtls_ssl_config {
 
 #endif /* MBEDTLS_SSL_EARLY_DATA */
 
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+    /** Pointer to attestation configuration (§5.3).  NULL disables attestation. */
+    const mbedtls_ssl_attestation_conf *MBEDTLS_PRIVATE(attest_conf);
+#endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
+
 #if defined(MBEDTLS_SSL_ALPN)
     const char *const *MBEDTLS_PRIVATE(alpn_list); /*!< ordered list of protocols */
 #endif
@@ -2064,6 +2073,22 @@ void mbedtls_ssl_conf_max_early_data_size(
 #endif /* MBEDTLS_SSL_SRV_C */
 
 #endif /* MBEDTLS_SSL_EARLY_DATA */
+
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+/**
+ * \brief          Set the attestation configuration (§5.3 of
+ *                 draft-fossati-seat-early-attestation-03).
+ *
+ *                 Pass \p attest_conf = NULL to disable attestation (default).
+ *                 The caller retains ownership; the pointer must remain valid
+ *                 for the lifetime of \p conf.
+ *
+ * \param conf         SSL configuration.
+ * \param attest_conf  Attestation configuration, or NULL to disable.
+ */
+void mbedtls_ssl_conf_attestation(mbedtls_ssl_config *conf,
+                                  const mbedtls_ssl_attestation_conf *attest_conf);
+#endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
 
 #if defined(MBEDTLS_X509_CRT_PARSE_C)
 /**

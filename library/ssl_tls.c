@@ -1620,6 +1620,14 @@ void mbedtls_ssl_conf_max_early_data_size(
 #endif /* MBEDTLS_SSL_EARLY_DATA */
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+void mbedtls_ssl_conf_attestation(mbedtls_ssl_config *conf,
+                                  const mbedtls_ssl_attestation_conf *attest_conf)
+{
+    conf->attest_conf = attest_conf;
+}
+#endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
+
 #if defined(MBEDTLS_X509_CRT_PARSE_C)
 void mbedtls_ssl_conf_cert_profile(mbedtls_ssl_config *conf,
                                    const mbedtls_x509_crt_profile *profile)

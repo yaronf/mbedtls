@@ -1130,6 +1130,143 @@ static int ssl_tls13_parse_server_pre_shared_key_ext(mbedtls_ssl_context *ssl,
 }
 #endif /* MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_SOME_PSK_ENABLED */
 
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+/*
+ * ssl_tls13_write_evidence_types_list():
+ *
+ * Shared helper: write a serialised EvidenceType list from the provider's
+ * content_formats array into [p_list_start, end).
+ *
+ * Each entry is 3 bytes: typeEncoding=0x00 (CONTENT_FORMAT) + uint16 BE value.
+ * The TLS stack is opaque to the meaning of the values; they come from the
+ * provider verbatim.
+ *
+ * Returns the number of bytes written, or 0 if the buffer is too small
+ * (caller must have pre-checked with MBEDTLS_SSL_CHK_BUF_PTR).
+ */
+static size_t ssl_tls13_write_evidence_types_list(
+    const mbedtls_ssl_attestation_conf *attest_conf,
+    unsigned char *p,
+    unsigned char *end)
+{
+    size_t i;
+    unsigned char *start = p;
+
+    for (i = 0; i < attest_conf->num_content_formats; i++) {
+        if (end - p < 3) {
+            return 0;
+        }
+        p[0] = 0x00;   /* typeEncoding: CONTENT_FORMAT */
+        MBEDTLS_PUT_UINT16_BE(attest_conf->content_formats[i], p, 1);
+        p += 3;
+    }
+
+    return (size_t) (p - start);
+}
+
+/*
+ * ssl_tls13_write_evidence_proposal_ext():
+ *
+ * Advertise EvidenceTypes the client is able to produce (§6.1 of
+ * draft-fossati-seat-early-attestation-03).
+ *
+ * struct {
+ *     EvidenceType evidence_types<2..2^16-2>;
+ * } EvidenceProposal;
+ *
+ * Extension layout:
+ *   extension_type          (2)
+ *   extension_data_length   (2)
+ *   evidence_types_length   (2)   ← inner list length in bytes
+ *   N × EvidenceType        (3 each)  typeEncoding(1) + content_format(2)
+ */
+MBEDTLS_CHECK_RETURN_CRITICAL
+static int ssl_tls13_write_evidence_proposal_ext(mbedtls_ssl_context *ssl,
+                                                 unsigned char *buf,
+                                                 unsigned char *end,
+                                                 size_t *out_len)
+{
+    unsigned char *p = buf;
+    const mbedtls_ssl_attestation_conf *attest_conf = ssl->conf->attest_conf;
+    size_t list_len, ext_data_len;
+
+    *out_len = 0;
+
+    if (attest_conf == NULL || !attest_conf->offer_evidence ||
+        attest_conf->num_content_formats == 0) {
+        return 0;
+    }
+
+    list_len = attest_conf->num_content_formats * 3;
+    ext_data_len = 2 + list_len;   /* 2 for the inner length field */
+
+    MBEDTLS_SSL_CHK_BUF_PTR(p, end, 4 + ext_data_len);
+
+    MBEDTLS_SSL_DEBUG_MSG(3, ("client hello, adding evidence_proposal extension"));
+
+    MBEDTLS_PUT_UINT16_BE(MBEDTLS_TLS_EXT_EVIDENCE_PROPOSAL, p, 0);
+    MBEDTLS_PUT_UINT16_BE(ext_data_len, p, 2);
+    MBEDTLS_PUT_UINT16_BE(list_len, p, 4);
+    p += 6;
+
+    p += ssl_tls13_write_evidence_types_list(attest_conf, p, end);
+
+    *out_len = (size_t) (p - buf);
+
+    mbedtls_ssl_tls13_set_hs_sent_ext_mask(ssl, MBEDTLS_TLS_EXT_EVIDENCE_PROPOSAL);
+
+    return 0;
+}
+
+/*
+ * ssl_tls13_write_evidence_request_ext():
+ *
+ * Request the server to include Evidence of the given types in its Certificate
+ * message (§6.1 of draft-fossati-seat-early-attestation-03).
+ *
+ * struct {
+ *     EvidenceType evidence_types<2..2^16-2>;
+ * } EvidenceRequest;
+ */
+MBEDTLS_CHECK_RETURN_CRITICAL
+static int ssl_tls13_write_evidence_request_ext(mbedtls_ssl_context *ssl,
+                                                unsigned char *buf,
+                                                unsigned char *end,
+                                                size_t *out_len)
+{
+    unsigned char *p = buf;
+    const mbedtls_ssl_attestation_conf *attest_conf = ssl->conf->attest_conf;
+    size_t list_len, ext_data_len;
+
+    *out_len = 0;
+
+    if (attest_conf == NULL || !attest_conf->request_peer_evidence ||
+        attest_conf->num_content_formats == 0) {
+        return 0;
+    }
+
+    list_len = attest_conf->num_content_formats * 3;
+    ext_data_len = 2 + list_len;
+
+    MBEDTLS_SSL_CHK_BUF_PTR(p, end, 4 + ext_data_len);
+
+    MBEDTLS_SSL_DEBUG_MSG(3, ("client hello, adding evidence_request extension"));
+
+    MBEDTLS_PUT_UINT16_BE(MBEDTLS_TLS_EXT_EVIDENCE_REQUEST, p, 0);
+    MBEDTLS_PUT_UINT16_BE(ext_data_len, p, 2);
+    MBEDTLS_PUT_UINT16_BE(list_len, p, 4);
+    p += 6;
+
+    p += ssl_tls13_write_evidence_types_list(attest_conf, p, end);
+
+    *out_len = (size_t) (p - buf);
+
+    mbedtls_ssl_tls13_set_hs_sent_ext_mask(ssl, MBEDTLS_TLS_EXT_EVIDENCE_REQUEST);
+
+    return 0;
+}
+#endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
+
 int mbedtls_ssl_tls13_write_client_hello_exts(mbedtls_ssl_context *ssl,
                                               unsigned char *buf,
                                               unsigned char *end,
@@ -1205,6 +1342,20 @@ int mbedtls_ssl_tls13_write_client_hello_exts(mbedtls_ssl_context *ssl,
         }
     }
 #endif /* MBEDTLS_SSL_EARLY_DATA */
+
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+    ret = ssl_tls13_write_evidence_proposal_ext(ssl, p, end, &ext_len);
+    if (ret != 0) {
+        return ret;
+    }
+    p += ext_len;
+
+    ret = ssl_tls13_write_evidence_request_ext(ssl, p, end, &ext_len);
+    if (ret != 0) {
+        return ret;
+    }
+    p += ext_len;
+#endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
 
 #if defined(MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_SOME_PSK_ENABLED)
     /* For PSK-based key exchange we need the pre_shared_key extension
