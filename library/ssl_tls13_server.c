@@ -2684,6 +2684,97 @@ cleanup:
  * } EncryptedExtensions;
  *
  */
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+/*
+ * ssl_tls13_write_ee_evidence_request_ext():
+ *
+ * Write evidence_request in EncryptedExtensions: tells the client which
+ * EvidenceType we selected from its evidence_proposal (i.e. what format
+ * we want in the client's Certificate extension).
+ *
+ * Only written if peer_evidence_content_format was set during CH parsing.
+ */
+MBEDTLS_CHECK_RETURN_CRITICAL
+static int ssl_tls13_write_ee_evidence_request_ext(mbedtls_ssl_context *ssl,
+                                                   unsigned char *buf,
+                                                   unsigned char *end,
+                                                   size_t *out_len)
+{
+    unsigned char *p = buf;
+    uint16_t cf = ssl->handshake->peer_evidence_content_format;
+
+    *out_len = 0;
+
+    if (cf == MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE) {
+        return 0;
+    }
+
+    /* extension_type(2) + ext_data_len(2) + list_len(2) + entry(3) = 9 */
+    MBEDTLS_SSL_CHK_BUF_PTR(p, end, 9);
+
+    MBEDTLS_SSL_DEBUG_MSG(3, ("server hello, adding EE evidence_request "
+                              "content-format 0x%04x", (unsigned) cf));
+
+    MBEDTLS_PUT_UINT16_BE(MBEDTLS_TLS_EXT_EVIDENCE_REQUEST, p, 0);
+    MBEDTLS_PUT_UINT16_BE(5, p, 2);   /* ext_data_len: 2 + 3 */
+    MBEDTLS_PUT_UINT16_BE(3, p, 4);   /* list_len: one entry */
+    p += 6;
+    p[0] = 0x00;                       /* typeEncoding: CONTENT_FORMAT */
+    MBEDTLS_PUT_UINT16_BE(cf, p, 1);
+    p += 3;
+
+    *out_len = 9;
+
+    mbedtls_ssl_tls13_set_hs_sent_ext_mask(ssl, MBEDTLS_TLS_EXT_EVIDENCE_REQUEST);
+
+    return 0;
+}
+
+/*
+ * ssl_tls13_write_ee_evidence_proposal_ext():
+ *
+ * Write evidence_proposal in EncryptedExtensions: tells the client which
+ * EvidenceType we selected from its evidence_request (i.e. what format
+ * we will use in our own Certificate extension).
+ *
+ * Only written if own_evidence_content_format was set during CH parsing.
+ */
+MBEDTLS_CHECK_RETURN_CRITICAL
+static int ssl_tls13_write_ee_evidence_proposal_ext(mbedtls_ssl_context *ssl,
+                                                    unsigned char *buf,
+                                                    unsigned char *end,
+                                                    size_t *out_len)
+{
+    unsigned char *p = buf;
+    uint16_t cf = ssl->handshake->own_evidence_content_format;
+
+    *out_len = 0;
+
+    if (cf == MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE) {
+        return 0;
+    }
+
+    MBEDTLS_SSL_CHK_BUF_PTR(p, end, 9);
+
+    MBEDTLS_SSL_DEBUG_MSG(3, ("server hello, adding EE evidence_proposal "
+                              "content-format 0x%04x", (unsigned) cf));
+
+    MBEDTLS_PUT_UINT16_BE(MBEDTLS_TLS_EXT_EVIDENCE_PROPOSAL, p, 0);
+    MBEDTLS_PUT_UINT16_BE(5, p, 2);
+    MBEDTLS_PUT_UINT16_BE(3, p, 4);
+    p += 6;
+    p[0] = 0x00;
+    MBEDTLS_PUT_UINT16_BE(cf, p, 1);
+    p += 3;
+
+    *out_len = 9;
+
+    mbedtls_ssl_tls13_set_hs_sent_ext_mask(ssl, MBEDTLS_TLS_EXT_EVIDENCE_PROPOSAL);
+
+    return 0;
+}
+#endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
+
 MBEDTLS_CHECK_RETURN_CRITICAL
 static int ssl_tls13_write_encrypted_extensions_body(mbedtls_ssl_context *ssl,
                                                      unsigned char *buf,
@@ -2735,6 +2826,20 @@ static int ssl_tls13_write_encrypted_extensions_body(mbedtls_ssl_context *ssl,
         p += output_len;
     }
 #endif
+
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+    ret = ssl_tls13_write_ee_evidence_request_ext(ssl, p, end, &output_len);
+    if (ret != 0) {
+        return ret;
+    }
+    p += output_len;
+
+    ret = ssl_tls13_write_ee_evidence_proposal_ext(ssl, p, end, &output_len);
+    if (ret != 0) {
+        return ret;
+    }
+    p += output_len;
+#endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
 
     extensions_len = (p - p_extensions_len) - 2;
     MBEDTLS_PUT_UINT16_BE(extensions_len, p_extensions_len, 0);
