@@ -568,6 +568,10 @@
 #define MBEDTLS_SSL_ALERT_MSG_UNKNOWN_PSK_IDENTITY 115  /* 0x73 */
 #define MBEDTLS_SSL_ALERT_MSG_CERT_REQUIRED        116  /* 0x74 */
 #define MBEDTLS_SSL_ALERT_MSG_NO_APPLICATION_PROTOCOL 120 /* 0x78 */
+/* Early attestation alerts (draft-fossati-seat-early-attestation-03 §10.2)
+ * Temporary experimental values — replace when IANA assigns permanent code points. */
+#define MBEDTLS_SSL_ALERT_MSG_UNSUPPORTED_EVIDENCE  224 /* 0xE0 */
+#define MBEDTLS_SSL_ALERT_MSG_UNSUPPORTED_VERIFIERS 225 /* 0xE1 */
 
 #define MBEDTLS_SSL_HS_HELLO_REQUEST            0
 #define MBEDTLS_SSL_HS_CLIENT_HELLO             1
@@ -633,6 +637,14 @@
 #define MBEDTLS_TLS_EXT_ECJPAKE_KKPP               256 /* experimental */
 
 #define MBEDTLS_TLS_EXT_RENEGOTIATION_INFO      0xFF01
+
+/* Early attestation extensions (draft-fossati-seat-early-attestation-03 §10.1)
+ * Temporary experimental values — replace when IANA assigns permanent code points. */
+#define MBEDTLS_TLS_EXT_ATTESTATION             0xFFA0 /* Certificate extension (§4.1) */
+#define MBEDTLS_TLS_EXT_EVIDENCE_REQUEST        0xFFA1 /* ClientHello / EncryptedExtensions (§6.1) */
+#define MBEDTLS_TLS_EXT_EVIDENCE_PROPOSAL       0xFFA2 /* ClientHello / EncryptedExtensions (§6.1) */
+#define MBEDTLS_TLS_EXT_RESULTS_REQUEST         0xFFA3 /* ClientHello / EncryptedExtensions (§6.2) */
+#define MBEDTLS_TLS_EXT_RESULTS_PROPOSAL        0xFFA4 /* ClientHello / EncryptedExtensions (§6.2) */
 
 /*
  * Size defines
