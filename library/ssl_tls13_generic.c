@@ -478,6 +478,10 @@ int mbedtls_ssl_tls13_parse_certificate(mbedtls_ssl_context *ssl,
 
     MBEDTLS_SSL_CHK_BUF_READ_PTR(p, end, certificate_list_len);
     certificate_list_end = p + certificate_list_len;
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+    {
+    int cert_entry_index = 0;
+#endif
     while (p < certificate_list_end) {
         size_t cert_data_len, extensions_len;
         const unsigned char *extensions_end;
@@ -565,6 +569,28 @@ int mbedtls_ssl_tls13_parse_certificate(mbedtls_ssl_context *ssl,
             }
 
             switch (extension_type) {
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+                case MBEDTLS_TLS_EXT_ATTESTATION:
+                    MBEDTLS_SSL_DEBUG_MSG(3, ("found attestation extension"));
+
+                    /* §4.1: attestation extension is valid only in the
+                     * first CertificateEntry. */
+                    if (cert_entry_index != 0) {
+                        MBEDTLS_SSL_DEBUG_MSG(1, ("attestation extension in "
+                                                  "non-first CertificateEntry"));
+                        MBEDTLS_SSL_PEND_FATAL_ALERT(
+                            MBEDTLS_SSL_ALERT_MSG_ILLEGAL_PARAMETER,
+                            MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER);
+                        return MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER;
+                    }
+
+                    /* Store pointer into the message buffer.
+                     * Will be verified by the provider in M3-6. */
+                    handshake->peer_cmw     = p;
+                    handshake->peer_cmw_len = extension_data_len;
+                    break;
+#endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
+
                 default:
                     MBEDTLS_SSL_PRINT_EXT(
                         3, MBEDTLS_SSL_HS_CERTIFICATE,
@@ -577,7 +603,14 @@ int mbedtls_ssl_tls13_parse_certificate(mbedtls_ssl_context *ssl,
 
         MBEDTLS_SSL_PRINT_EXTS(3, MBEDTLS_SSL_HS_CERTIFICATE,
                                handshake->received_extensions);
+
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+        cert_entry_index++;
+#endif
     }
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+    } /* end scope for cert_entry_index */
+#endif
 
 exit:
     /* Check that all the message is consumed. */
@@ -735,6 +768,56 @@ cleanup:
  *    } Certificate;
  */
 MBEDTLS_CHECK_RETURN_CRITICAL
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+/*
+ * ssl_tls13_write_attestation_ext():
+ *
+ * Write the attestation extension into the first CertificateEntry
+ * (draft-fossati-seat-early-attestation-03 §4.1).
+ *
+ * Extension layout:
+ *   extension_type      (2)  = MBEDTLS_TLS_EXT_ATTESTATION
+ *   extension_data_len  (2)  = length of CMW blob
+ *   cmw                 (N)  = opaque Evidence blob from provider
+ *
+ * At M2-6 this is a structural placeholder: the CMW body is empty (N=0).
+ * The provider callbacks are wired in M3-5 once binder derivation (M3-1)
+ * and TIK extraction (M3-2) are in place.
+ *
+ * Called only when peer_evidence_content_format != _NONE, meaning the
+ * peer has requested Evidence from us in a format we support.
+ */
+MBEDTLS_CHECK_RETURN_CRITICAL
+static int ssl_tls13_write_attestation_ext(mbedtls_ssl_context *ssl,
+                                           unsigned char *buf,
+                                           unsigned char *end,
+                                           size_t *out_len)
+{
+    unsigned char *p = buf;
+
+    (void) ssl;
+    *out_len = 0;
+
+    /*
+     * Placeholder: emit the extension header with a zero-length CMW.
+     * extension_type (2) + extension_data_length (2) = 4 bytes.
+     */
+    MBEDTLS_SSL_CHK_BUF_PTR(p, end, 4);
+
+    MBEDTLS_SSL_DEBUG_MSG(3, ("certificate, adding attestation extension (placeholder)"));
+
+    MBEDTLS_PUT_UINT16_BE(MBEDTLS_TLS_EXT_ATTESTATION, p, 0);
+    MBEDTLS_PUT_UINT16_BE(0, p, 2);   /* CMW length: 0 (placeholder) */
+    p += 4;
+
+    *out_len = 4;
+
+    mbedtls_ssl_tls13_set_hs_sent_ext_mask(ssl, MBEDTLS_TLS_EXT_ATTESTATION);
+
+    return 0;
+}
+#endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
+
 static int ssl_tls13_write_certificate_body(mbedtls_ssl_context *ssl,
                                             unsigned char *buf,
                                             unsigned char *end,
@@ -770,6 +853,17 @@ static int ssl_tls13_write_certificate_body(mbedtls_ssl_context *ssl,
 
     MBEDTLS_SSL_DEBUG_CRT(3, "own certificate", crt);
 
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+    {
+        /* Determine once whether we should write the attestation extension
+         * in the first CertificateEntry.  Condition: the peer has requested
+         * Evidence from us in a supported format (§4.1). */
+        int write_attest_ext =
+            (ssl->handshake->peer_evidence_content_format !=
+             MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE);
+        int first_entry = 1;
+#endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
+
     while (crt != NULL) {
         size_t cert_data_len = crt->raw.len;
 
@@ -781,12 +875,43 @@ static int ssl_tls13_write_certificate_body(mbedtls_ssl_context *ssl,
         p += cert_data_len;
         crt = crt->next;
 
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+        if (first_entry && write_attest_ext) {
+            int ret;
+            size_t ext_len;
+            unsigned char *p_exts_len;
+
+            /* Write 2-byte extensions block length placeholder. */
+            MBEDTLS_SSL_CHK_BUF_PTR(p, end, 2);
+            p_exts_len = p;
+            p += 2;
+
+            ret = ssl_tls13_write_attestation_ext(ssl, p, end, &ext_len);
+            if (ret != 0) {
+                return ret;
+            }
+            p += ext_len;
+
+            /* Patch in the actual extensions block length. */
+            MBEDTLS_PUT_UINT16_BE(ext_len, p_exts_len, 0);
+        } else {
+            /* No extensions for this entry. */
+            MBEDTLS_PUT_UINT16_BE(0, p, 0);
+            p += 2;
+        }
+        first_entry = 0;
+#else
         /* Currently, we don't have any certificate extensions defined.
          * Hence, we are sending an empty extension with length zero.
          */
         MBEDTLS_PUT_UINT16_BE(0, p, 0);
         p += 2;
+#endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
     }
+
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+    } /* end scope for write_attest_ext / first_entry */
+#endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
 
     MBEDTLS_PUT_UINT24_BE(p - p_certificate_list_len - 3,
                           p_certificate_list_len, 0);

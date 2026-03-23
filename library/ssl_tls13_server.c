@@ -1315,9 +1315,7 @@ static int ssl_tls13_parse_evidence_proposal_ext(mbedtls_ssl_context *ssl,
         if (attest_conf->require_peer_evidence) {
             MBEDTLS_SSL_DEBUG_MSG(1, ("evidence_proposal: no supported type, "
                                       "require_peer_evidence set"));
-            MBEDTLS_SSL_PEND_FATAL_ALERT(
-                MBEDTLS_SSL_ALERT_MSG_UNSUPPORTED_EVIDENCE,
-                MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE);
+            MBEDTLS_SSL_PEND_ATTEST_UNSUPPORTED_EVIDENCE();
             return MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE;
         }
         MBEDTLS_SSL_DEBUG_MSG(3, ("evidence_proposal: no overlap, "

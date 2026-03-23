@@ -129,6 +129,30 @@ typedef enum {
  * assigned from 0 upwards and 0xFFFF is currently unassigned. */
 #define MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE      0xFFFFu
 
+/*
+ * Alert helpers for early attestation (draft §10.2).
+ *
+ * MBEDTLS_SSL_PEND_ATTEST_UNSUPPORTED_EVIDENCE: the peer offered no
+ *   EvidenceType we support, or the Evidence it sent was invalid.
+ *
+ * MBEDTLS_SSL_PEND_ATTEST_UNSUPPORTED_VERIFIERS: the peer offered no
+ *   verifier (Attestation Results) we support.  Reserved for passport
+ *   model (M-future); included here for completeness.
+ *
+ * Usage (inside a function that has `ssl` in scope):
+ *   MBEDTLS_SSL_PEND_ATTEST_UNSUPPORTED_EVIDENCE();
+ *   return MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE;
+ */
+#define MBEDTLS_SSL_PEND_ATTEST_UNSUPPORTED_EVIDENCE()              \
+    MBEDTLS_SSL_PEND_FATAL_ALERT(                                   \
+        MBEDTLS_SSL_ALERT_MSG_UNSUPPORTED_EVIDENCE,                 \
+        MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE)
+
+#define MBEDTLS_SSL_PEND_ATTEST_UNSUPPORTED_VERIFIERS()             \
+    MBEDTLS_SSL_PEND_FATAL_ALERT(                                   \
+        MBEDTLS_SSL_ALERT_MSG_UNSUPPORTED_VERIFIERS,                \
+        MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE)
+
 /* Utility for translating IANA extension type. */
 uint32_t mbedtls_ssl_get_extension_id(unsigned int extension_type);
 uint64_t mbedtls_ssl_get_extension_mask(unsigned int extension_type);
@@ -980,6 +1004,20 @@ struct mbedtls_ssl_handshake_params {
                                     has been received, Certificate and CertificateVerify
                                     should be sent to server */
 #endif /* MBEDTLS_SSL_CLI_C */
+
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+    /*
+     * Peer Evidence received in the attestation Certificate extension (§4.1).
+     *
+     * peer_cmw points into the Certificate message buffer; it is valid only
+     * during and immediately after mbedtls_ssl_tls13_parse_certificate().
+     * M3-6 must consume (verify) it before the buffer is recycled.
+     * NULL when no attestation extension was present.
+     */
+    const unsigned char *peer_cmw;
+    size_t               peer_cmw_len;
+#endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
+
     /*
      * State-local variables used during the processing
      * of a specific handshake state.
