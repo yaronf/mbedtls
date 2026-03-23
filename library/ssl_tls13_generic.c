@@ -1598,9 +1598,9 @@ int mbedtls_ssl_tls13_check_received_extension(
     mbedtls_ssl_context *ssl,
     int hs_msg_type,
     unsigned int received_extension_type,
-    uint32_t hs_msg_allowed_extensions_mask)
+    uint64_t hs_msg_allowed_extensions_mask)
 {
-    uint32_t extension_mask = mbedtls_ssl_get_extension_mask(
+    uint64_t extension_mask = mbedtls_ssl_get_extension_mask(
         received_extension_type);
 
     MBEDTLS_SSL_PRINT_EXT(

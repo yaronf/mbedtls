@@ -115,10 +115,17 @@ typedef enum {
 #define MBEDTLS_SSL_EXT_ID_EXTENDED_MASTER_SECRET     26
 #define MBEDTLS_SSL_EXT_ID_SESSION_TICKET             27
 #define MBEDTLS_SSL_EXT_ID_RECORD_SIZE_LIMIT          28
+/* Early attestation extensions (draft-fossati-seat-early-attestation-03)
+ * Temporary experimental IDs — renumber when finalising. */
+#define MBEDTLS_SSL_EXT_ID_ATTESTATION                29
+#define MBEDTLS_SSL_EXT_ID_EVIDENCE_REQUEST           30
+#define MBEDTLS_SSL_EXT_ID_EVIDENCE_PROPOSAL          31
+#define MBEDTLS_SSL_EXT_ID_RESULTS_REQUEST            32
+#define MBEDTLS_SSL_EXT_ID_RESULTS_PROPOSAL           33
 
 /* Utility for translating IANA extension type. */
 uint32_t mbedtls_ssl_get_extension_id(unsigned int extension_type);
-uint32_t mbedtls_ssl_get_extension_mask(unsigned int extension_type);
+uint64_t mbedtls_ssl_get_extension_mask(unsigned int extension_type);
 /* Macros used to define mask constants */
 #define MBEDTLS_SSL_EXT_MASK(id)       (1ULL << (MBEDTLS_SSL_EXT_ID_##id))
 /* Reset value of extension mask */
@@ -176,6 +183,10 @@ uint32_t mbedtls_ssl_get_extension_mask(unsigned int extension_type);
      MBEDTLS_SSL_EXT_MASK(POST_HANDSHAKE_AUTH)                    | \
      MBEDTLS_SSL_EXT_MASK(SIG_ALG_CERT)                           | \
      MBEDTLS_SSL_EXT_MASK(RECORD_SIZE_LIMIT)                      | \
+     MBEDTLS_SSL_EXT_MASK(EVIDENCE_REQUEST)                       | \
+     MBEDTLS_SSL_EXT_MASK(EVIDENCE_PROPOSAL)                      | \
+     MBEDTLS_SSL_EXT_MASK(RESULTS_REQUEST)                        | \
+     MBEDTLS_SSL_EXT_MASK(RESULTS_PROPOSAL)                       | \
      MBEDTLS_SSL_TLS1_3_EXT_MASK_UNRECOGNIZED)
 
 /* RFC 8446 section 4.2. Allowed extensions for EncryptedExtensions */
@@ -189,7 +200,11 @@ uint32_t mbedtls_ssl_get_extension_mask(unsigned int extension_type);
      MBEDTLS_SSL_EXT_MASK(CLI_CERT_TYPE)                          | \
      MBEDTLS_SSL_EXT_MASK(SERV_CERT_TYPE)                         | \
      MBEDTLS_SSL_EXT_MASK(EARLY_DATA)                             | \
-     MBEDTLS_SSL_EXT_MASK(RECORD_SIZE_LIMIT))
+     MBEDTLS_SSL_EXT_MASK(RECORD_SIZE_LIMIT)                      | \
+     MBEDTLS_SSL_EXT_MASK(EVIDENCE_REQUEST)                       | \
+     MBEDTLS_SSL_EXT_MASK(EVIDENCE_PROPOSAL)                      | \
+     MBEDTLS_SSL_EXT_MASK(RESULTS_REQUEST)                        | \
+     MBEDTLS_SSL_EXT_MASK(RESULTS_PROPOSAL))
 
 /* RFC 8446 section 4.2. Allowed extensions for CertificateRequest */
 #define MBEDTLS_SSL_TLS1_3_ALLOWED_EXTS_OF_CR                                  \
@@ -201,10 +216,12 @@ uint32_t mbedtls_ssl_get_extension_mask(unsigned int extension_type);
      MBEDTLS_SSL_EXT_MASK(SIG_ALG_CERT)                           | \
      MBEDTLS_SSL_TLS1_3_EXT_MASK_UNRECOGNIZED)
 
-/* RFC 8446 section 4.2. Allowed extensions for Certificate */
+/* RFC 8446 section 4.2 + draft-fossati-seat-early-attestation-03 §4.1.
+ * Allowed extensions for Certificate */
 #define MBEDTLS_SSL_TLS1_3_ALLOWED_EXTS_OF_CT                                  \
     (MBEDTLS_SSL_EXT_MASK(STATUS_REQUEST)                         | \
-     MBEDTLS_SSL_EXT_MASK(SCT))
+     MBEDTLS_SSL_EXT_MASK(SCT)                                    | \
+     MBEDTLS_SSL_EXT_MASK(ATTESTATION))
 
 /* RFC 8446 section 4.2. Allowed extensions for ServerHello */
 #define MBEDTLS_SSL_TLS1_3_ALLOWED_EXTS_OF_SH                                  \
@@ -976,8 +993,8 @@ struct mbedtls_ssl_handshake_params {
 #endif
 
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
-    uint32_t sent_extensions;       /*!< extensions sent by endpoint */
-    uint32_t received_extensions;   /*!< extensions received by endpoint */
+    uint64_t sent_extensions;       /*!< extensions sent by endpoint */
+    uint64_t received_extensions;   /*!< extensions received by endpoint */
 
 #if defined(MBEDTLS_SSL_HANDSHAKE_WITH_CERT_ENABLED)
     unsigned char certificate_request_context_len;
@@ -2022,7 +2039,7 @@ int mbedtls_ssl_tls13_check_received_extension(
     mbedtls_ssl_context *ssl,
     int hs_msg_type,
     unsigned int received_extension_type,
-    uint32_t hs_msg_allowed_extensions_mask);
+    uint64_t hs_msg_allowed_extensions_mask);
 
 static inline void mbedtls_ssl_tls13_set_hs_sent_ext_mask(
     mbedtls_ssl_context *ssl, unsigned int extension_type)

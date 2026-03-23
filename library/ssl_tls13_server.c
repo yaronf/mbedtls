@@ -984,9 +984,9 @@ static int ssl_tls13_parse_key_shares_ext(mbedtls_ssl_context *ssl,
 
 MBEDTLS_CHECK_RETURN_CRITICAL
 static int ssl_tls13_client_hello_has_exts(mbedtls_ssl_context *ssl,
-                                           int exts_mask)
+                                           uint64_t exts_mask)
 {
-    int masked = ssl->handshake->received_extensions & exts_mask;
+    uint64_t masked = ssl->handshake->received_extensions & exts_mask;
     return masked == exts_mask;
 }
 
@@ -1471,7 +1471,7 @@ static int ssl_tls13_parse_client_hello(mbedtls_ssl_context *ssl,
         unsigned int extension_type;
         size_t extension_data_len;
         const unsigned char *extension_data_end;
-        uint32_t allowed_exts = MBEDTLS_SSL_TLS1_3_ALLOWED_EXTS_OF_CH;
+        uint64_t allowed_exts = MBEDTLS_SSL_TLS1_3_ALLOWED_EXTS_OF_CH;
 
         if (ssl->handshake->hello_retry_request_flag) {
             /* Do not accept early data extension in 2nd ClientHello */

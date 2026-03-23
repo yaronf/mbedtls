@@ -599,14 +599,29 @@ uint32_t mbedtls_ssl_get_extension_id(unsigned int extension_type)
         case MBEDTLS_TLS_EXT_SESSION_TICKET:
             return MBEDTLS_SSL_EXT_ID_SESSION_TICKET;
 
+        case MBEDTLS_TLS_EXT_ATTESTATION:
+            return MBEDTLS_SSL_EXT_ID_ATTESTATION;
+
+        case MBEDTLS_TLS_EXT_EVIDENCE_REQUEST:
+            return MBEDTLS_SSL_EXT_ID_EVIDENCE_REQUEST;
+
+        case MBEDTLS_TLS_EXT_EVIDENCE_PROPOSAL:
+            return MBEDTLS_SSL_EXT_ID_EVIDENCE_PROPOSAL;
+
+        case MBEDTLS_TLS_EXT_RESULTS_REQUEST:
+            return MBEDTLS_SSL_EXT_ID_RESULTS_REQUEST;
+
+        case MBEDTLS_TLS_EXT_RESULTS_PROPOSAL:
+            return MBEDTLS_SSL_EXT_ID_RESULTS_PROPOSAL;
+
     }
 
     return MBEDTLS_SSL_EXT_ID_UNRECOGNIZED;
 }
 
-uint32_t mbedtls_ssl_get_extension_mask(unsigned int extension_type)
+uint64_t mbedtls_ssl_get_extension_mask(unsigned int extension_type)
 {
-    return 1 << mbedtls_ssl_get_extension_id(extension_type);
+    return 1ULL << mbedtls_ssl_get_extension_id(extension_type);
 }
 
 #if defined(MBEDTLS_DEBUG_C)
@@ -639,7 +654,12 @@ static const char *extension_name_table[] = {
     [MBEDTLS_SSL_EXT_ID_ENCRYPT_THEN_MAC] = "encrypt_then_mac",
     [MBEDTLS_SSL_EXT_ID_EXTENDED_MASTER_SECRET] = "extended_master_secret",
     [MBEDTLS_SSL_EXT_ID_SESSION_TICKET] = "session_ticket",
-    [MBEDTLS_SSL_EXT_ID_RECORD_SIZE_LIMIT] = "record_size_limit"
+    [MBEDTLS_SSL_EXT_ID_RECORD_SIZE_LIMIT] = "record_size_limit",
+    [MBEDTLS_SSL_EXT_ID_ATTESTATION] = "attestation",
+    [MBEDTLS_SSL_EXT_ID_EVIDENCE_REQUEST] = "evidence_request",
+    [MBEDTLS_SSL_EXT_ID_EVIDENCE_PROPOSAL] = "evidence_proposal",
+    [MBEDTLS_SSL_EXT_ID_RESULTS_REQUEST] = "results_request",
+    [MBEDTLS_SSL_EXT_ID_RESULTS_PROPOSAL] = "results_proposal"
 };
 
 static const unsigned int extension_type_table[] = {
@@ -671,7 +691,12 @@ static const unsigned int extension_type_table[] = {
     [MBEDTLS_SSL_EXT_ID_ENCRYPT_THEN_MAC] = MBEDTLS_TLS_EXT_ENCRYPT_THEN_MAC,
     [MBEDTLS_SSL_EXT_ID_EXTENDED_MASTER_SECRET] = MBEDTLS_TLS_EXT_EXTENDED_MASTER_SECRET,
     [MBEDTLS_SSL_EXT_ID_SESSION_TICKET] = MBEDTLS_TLS_EXT_SESSION_TICKET,
-    [MBEDTLS_SSL_EXT_ID_RECORD_SIZE_LIMIT] = MBEDTLS_TLS_EXT_RECORD_SIZE_LIMIT
+    [MBEDTLS_SSL_EXT_ID_RECORD_SIZE_LIMIT] = MBEDTLS_TLS_EXT_RECORD_SIZE_LIMIT,
+    [MBEDTLS_SSL_EXT_ID_ATTESTATION] = MBEDTLS_TLS_EXT_ATTESTATION,
+    [MBEDTLS_SSL_EXT_ID_EVIDENCE_REQUEST] = MBEDTLS_TLS_EXT_EVIDENCE_REQUEST,
+    [MBEDTLS_SSL_EXT_ID_EVIDENCE_PROPOSAL] = MBEDTLS_TLS_EXT_EVIDENCE_PROPOSAL,
+    [MBEDTLS_SSL_EXT_ID_RESULTS_REQUEST] = MBEDTLS_TLS_EXT_RESULTS_REQUEST,
+    [MBEDTLS_SSL_EXT_ID_RESULTS_PROPOSAL] = MBEDTLS_TLS_EXT_RESULTS_PROPOSAL
 };
 
 const char *mbedtls_ssl_get_extension_name(unsigned int extension_type)
@@ -736,7 +761,7 @@ void mbedtls_ssl_print_extension(const mbedtls_ssl_context *ssl,
 
 void mbedtls_ssl_print_extensions(const mbedtls_ssl_context *ssl,
                                   int level, const char *file, int line,
-                                  int hs_msg_type, uint32_t extensions_mask,
+                                  int hs_msg_type, uint64_t extensions_mask,
                                   const char *extra)
 {
 

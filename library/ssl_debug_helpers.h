@@ -38,7 +38,7 @@ const char *mbedtls_ssl_get_extension_name(unsigned int extension_type);
 
 void mbedtls_ssl_print_extensions(const mbedtls_ssl_context *ssl,
                                   int level, const char *file, int line,
-                                  int hs_msg_type, uint32_t extensions_mask,
+                                  int hs_msg_type, uint64_t extensions_mask,
                                   const char *extra);
 
 void mbedtls_ssl_print_extension(const mbedtls_ssl_context *ssl,
