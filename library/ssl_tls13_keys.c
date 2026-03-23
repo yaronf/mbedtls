@@ -1857,4 +1857,107 @@ exit:
 }
 #endif /* defined(MBEDTLS_SSL_KEYING_MATERIAL_EXPORT) */
 
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+/*
+ * ssl_tls13_derive_attest_base() — §5.1.1, step 1
+ *
+ * Snapshot the current transcript and derive the attestation base secret:
+ *   base = Derive-Secret(0, base_label, <current transcript>)
+ *
+ * Must be called at the exact transcript checkpoint:
+ *   "s attestation base" → immediately after EncryptedExtensions
+ *   "c attestation base" → immediately after Server-Finished
+ *
+ * \param ssl              SSL context.
+ * \param base_label       Label string (not NUL-terminated).
+ * \param base_label_len   Length of base_label.
+ * \param out              Output buffer; must be >= Hash.length bytes.
+ * \param out_len          Size of out; must be >= Hash.length.
+ *
+ * \return 0 on success, negative mbedtls error code on failure.
+ */
+int ssl_tls13_derive_attest_base(
+    mbedtls_ssl_context *ssl,
+    const unsigned char *base_label, size_t base_label_len,
+    unsigned char *out, size_t out_len)
+{
+    int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+    mbedtls_md_type_t md_type;
+    psa_algorithm_t hash_alg;
+    size_t hash_len;
+    unsigned char zero_secret[MBEDTLS_TLS1_3_MD_MAX_SIZE];
+    unsigned char transcript[MBEDTLS_TLS1_3_MD_MAX_SIZE];
+    size_t transcript_len;
+
+    md_type = (mbedtls_md_type_t) ssl->handshake->ciphersuite_info->mac;
+    hash_alg = mbedtls_md_psa_alg_from_type(md_type);
+    hash_len = PSA_HASH_LENGTH(hash_alg);
+
+    if (out_len < hash_len) {
+        return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
+    }
+
+    /* §5.1.1: secret input is zero-filled, Hash.length bytes. */
+    memset(zero_secret, 0, hash_len);
+
+    ret = mbedtls_ssl_get_handshake_transcript(ssl, md_type,
+                                               transcript, sizeof(transcript),
+                                               &transcript_len);
+    if (ret != 0) {
+        goto cleanup;
+    }
+
+    /* transcript is already the hash output (CONTEXT_HASHED) */
+    ret = mbedtls_ssl_tls13_derive_secret(
+        hash_alg,
+        zero_secret, hash_len,
+        base_label, base_label_len,
+        transcript, transcript_len,
+        MBEDTLS_SSL_TLS1_3_CONTEXT_HASHED,
+        out, hash_len);
+
+cleanup:
+    mbedtls_platform_zeroize(zero_secret, sizeof(zero_secret));
+    return ret;
+}
+
+/*
+ * ssl_tls13_derive_attest_binder() — §5.1.1, step 2
+ *
+ * Given a previously computed base secret, derive the attestation binder:
+ *   binder = HKDF-Expand-Label(base, "attestation", tik_pub_der, Hash.length)
+ *
+ * \param ssl              SSL context (for hash algorithm lookup).
+ * \param base             Attestation base secret (s_attest_base or c_attest_base).
+ * \param base_len         Length of base (== Hash.length).
+ * \param tik_pub_der      Peer's SubjectPublicKeyInfo DER.
+ * \param tik_pub_der_len  Length of tik_pub_der.
+ * \param out              Output buffer; must be >= Hash.length bytes.
+ * \param out_len          Size of out; must be >= Hash.length.
+ *
+ * \return 0 on success, negative mbedtls error code on failure.
+ */
+int ssl_tls13_derive_attest_binder(
+    mbedtls_ssl_context *ssl,
+    const unsigned char *base, size_t base_len,
+    const unsigned char *tik_pub_der, size_t tik_pub_der_len,
+    unsigned char *out, size_t out_len)
+{
+    psa_algorithm_t hash_alg = mbedtls_md_psa_alg_from_type(
+        (mbedtls_md_type_t) ssl->handshake->ciphersuite_info->mac);
+    size_t hash_len = PSA_HASH_LENGTH(hash_alg);
+
+    if (base_len < hash_len || out_len < hash_len) {
+        return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
+    }
+
+    return mbedtls_ssl_tls13_hkdf_expand_label(
+        hash_alg,
+        base, hash_len,
+        MBEDTLS_SSL_TLS1_3_LBL_WITH_LEN(attestation),
+        tik_pub_der, tik_pub_der_len,
+        out, hash_len);
+}
+#endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
+
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */

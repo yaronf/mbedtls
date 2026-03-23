@@ -30,7 +30,10 @@
     MBEDTLS_SSL_TLS1_3_LABEL(res_binder, "res binder") \
     MBEDTLS_SSL_TLS1_3_LABEL(derived, "derived") \
     MBEDTLS_SSL_TLS1_3_LABEL(client_cv, "TLS 1.3, client CertificateVerify") \
-    MBEDTLS_SSL_TLS1_3_LABEL(server_cv, "TLS 1.3, server CertificateVerify")
+    MBEDTLS_SSL_TLS1_3_LABEL(server_cv, "TLS 1.3, server CertificateVerify") \
+    MBEDTLS_SSL_TLS1_3_LABEL(c_attest_base, "c attestation base") \
+    MBEDTLS_SSL_TLS1_3_LABEL(s_attest_base, "s attestation base") \
+    MBEDTLS_SSL_TLS1_3_LABEL(attestation, "attestation")
 
 #define MBEDTLS_SSL_TLS1_3_CONTEXT_UNHASHED 0
 #define MBEDTLS_SSL_TLS1_3_CONTEXT_HASHED   1
@@ -662,6 +665,34 @@ int mbedtls_ssl_tls13_exporter(const psa_algorithm_t hash_alg,
                                const unsigned char *label, const size_t label_len,
                                const unsigned char *context_value, const size_t context_len,
                                uint8_t *out, const size_t out_len);
+
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+/**
+ * \brief Derive the attestation base secret at a transcript checkpoint (§5.1.1 step 1).
+ *
+ *   base = Derive-Secret(0, base_label, <current transcript>)
+ *
+ * Call with "s attestation base" immediately after EncryptedExtensions,
+ * and "c attestation base" immediately after Server-Finished.
+ */
+int ssl_tls13_derive_attest_base(
+    mbedtls_ssl_context *ssl,
+    const unsigned char *base_label, size_t base_label_len,
+    unsigned char *out, size_t out_len);
+
+/**
+ * \brief Derive the attestation binder from a base secret and a TIK (§5.1.1 step 2).
+ *
+ *   binder = HKDF-Expand-Label(base, "attestation", tik_pub_der, Hash.length)
+ *
+ * Call once the peer's SubjectPublicKeyInfo DER is available.
+ */
+int ssl_tls13_derive_attest_binder(
+    mbedtls_ssl_context *ssl,
+    const unsigned char *base, size_t base_len,
+    const unsigned char *tik_pub_der, size_t tik_pub_der_len,
+    unsigned char *out, size_t out_len);
+#endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
 
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 

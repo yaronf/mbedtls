@@ -2531,6 +2531,23 @@ static int ssl_tls13_process_encrypted_extensions(mbedtls_ssl_context *ssl)
                              ssl, MBEDTLS_SSL_HS_ENCRYPTED_EXTENSIONS,
                              buf, buf_len));
 
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+    /* Snapshot s_attest_base at the ClientHello...EncryptedExtensions checkpoint. */
+    if (handshake->own_evidence_content_format !=
+            MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE ||
+        handshake->peer_evidence_content_format !=
+            MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE) {
+        psa_algorithm_t hash_alg = mbedtls_md_psa_alg_from_type(
+            (mbedtls_md_type_t) handshake->ciphersuite_info->mac);
+        handshake->attest_binder_len = PSA_HASH_LENGTH(hash_alg);
+        MBEDTLS_SSL_PROC_CHK(ssl_tls13_derive_attest_base(
+            ssl,
+            MBEDTLS_SSL_TLS1_3_LBL_WITH_LEN(s_attest_base),
+            handshake->s_attest_base,
+            sizeof(handshake->s_attest_base)));
+    }
+#endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
+
 #if defined(MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL_ENABLED)
     if (mbedtls_ssl_tls13_key_exchange_mode_with_psk(ssl)) {
         mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_SERVER_FINISHED);
@@ -2873,6 +2890,27 @@ static int ssl_tls13_process_server_finished(mbedtls_ssl_context *ssl)
             MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE);
         return ret;
     }
+
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+    /* Snapshot c_attest_base at the ClientHello...Server-Finished checkpoint. */
+    if (ssl->handshake->c_attest_base[0] == 0 &&
+        (ssl->handshake->own_evidence_content_format !=
+             MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE ||
+         ssl->handshake->peer_evidence_content_format !=
+             MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE)) {
+        ret = ssl_tls13_derive_attest_base(
+            ssl,
+            MBEDTLS_SSL_TLS1_3_LBL_WITH_LEN(c_attest_base),
+            ssl->handshake->c_attest_base,
+            sizeof(ssl->handshake->c_attest_base));
+        if (ret != 0) {
+            MBEDTLS_SSL_PEND_FATAL_ALERT(
+                MBEDTLS_SSL_ALERT_MSG_HANDSHAKE_FAILURE,
+                MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE);
+            return ret;
+        }
+    }
+#endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
 
 #if defined(MBEDTLS_SSL_EARLY_DATA)
     if (ssl->early_data_state == MBEDTLS_SSL_EARLY_DATA_STATE_ACCEPTED) {

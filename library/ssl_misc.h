@@ -1016,6 +1016,34 @@ struct mbedtls_ssl_handshake_params {
      */
     const unsigned char *peer_cmw;
     size_t               peer_cmw_len;
+
+    /*
+     * Attestation binder derivation state (§5.1.1).
+     *
+     * The binder derivation is split across two transcript checkpoints:
+     *
+     * Step 1 — snapshot the base secret at the transcript checkpoint:
+     *   s_attest_base = Derive-Secret(0, "s attestation base",
+     *                                 ClientHello...EncryptedExtensions)
+     *   c_attest_base = Derive-Secret(0, "c attestation base",
+     *                                 ClientHello...Server-Finished)
+     *   Computed immediately after EE (s_) and after Server-Finished (c_).
+     *
+     * Step 2 — compute the binder when the peer's TIK is available:
+     *   s_attest_binder = HKDF-Expand-Label(s_attest_base, "attestation",
+     *                                        TLS_Server_Public_Key, Hash.length)
+     *   c_attest_binder = HKDF-Expand-Label(c_attest_base, "attestation",
+     *                                        TLS_Client_Public_Key, Hash.length)
+     *   Computed at Certificate send/receive time.
+     *
+     * attest_binder_len is the hash output length (same for both binders).
+     * Fields are zeroed until the corresponding step has completed.
+     */
+    unsigned char s_attest_base[MBEDTLS_TLS1_3_MD_MAX_SIZE];
+    unsigned char c_attest_base[MBEDTLS_TLS1_3_MD_MAX_SIZE];
+    unsigned char s_attest_binder[MBEDTLS_TLS1_3_MD_MAX_SIZE];
+    unsigned char c_attest_binder[MBEDTLS_TLS1_3_MD_MAX_SIZE];
+    size_t        attest_binder_len;
 #endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
 
     /*
