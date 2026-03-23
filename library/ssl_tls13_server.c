@@ -1230,6 +1230,146 @@ static int ssl_tls13_pick_key_cert(mbedtls_ssl_context *ssl)
 #define SSL_CLIENT_HELLO_HRR_REQUIRED 1
 #define SSL_CLIENT_HELLO_TLS1_2       2
 
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+/*
+ * ssl_tls13_select_evidence_content_format():
+ *
+ * Walk the peer's EvidenceType list (buf..end) and return the first
+ * content-format that our local provider also supports, or
+ * MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE if there is no overlap.
+ *
+ * Wire format per §6.1: list_len (2) + N × [ typeEncoding(1) cf(2) ]
+ * Only CONTENT_FORMAT (typeEncoding=0) entries are considered; MEDIA_TYPE
+ * entries are skipped (not supported in this implementation).
+ */
+static uint16_t ssl_tls13_select_evidence_content_format(
+    const unsigned char *buf,
+    const unsigned char *end,
+    const mbedtls_ssl_attestation_conf *attest_conf)
+{
+    const unsigned char *p = buf;
+    uint16_t list_len;
+    const unsigned char *list_end;
+    size_t i;
+
+    /* list_len (2 bytes) */
+    if (end - p < 2) {
+        return MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE;
+    }
+    list_len = MBEDTLS_GET_UINT16_BE(p, 0);
+    p += 2;
+
+    if ((size_t)(end - p) < list_len || list_len == 0) {
+        return MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE;
+    }
+    list_end = p + list_len;
+
+    while (p + 3 <= list_end) {
+        uint8_t  type_encoding = p[0];
+        uint16_t content_format = MBEDTLS_GET_UINT16_BE(p, 1);
+        p += 3;
+
+        if (type_encoding != 0x00) {
+            /* MEDIA_TYPE or unknown — skip */
+            continue;
+        }
+
+        /* Check if our provider supports this content-format. */
+        for (i = 0; i < attest_conf->num_content_formats; i++) {
+            if (attest_conf->content_formats[i] == content_format) {
+                return content_format;
+            }
+        }
+    }
+
+    return MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE;
+}
+
+/*
+ * ssl_tls13_parse_evidence_proposal_ext():
+ *
+ * Parse the evidence_proposal extension from ClientHello.
+ * The client lists EvidenceTypes it can produce; we select the first one
+ * we also support and store it in handshake->peer_evidence_content_format
+ * (the format we will request from the client in EncryptedExtensions).
+ *
+ * Sends unsupported_evidence and returns an error if require_peer_evidence
+ * is set and no overlap is found.
+ */
+MBEDTLS_CHECK_RETURN_CRITICAL
+static int ssl_tls13_parse_evidence_proposal_ext(mbedtls_ssl_context *ssl,
+                                                 const unsigned char *buf,
+                                                 const unsigned char *end)
+{
+    const mbedtls_ssl_attestation_conf *attest_conf = ssl->conf->attest_conf;
+    uint16_t selected;
+
+    if (attest_conf == NULL || !attest_conf->request_peer_evidence) {
+        /* We don't want Evidence from the peer; ignore the extension. */
+        return 0;
+    }
+
+    selected = ssl_tls13_select_evidence_content_format(buf, end, attest_conf);
+
+    if (selected == MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE) {
+        if (attest_conf->require_peer_evidence) {
+            MBEDTLS_SSL_DEBUG_MSG(1, ("evidence_proposal: no supported type, "
+                                      "require_peer_evidence set"));
+            MBEDTLS_SSL_PEND_FATAL_ALERT(
+                MBEDTLS_SSL_ALERT_MSG_UNSUPPORTED_EVIDENCE,
+                MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE);
+            return MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE;
+        }
+        MBEDTLS_SSL_DEBUG_MSG(3, ("evidence_proposal: no overlap, "
+                                  "attestation not required, skipping"));
+        return 0;
+    }
+
+    MBEDTLS_SSL_DEBUG_MSG(3, ("evidence_proposal: selected content-format 0x%04x",
+                              (unsigned) selected));
+    ssl->handshake->peer_evidence_content_format = selected;
+    return 0;
+}
+
+/*
+ * ssl_tls13_parse_evidence_request_ext():
+ *
+ * Parse the evidence_request extension from ClientHello.
+ * The client lists EvidenceTypes it wants from us; we select the first one
+ * we can produce and store it in handshake->own_evidence_content_format
+ * (the format we will advertise in evidence_proposal in EncryptedExtensions
+ * and use when generating our Certificate extension).
+ *
+ * No alert is sent on no-overlap: the server simply doesn't offer Evidence.
+ */
+MBEDTLS_CHECK_RETURN_CRITICAL
+static int ssl_tls13_parse_evidence_request_ext(mbedtls_ssl_context *ssl,
+                                                const unsigned char *buf,
+                                                const unsigned char *end)
+{
+    const mbedtls_ssl_attestation_conf *attest_conf = ssl->conf->attest_conf;
+    uint16_t selected;
+
+    if (attest_conf == NULL || !attest_conf->offer_evidence) {
+        /* We won't produce Evidence; ignore the extension. */
+        return 0;
+    }
+
+    selected = ssl_tls13_select_evidence_content_format(buf, end, attest_conf);
+
+    if (selected == MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE) {
+        MBEDTLS_SSL_DEBUG_MSG(3, ("evidence_request: no overlap, "
+                                  "server will not offer Evidence"));
+        return 0;
+    }
+
+    MBEDTLS_SSL_DEBUG_MSG(3, ("evidence_request: selected content-format 0x%04x",
+                              (unsigned) selected));
+    ssl->handshake->own_evidence_content_format = selected;
+    return 0;
+}
+#endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
+
 MBEDTLS_CHECK_RETURN_CRITICAL
 static int ssl_tls13_parse_client_hello(mbedtls_ssl_context *ssl,
                                         const unsigned char *buf,
@@ -1650,6 +1790,30 @@ static int ssl_tls13_parse_client_hello(mbedtls_ssl_context *ssl,
                 }
                 break;
 #endif /* MBEDTLS_SSL_RECORD_SIZE_LIMIT */
+
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+            case MBEDTLS_TLS_EXT_EVIDENCE_PROPOSAL:
+                MBEDTLS_SSL_DEBUG_MSG(3, ("found evidence_proposal extension"));
+                ret = ssl_tls13_parse_evidence_proposal_ext(ssl, p,
+                                                            extension_data_end);
+                if (ret != 0) {
+                    MBEDTLS_SSL_DEBUG_RET(
+                        1, "ssl_tls13_parse_evidence_proposal_ext", ret);
+                    return ret;
+                }
+                break;
+
+            case MBEDTLS_TLS_EXT_EVIDENCE_REQUEST:
+                MBEDTLS_SSL_DEBUG_MSG(3, ("found evidence_request extension"));
+                ret = ssl_tls13_parse_evidence_request_ext(ssl, p,
+                                                           extension_data_end);
+                if (ret != 0) {
+                    MBEDTLS_SSL_DEBUG_RET(
+                        1, "ssl_tls13_parse_evidence_request_ext", ret);
+                    return ret;
+                }
+                break;
+#endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
 
             default:
                 MBEDTLS_SSL_PRINT_EXT(

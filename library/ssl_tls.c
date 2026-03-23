@@ -958,6 +958,11 @@ static void ssl_handshake_params_init(mbedtls_ssl_handshake_params *handshake)
     handshake->sni_authmode = MBEDTLS_SSL_VERIFY_UNSET;
 #endif
 
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION) && defined(MBEDTLS_SSL_SRV_C)
+    handshake->peer_evidence_content_format = MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE;
+    handshake->own_evidence_content_format  = MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE;
+#endif
+
 #if defined(MBEDTLS_X509_CRT_PARSE_C) && \
     !defined(MBEDTLS_SSL_KEEP_PEER_CERTIFICATE)
     mbedtls_pk_init(&handshake->peer_pubkey);

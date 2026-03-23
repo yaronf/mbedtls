@@ -123,6 +123,12 @@ typedef enum {
 #define MBEDTLS_SSL_EXT_ID_RESULTS_REQUEST            32
 #define MBEDTLS_SSL_EXT_ID_RESULTS_PROPOSAL           33
 
+/* Sentinel: no EvidenceType content-format selected for a given direction.
+ * Stored in handshake->peer/own_evidence_content_format when attestation has
+ * not been negotiated.  0xFFFF is safe because CoAP content-format values are
+ * assigned from 0 upwards and 0xFFFF is currently unassigned. */
+#define MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE      0xFFFFu
+
 /* Utility for translating IANA extension type. */
 uint32_t mbedtls_ssl_get_extension_id(unsigned int extension_type);
 uint64_t mbedtls_ssl_get_extension_mask(unsigned int extension_type);
@@ -689,6 +695,26 @@ struct mbedtls_ssl_handshake_params {
     /* Flag indicating if the server has accepted early data or not. */
     uint8_t early_data_accepted;
 #endif
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+    /*
+     * Negotiated EvidenceType content-format values selected during the
+     * ClientHello exchange (draft-fossati-seat-early-attestation-03 §6.1).
+     *
+     * peer_evidence_content_format: format agreed for Evidence the *peer*
+     *   will produce (selected from evidence_proposal sent by client).
+     *   Used by the server to echo back in evidence_request in EE, and by
+     *   the client to know what format to put in its Certificate extension.
+     *
+     * own_evidence_content_format: format agreed for Evidence *this* endpoint
+     *   will produce (selected from evidence_request sent by client).
+     *   Used by the server to echo back in evidence_proposal in EE, and to
+     *   know what format to generate when writing its Certificate extension.
+     *
+     * MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE = not negotiated.
+     */
+    uint16_t peer_evidence_content_format;
+    uint16_t own_evidence_content_format;
+#endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
 #endif /* MBEDTLS_SSL_SRV_C */
 
 #if defined(MBEDTLS_SSL_SESSION_TICKETS)
