@@ -624,6 +624,43 @@ exit:
     MBEDTLS_SSL_DEBUG_CRT(3, "peer certificate",
                           ssl->session_negotiate->peer_cert);
 
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+    /*
+     * M3-2: Compute the peer's attestation binder from their TIK (end-entity
+     * cert public key).  If we're the server, the peer is the client, so we
+     * use c_attest_base; if we're the client, the peer is the server, so we
+     * use s_attest_base.  Stored for Evidence verification in M3-6.
+     */
+    if (ret == 0 &&
+        ssl->session_negotiate->peer_cert != NULL &&
+        ssl->handshake->own_evidence_content_format !=
+            MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE) {
+        int is_server = (ssl->conf->endpoint == MBEDTLS_SSL_IS_SERVER);
+        const unsigned char *base = is_server
+            ? ssl->handshake->c_attest_base
+            : ssl->handshake->s_attest_base;
+
+        ret = ssl_tls13_compute_attest_binder_from_pk(
+            ssl,
+            &ssl->session_negotiate->peer_cert->pk,
+            base, ssl->handshake->attest_binder_len,
+            is_server
+                ? ssl->handshake->c_attest_binder
+                : ssl->handshake->s_attest_binder,
+            ssl->handshake->attest_binder_len);
+        if (ret != 0) {
+            MBEDTLS_SSL_DEBUG_RET(1, "ssl_tls13_compute_attest_binder_from_pk"
+                                  " (peer)", ret);
+        } else {
+            MBEDTLS_SSL_DEBUG_BUF(4, "peer attest binder",
+                is_server
+                    ? ssl->handshake->c_attest_binder
+                    : ssl->handshake->s_attest_binder,
+                ssl->handshake->attest_binder_len);
+        }
+    }
+#endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
+
     return ret;
 }
 #else
@@ -920,6 +957,49 @@ static int ssl_tls13_write_certificate_body(mbedtls_ssl_context *ssl,
 
     MBEDTLS_SSL_PRINT_EXTS(
         3, MBEDTLS_SSL_HS_CERTIFICATE, ssl->handshake->sent_extensions);
+
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+    /*
+     * M3-2: Compute our own attestation binder from our TIK (end-entity cert
+     * public key).  Server uses s_attest_base; client uses c_attest_base.
+     * The binder is passed to the Evidence provider in M3-5.
+     */
+    if (ssl->handshake->peer_evidence_content_format !=
+            MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE) {
+        const mbedtls_x509_crt *own_crt = mbedtls_ssl_own_cert(ssl);
+        if (own_crt == NULL) {
+            /* No TLS identity key — binder cannot be computed (M3-3 will
+             * require a cert when attestation is active). */
+            MBEDTLS_SSL_DEBUG_MSG(3, ("no own cert; skipping own binder "
+                                      "computation"));
+        } else {
+
+        int is_server = (ssl->conf->endpoint == MBEDTLS_SSL_IS_SERVER);
+        const unsigned char *base = is_server
+            ? ssl->handshake->s_attest_base
+            : ssl->handshake->c_attest_base;
+
+        int ret = ssl_tls13_compute_attest_binder_from_pk(
+            ssl,
+            &own_crt->pk,
+            base, ssl->handshake->attest_binder_len,
+            is_server
+                ? ssl->handshake->s_attest_binder
+                : ssl->handshake->c_attest_binder,
+            ssl->handshake->attest_binder_len);
+        if (ret != 0) {
+            MBEDTLS_SSL_DEBUG_RET(1, "ssl_tls13_compute_attest_binder_from_pk"
+                                  " (own)", ret);
+            return ret;
+        }
+        MBEDTLS_SSL_DEBUG_BUF(4, "own attest binder",
+            is_server
+                ? ssl->handshake->s_attest_binder
+                : ssl->handshake->c_attest_binder,
+            ssl->handshake->attest_binder_len);
+        } /* own_crt != NULL */
+    }
+#endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
 
     return 0;
 }

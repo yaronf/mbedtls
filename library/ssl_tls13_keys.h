@@ -692,6 +692,28 @@ int ssl_tls13_derive_attest_binder(
     const unsigned char *base, size_t base_len,
     const unsigned char *tik_pub_der, size_t tik_pub_der_len,
     unsigned char *out, size_t out_len);
+
+/**
+ * \brief Extract the SubjectPublicKeyInfo DER from a PK context and compute
+ *        the attestation binder (§5.1.1, M3-2).
+ *
+ * Combines mbedtls_pk_write_pubkey_der() + ssl_tls13_derive_attest_binder()
+ * in a single call, hiding the end-of-buffer DER convention from callers.
+ *
+ * \param ssl       SSL context (for hash algorithm lookup).
+ * \param pk        Public key to use as the TIK context input.
+ * \param base      Attestation base secret (s_attest_base or c_attest_base).
+ * \param base_len  Length of base (== Hash.length).
+ * \param out       Output buffer; must be >= Hash.length bytes.
+ * \param out_len   Size of out.
+ *
+ * \return 0 on success, negative mbedtls error code on failure.
+ */
+int ssl_tls13_compute_attest_binder_from_pk(
+    mbedtls_ssl_context *ssl,
+    const mbedtls_pk_context *pk,
+    const unsigned char *base, size_t base_len,
+    unsigned char *out, size_t out_len);
 #endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
 
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */

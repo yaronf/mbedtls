@@ -1943,20 +1943,108 @@ int ssl_tls13_derive_attest_binder(
     const unsigned char *tik_pub_der, size_t tik_pub_der_len,
     unsigned char *out, size_t out_len)
 {
+    /*
+     * HKDF-Expand-Label(base, "attestation", TIK_pub_DER, Hash.length)
+     *
+     * The TIK SubjectPublicKeyInfo DER can be up to ~158 bytes (P-521).
+     * mbedtls_ssl_tls13_hkdf_expand_label() rejects ctx longer than
+     * PSA_HASH_MAX_SIZE (64 bytes), so we open-code the PSA call here using
+     * ssl_tls13_hkdf_encode_label() to build the HkdfLabel with a larger
+     * stack buffer.
+     */
+    int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
     psa_algorithm_t hash_alg = mbedtls_md_psa_alg_from_type(
         (mbedtls_md_type_t) ssl->handshake->ciphersuite_info->mac);
     size_t hash_len = PSA_HASH_LENGTH(hash_alg);
+    psa_status_t status;
+    psa_key_derivation_operation_t op = PSA_KEY_DERIVATION_OPERATION_INIT;
+    /*
+     * HkdfLabel = uint16(hash_len) || uint8(label_len) || label ||
+     *             uint8(ctx_len) || ctx
+     * label = "tls13 " (6) + "attestation" (11) = 17 bytes
+     * ctx   = SPKI DER, up to ~158 bytes (P-521)
+     * Total: 2 + 1 + 17 + 1 + 158 = 179; use 256 for headroom.
+     */
+    unsigned char hkdf_label[256];
+    size_t hkdf_label_len;
 
     if (base_len < hash_len || out_len < hash_len) {
         return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
     }
 
-    return mbedtls_ssl_tls13_hkdf_expand_label(
-        hash_alg,
-        base, hash_len,
+    ssl_tls13_hkdf_encode_label(
+        hash_len,
         MBEDTLS_SSL_TLS1_3_LBL_WITH_LEN(attestation),
         tik_pub_der, tik_pub_der_len,
-        out, hash_len);
+        hkdf_label, &hkdf_label_len);
+
+    if (hkdf_label_len > sizeof(hkdf_label)) {
+        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+    }
+
+    status = psa_key_derivation_setup(&op, PSA_ALG_HKDF_EXPAND(hash_alg));
+    if (status != PSA_SUCCESS) {
+        ret = PSA_TO_MBEDTLS_ERR(status);
+        goto cleanup;
+    }
+
+    status = psa_key_derivation_input_bytes(
+        &op, PSA_KEY_DERIVATION_INPUT_SECRET, base, hash_len);
+    if (status != PSA_SUCCESS) {
+        ret = PSA_TO_MBEDTLS_ERR(status);
+        goto cleanup;
+    }
+
+    status = psa_key_derivation_input_bytes(
+        &op, PSA_KEY_DERIVATION_INPUT_INFO, hkdf_label, hkdf_label_len);
+    if (status != PSA_SUCCESS) {
+        ret = PSA_TO_MBEDTLS_ERR(status);
+        goto cleanup;
+    }
+
+    status = psa_key_derivation_output_bytes(&op, out, hash_len);
+    if (status != PSA_SUCCESS) {
+        ret = PSA_TO_MBEDTLS_ERR(status);
+        goto cleanup;
+    }
+
+    ret = 0;
+
+cleanup:
+    psa_key_derivation_abort(&op);
+    return ret;
+}
+
+/*
+ * ssl_tls13_compute_attest_binder_from_pk() — §5.1.1, M3-2
+ *
+ * Extract SubjectPublicKeyInfo DER from pk, then derive the attestation binder.
+ *
+ * mbedtls_pk_write_pubkey_der() writes to the END of the supplied buffer and
+ * returns the number of bytes written (positive) or a negative error code.
+ * The DER starts at buf + sizeof(buf) - ret.
+ */
+int ssl_tls13_compute_attest_binder_from_pk(
+    mbedtls_ssl_context *ssl,
+    const mbedtls_pk_context *pk,
+    const unsigned char *base, size_t base_len,
+    unsigned char *out, size_t out_len)
+{
+    /* P-521 SPKI is the largest we'll see (~158 bytes); 512 is safe headroom. */
+    unsigned char spki_buf[512];
+    int spki_len;
+
+    spki_len = mbedtls_pk_write_pubkey_der(pk, spki_buf, sizeof(spki_buf));
+    if (spki_len < 0) {
+        return spki_len;
+    }
+
+    /* DER is written at the end of spki_buf. */
+    return ssl_tls13_derive_attest_binder(
+        ssl,
+        base, base_len,
+        spki_buf + sizeof(spki_buf) - spki_len, (size_t) spki_len,
+        out, out_len);
 }
 #endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
 
