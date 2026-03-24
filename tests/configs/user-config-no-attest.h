@@ -1,0 +1,2 @@
+/* M3-12: disable MBEDTLS_SSL_EARLY_ATTESTATION for regression build */
+#undef MBEDTLS_SSL_EARLY_ATTESTATION
