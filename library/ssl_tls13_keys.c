@@ -2025,6 +2025,7 @@ int ssl_tls13_attest_binder_raw(
     ret = 0;
 
 cleanup:
+    mbedtls_platform_zeroize(hkdf_label, sizeof(hkdf_label));
     psa_key_derivation_abort(&op);
     return ret;
 }

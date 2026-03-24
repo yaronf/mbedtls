@@ -676,6 +676,14 @@ exit:
             return ret;
         }
 
+        if (ssl->handshake->attest_binder_len == 0) {
+            /* Should never happen: attest_binder_len is set in the EE handler
+             * before any Certificate is parsed.  Fail hard rather than
+             * producing a zero-length binder that is independent of the TIK. */
+            MBEDTLS_SSL_DEBUG_MSG(1, ("attest_binder_len not set"));
+            return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+        }
+
         if (ret == 0) {
             ret = ssl_tls13_derive_attest_binder(
                 ssl,
@@ -699,9 +707,18 @@ exit:
          * cryptographic operation failed" — the same alert TLS 1.3 uses for
          * PSK binder mismatches.  unsupported_evidence is reserved for the
          * negotiation phase (no common evidence type). */
-        if (ret == 0 && ssl->conf->attest_conf != NULL &&
-            ssl->conf->attest_conf->f_verify_evidence != NULL) {
-            if (ssl->handshake->peer_cmw_len == 0) {
+        if (ret == 0 && ssl->conf->attest_conf != NULL) {
+            if (ssl->conf->attest_conf->f_verify_evidence == NULL) {
+                /* Misconfiguration: peer sent Evidence but no verifier is
+                 * registered.  Fail closed — accepting unverified Evidence
+                 * would silently defeat require_peer_evidence policy. */
+                MBEDTLS_SSL_DEBUG_MSG(1, ("no f_verify_evidence callback "
+                                          "but peer sent attestation CMW"));
+                MBEDTLS_SSL_PEND_FATAL_ALERT(
+                    MBEDTLS_SSL_ALERT_MSG_INTERNAL_ERROR,
+                    MBEDTLS_ERR_SSL_INTERNAL_ERROR);
+                ret = MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+            } else if (ssl->handshake->peer_cmw_len == 0) {
                 /* Peer was expected to send Evidence but sent an empty CMW. */
                 MBEDTLS_SSL_DEBUG_MSG(1, ("peer sent empty attestation CMW"));
                 MBEDTLS_SSL_PEND_FATAL_ALERT(
@@ -726,6 +743,7 @@ exit:
                 }
             }
         }
+        mbedtls_platform_zeroize(peer_spki_buf, sizeof(peer_spki_buf));
     } /* expect_peer_evidence */
     } /* is_server / role scope */
 #endif /* MBEDTLS_SSL_EARLY_ATTESTATION */

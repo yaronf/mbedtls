@@ -1037,8 +1037,9 @@ struct mbedtls_ssl_handshake_params {
      *   Computed at Certificate send/receive time.
      *
      * attest_binder_len is the hash output length (same for both binders).
-     * c_attest_base_derived is set to 1 once c_attest_base has been computed;
-     * use this flag (not a zero-byte check) to guard against double-derivation.
+     * {c,s}_attest_base_derived are set to 1 once the respective base has been
+     * computed; use these flags (not zero-byte checks) to guard against
+     * double-derivation if the EE handler is ever re-entered.
      */
     unsigned char s_attest_base[MBEDTLS_TLS1_3_MD_MAX_SIZE];
     unsigned char c_attest_base[MBEDTLS_TLS1_3_MD_MAX_SIZE];
@@ -1046,6 +1047,7 @@ struct mbedtls_ssl_handshake_params {
     unsigned char c_attest_binder[MBEDTLS_TLS1_3_MD_MAX_SIZE];
     size_t        attest_binder_len;
     uint8_t       c_attest_base_derived; /* 1 once c_attest_base is valid */
+    uint8_t       s_attest_base_derived; /* 1 once s_attest_base is valid */
 #endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
 
     /*

@@ -159,6 +159,7 @@ int main(void)
 #define DFL_KEY_OPAQUE_ALG      "none"
 #define DFL_ATTESTATION         "none"
 #define DFL_OFFER_EVIDENCE      1
+#define DFL_VERIFY_EVIDENCE     1
 #define DFL_REQUIRE_EVIDENCE    0
 
 #define LONG_RESPONSE "<p>01-blah-blah-blah-blah-blah-blah-blah-blah-blah\r\n" \
@@ -601,6 +602,7 @@ int main(void)
     "    attestation=none|synthetic|tamper-binder|tamper-key|tamper-truncate\n" \
     "                                Early attestation provider (default: none)\n"  \
     "    offer_evidence=%%d           Send own Evidence in Certificate (default: 1)\n" \
+    "    verify_evidence=%%d          Verify peer Evidence (default: 1; 0 = null verifier)\n" \
     "    require_evidence=%%d         Require peer to supply Evidence (default: 0)\n"
 
 #define PUT_UINT64_BE(out_be, in_le, i)                                   \
@@ -728,6 +730,7 @@ struct options {
 #if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
     const char *attestation;      /* attestation provider: none|synthetic   */
     int offer_evidence;           /* send own Evidence in Certificate (0|1) */
+    int verify_evidence;          /* verify peer Evidence (0|1)             */
     int require_evidence;         /* require peer Evidence (0|1)            */
 #endif
 } opt;
@@ -1794,6 +1797,7 @@ int main(int argc, char *argv[])
 #if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
     opt.attestation        = DFL_ATTESTATION;
     opt.offer_evidence     = DFL_OFFER_EVIDENCE;
+    opt.verify_evidence    = DFL_VERIFY_EVIDENCE;
     opt.require_evidence   = DFL_REQUIRE_EVIDENCE;
 #endif
 
@@ -2310,6 +2314,11 @@ usage:
         } else if (strcmp(p, "offer_evidence") == 0) {
             opt.offer_evidence = atoi(q);
             if (opt.offer_evidence < 0 || opt.offer_evidence > 1) {
+                goto usage;
+            }
+        } else if (strcmp(p, "verify_evidence") == 0) {
+            opt.verify_evidence = atoi(q);
+            if (opt.verify_evidence < 0 || opt.verify_evidence > 1) {
                 goto usage;
             }
         } else if (strcmp(p, "require_evidence") == 0) {
@@ -3245,6 +3254,9 @@ usage:
             ac_srv = *base;
             ac_srv.offer_evidence        = opt.offer_evidence;
             ac_srv.require_peer_evidence = opt.require_evidence;
+            if (!opt.verify_evidence) {
+                ac_srv.f_verify_evidence = NULL;
+            }
             mbedtls_ssl_conf_attestation(&conf, &ac_srv);
         }
     }

@@ -2534,10 +2534,11 @@ static int ssl_tls13_process_encrypted_extensions(mbedtls_ssl_context *ssl)
 
 #if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
     /* Snapshot s_attest_base at the ClientHello...EncryptedExtensions checkpoint. */
-    if (handshake->own_evidence_content_format !=
-            MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE ||
-        handshake->peer_evidence_content_format !=
-            MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE) {
+    if (!handshake->s_attest_base_derived &&
+        (handshake->own_evidence_content_format !=
+             MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE ||
+         handshake->peer_evidence_content_format !=
+             MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE)) {
         psa_algorithm_t hash_alg = mbedtls_md_psa_alg_from_type(
             (mbedtls_md_type_t) handshake->ciphersuite_info->mac);
         handshake->attest_binder_len = PSA_HASH_LENGTH(hash_alg);
@@ -2546,6 +2547,7 @@ static int ssl_tls13_process_encrypted_extensions(mbedtls_ssl_context *ssl)
             MBEDTLS_SSL_TLS1_3_LBL_WITH_LEN(s_attest_base),
             handshake->s_attest_base,
             sizeof(handshake->s_attest_base)));
+        handshake->s_attest_base_derived = 1;
     }
 #endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
 
