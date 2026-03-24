@@ -38,7 +38,8 @@ foreach(exe IN LISTS executables)
             ${MBEDTLS_FRAMEWORK_DIR}/tests/programs/query_config.h
             ${CMAKE_CURRENT_BINARY_DIR}/../test/query_config.c)
         list(APPEND extra_sources
-            ${CMAKE_CURRENT_SOURCE_DIR}/../../../attestation/synthetic_provider.c)
+            ${CMAKE_CURRENT_SOURCE_DIR}/../../../attestation/synthetic_provider.c
+            ${CMAKE_CURRENT_SOURCE_DIR}/../../../attestation/tamper_provider.c)
     endif()
     add_executable(${exe}
         ${exe}.c

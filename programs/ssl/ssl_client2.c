@@ -13,6 +13,7 @@
 
 #if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
 #include "synthetic_provider.h"
+#include "tamper_provider.h"
 #endif
 
 #include "test/psa_crypto_helpers.h"
@@ -452,7 +453,8 @@ int main(void)
 
 #if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
 #define USAGE_EARLY_ATTESTATION \
-    "    attestation=none|synthetic  Early attestation provider (default: none)\n"  \
+    "    attestation=none|synthetic|tamper-binder|tamper-key|tamper-truncate\n" \
+    "                                Early attestation provider (default: none)\n"  \
     "    offer_evidence=%%d           Send own Evidence in Certificate (default: 1)\n" \
     "    require_evidence=%%d         Require peer to supply Evidence (default: 0)\n"
 #else
@@ -2054,12 +2056,24 @@ usage:
 #endif /* MBEDTLS_SSL_EARLY_DATA */
 
 #if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
-    if (strcmp(opt.attestation, "synthetic") == 0) {
-        static mbedtls_ssl_attestation_conf ac_cli;
-        ac_cli = *mbedtls_attest_synthetic_provider();
-        ac_cli.offer_evidence        = opt.offer_evidence;
-        ac_cli.require_peer_evidence = opt.require_evidence;
-        mbedtls_ssl_conf_attestation(&conf, &ac_cli);
+    {
+        const mbedtls_ssl_attestation_conf *base = NULL;
+        if (strcmp(opt.attestation, "synthetic") == 0) {
+            base = mbedtls_attest_synthetic_provider();
+        } else if (strcmp(opt.attestation, "tamper-binder") == 0) {
+            base = mbedtls_attest_tamper_binder_provider();
+        } else if (strcmp(opt.attestation, "tamper-key") == 0) {
+            base = mbedtls_attest_tamper_key_provider();
+        } else if (strcmp(opt.attestation, "tamper-truncate") == 0) {
+            base = mbedtls_attest_tamper_truncate_provider();
+        }
+        if (base != NULL) {
+            static mbedtls_ssl_attestation_conf ac_cli;
+            ac_cli = *base;
+            ac_cli.offer_evidence        = opt.offer_evidence;
+            ac_cli.require_peer_evidence = opt.require_evidence;
+            mbedtls_ssl_conf_attestation(&conf, &ac_cli);
+        }
     }
 #endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
 
