@@ -626,10 +626,15 @@ exit:
 
 #if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
     /*
-     * M3-2: Compute the peer's attestation binder from their TIK (end-entity
-     * cert public key).  If we're the server, the peer is the client, so we
-     * use c_attest_base; if we're the client, the peer is the server, so we
-     * use s_attest_base.  Stored for Evidence verification in M3-6.
+     * M3-2/M3-6: Compute the peer's attestation binder from their TIK
+     * (end-entity cert public key), then verify the Evidence they sent.
+     *
+     * Role mapping:
+     *   server (we are server, peer is client): use c_attest_base / c_binder
+     *   client (we are client, peer is server): use s_attest_base / s_binder
+     *
+     * own_evidence_content_format != NONE means the peer offered Evidence
+     * (negotiated in EncryptedExtensions), so we expect and must verify it.
      */
     if (ret == 0 &&
         ssl->session_negotiate->peer_cert != NULL &&
@@ -639,24 +644,71 @@ exit:
         const unsigned char *base = is_server
             ? ssl->handshake->c_attest_base
             : ssl->handshake->s_attest_base;
+        unsigned char *peer_binder = is_server
+            ? ssl->handshake->c_attest_binder
+            : ssl->handshake->s_attest_binder;
+        /* Peer SPKI scratch buffer — needed for both binder and verify. */
+        unsigned char peer_spki_buf[512];
+        const unsigned char *peer_spki;
+        size_t peer_spki_len;
 
-        ret = ssl_tls13_compute_attest_binder_from_pk(
-            ssl,
+        ret = ssl_tls13_extract_spki(
             &ssl->session_negotiate->peer_cert->pk,
-            base, ssl->handshake->attest_binder_len,
-            is_server
-                ? ssl->handshake->c_attest_binder
-                : ssl->handshake->s_attest_binder,
-            ssl->handshake->attest_binder_len);
+            peer_spki_buf, sizeof(peer_spki_buf),
+            &peer_spki, &peer_spki_len);
         if (ret != 0) {
-            MBEDTLS_SSL_DEBUG_RET(1, "ssl_tls13_compute_attest_binder_from_pk"
-                                  " (peer)", ret);
-        } else {
-            MBEDTLS_SSL_DEBUG_BUF(4, "peer attest binder",
-                is_server
-                    ? ssl->handshake->c_attest_binder
-                    : ssl->handshake->s_attest_binder,
-                ssl->handshake->attest_binder_len);
+            MBEDTLS_SSL_DEBUG_RET(1, "ssl_tls13_extract_spki (peer)", ret);
+        }
+
+        if (ret == 0) {
+            ret = ssl_tls13_derive_attest_binder(
+                ssl,
+                base, ssl->handshake->attest_binder_len,
+                peer_spki, peer_spki_len,
+                peer_binder, ssl->handshake->attest_binder_len);
+            if (ret != 0) {
+                MBEDTLS_SSL_DEBUG_RET(1, "ssl_tls13_derive_attest_binder"
+                                      " (peer)", ret);
+            } else {
+                MBEDTLS_SSL_DEBUG_BUF(4, "peer attest binder",
+                                      peer_binder,
+                                      ssl->handshake->attest_binder_len);
+            }
+        }
+
+        /* M3-6: verify the Evidence the peer sent.
+         *
+         * The draft does not assign a specific alert for Evidence verification
+         * failure.  We use decrypt_error (RFC 8446 §6.2): "a handshake
+         * cryptographic operation failed" — the same alert TLS 1.3 uses for
+         * PSK binder mismatches.  unsupported_evidence is reserved for the
+         * negotiation phase (no common evidence type). */
+        if (ret == 0 && ssl->conf->attest_conf != NULL &&
+            ssl->conf->attest_conf->f_verify_evidence != NULL) {
+            if (ssl->handshake->peer_cmw_len == 0) {
+                /* Peer was expected to send Evidence but sent an empty CMW. */
+                MBEDTLS_SSL_DEBUG_MSG(1, ("peer sent empty attestation CMW"));
+                MBEDTLS_SSL_PEND_FATAL_ALERT(
+                    MBEDTLS_SSL_ALERT_MSG_DECRYPT_ERROR,
+                    MBEDTLS_ERR_SSL_DECODE_ERROR);
+                ret = MBEDTLS_ERR_SSL_DECODE_ERROR;
+            } else {
+                ret = ssl->conf->attest_conf->f_verify_evidence(
+                    ssl->conf->attest_conf->p_attest,
+                    peer_binder, ssl->handshake->attest_binder_len,
+                    peer_spki, peer_spki_len,
+                    ssl->handshake->peer_cmw,
+                    ssl->handshake->peer_cmw_len);
+                if (ret != 0) {
+                    MBEDTLS_SSL_DEBUG_RET(1, "f_verify_evidence", ret);
+                    MBEDTLS_SSL_PEND_FATAL_ALERT(
+                        MBEDTLS_SSL_ALERT_MSG_DECRYPT_ERROR,
+                        MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE);
+                    ret = MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE;
+                } else {
+                    MBEDTLS_SSL_DEBUG_MSG(3, ("attestation Evidence verified OK"));
+                }
+            }
         }
     }
 #endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
@@ -807,7 +859,7 @@ cleanup:
 MBEDTLS_CHECK_RETURN_CRITICAL
 #if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
 /*
- * ssl_tls13_write_attestation_ext():
+ * ssl_tls13_write_attestation_ext() — M3-5
  *
  * Write the attestation extension into the first CertificateEntry
  * (draft-fossati-seat-early-attestation-03 §4.1).
@@ -817,37 +869,61 @@ MBEDTLS_CHECK_RETURN_CRITICAL
  *   extension_data_len  (2)  = length of CMW blob
  *   cmw                 (N)  = opaque Evidence blob from provider
  *
- * At M2-6 this is a structural placeholder: the CMW body is empty (N=0).
- * The provider callbacks are wired in M3-5 once binder derivation (M3-1)
- * and TIK extraction (M3-2) are in place.
+ * Calls f_generate_evidence with the pre-computed binder and own SPKI.
+ * On provider failure, sends unsupported_evidence alert and returns an error.
  *
- * Called only when peer_evidence_content_format != _NONE, meaning the
- * peer has requested Evidence from us in a format we support.
+ * \p binder / \p binder_len: the own attest binder (s or c depending on role).
+ * \p spki    / \p spki_len:  own end-entity SPKI DER.
+ *
+ * Called only when peer_evidence_content_format != _NONE (peer requested us).
  */
 MBEDTLS_CHECK_RETURN_CRITICAL
 static int ssl_tls13_write_attestation_ext(mbedtls_ssl_context *ssl,
                                            unsigned char *buf,
                                            unsigned char *end,
+                                           const unsigned char *binder,
+                                           size_t binder_len,
+                                           const unsigned char *spki,
+                                           size_t spki_len,
                                            size_t *out_len)
 {
     unsigned char *p = buf;
+    unsigned char *p_ext_len;
+    unsigned char *cmw_start;
+    size_t cmw_len;
+    int ret;
 
-    (void) ssl;
     *out_len = 0;
 
-    /*
-     * Placeholder: emit the extension header with a zero-length CMW.
-     * extension_type (2) + extension_data_length (2) = 4 bytes.
-     */
+    /* extension_type (2) + extension_data_length (2) */
     MBEDTLS_SSL_CHK_BUF_PTR(p, end, 4);
-
-    MBEDTLS_SSL_DEBUG_MSG(3, ("certificate, adding attestation extension (placeholder)"));
-
     MBEDTLS_PUT_UINT16_BE(MBEDTLS_TLS_EXT_ATTESTATION, p, 0);
-    MBEDTLS_PUT_UINT16_BE(0, p, 2);   /* CMW length: 0 (placeholder) */
+    p_ext_len = p + 2;          /* will patch in CMW length after generation */
     p += 4;
+    cmw_start = p;
 
-    *out_len = 4;
+    ret = ssl->conf->attest_conf->f_generate_evidence(
+        ssl->conf->attest_conf->p_attest,
+        binder, binder_len,
+        spki, spki_len,
+        p, (size_t)(end - p),
+        &cmw_len);
+    if (ret != 0) {
+        MBEDTLS_SSL_DEBUG_RET(1, "f_generate_evidence", ret);
+        MBEDTLS_SSL_PEND_FATAL_ALERT(
+            MBEDTLS_SSL_ALERT_MSG_INTERNAL_ERROR,
+            MBEDTLS_ERR_SSL_INTERNAL_ERROR);
+        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+    }
+
+    MBEDTLS_SSL_DEBUG_MSG(3, ("certificate, adding attestation extension (%u bytes CMW)",
+                              (unsigned) cmw_len));
+    MBEDTLS_SSL_DEBUG_BUF(4, "attestation CMW", cmw_start, cmw_len);
+
+    MBEDTLS_PUT_UINT16_BE(cmw_len, p_ext_len, 0);
+    p += cmw_len;
+
+    *out_len = (size_t)(p - buf);
 
     mbedtls_ssl_tls13_set_hs_sent_ext_mask(ssl, MBEDTLS_TLS_EXT_ATTESTATION);
 
@@ -892,13 +968,69 @@ static int ssl_tls13_write_certificate_body(mbedtls_ssl_context *ssl,
 
 #if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
     {
-        /* Determine once whether we should write the attestation extension
-         * in the first CertificateEntry.  Condition: the peer has requested
-         * Evidence from us in a supported format (§4.1). */
+        /*
+         * M3-5: Compute our own attestation binder and extract our SPKI
+         * *before* the cert loop so they are available when writing the
+         * attestation extension in the first CertificateEntry.
+         *
+         * write_attest_ext is true when the peer has requested Evidence from
+         * us in a supported format (§4.1).
+         */
         int write_attest_ext =
             (ssl->handshake->peer_evidence_content_format !=
              MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE);
         int first_entry = 1;
+        const unsigned char *own_binder = NULL;
+        size_t own_binder_len = 0;
+        /* SPKI scratch buffer: P-521 SPKI ≈ 158 bytes; 512 is safe. */
+        unsigned char own_spki_buf[512];
+        const unsigned char *own_spki = NULL;
+        size_t own_spki_len = 0;
+
+        if (write_attest_ext) {
+            const mbedtls_x509_crt *own_crt = mbedtls_ssl_own_cert(ssl);
+            if (own_crt == NULL) {
+                MBEDTLS_SSL_DEBUG_MSG(3, ("no own cert; skipping attestation "
+                                          "extension"));
+                write_attest_ext = 0;
+            } else {
+                int is_server = (ssl->conf->endpoint == MBEDTLS_SSL_IS_SERVER);
+                const unsigned char *base = is_server
+                    ? ssl->handshake->s_attest_base
+                    : ssl->handshake->c_attest_base;
+                unsigned char *binder_out = is_server
+                    ? ssl->handshake->s_attest_binder
+                    : ssl->handshake->c_attest_binder;
+
+                /* Extract SPKI first (needed for binder and for Evidence). */
+                int ret = ssl_tls13_extract_spki(
+                    &own_crt->pk,
+                    own_spki_buf, sizeof(own_spki_buf),
+                    &own_spki, &own_spki_len);
+                if (ret != 0) {
+                    MBEDTLS_SSL_DEBUG_RET(1, "ssl_tls13_extract_spki", ret);
+                    return ret;
+                }
+
+                /* Derive the own binder. */
+                ret = ssl_tls13_derive_attest_binder(
+                    ssl,
+                    base, ssl->handshake->attest_binder_len,
+                    own_spki, own_spki_len,
+                    binder_out, ssl->handshake->attest_binder_len);
+                if (ret != 0) {
+                    MBEDTLS_SSL_DEBUG_RET(1, "ssl_tls13_derive_attest_binder"
+                                          " (own)", ret);
+                    return ret;
+                }
+                MBEDTLS_SSL_DEBUG_BUF(4, "own attest binder",
+                                      binder_out,
+                                      ssl->handshake->attest_binder_len);
+
+                own_binder     = binder_out;
+                own_binder_len = ssl->handshake->attest_binder_len;
+            }
+        }
 #endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
 
     while (crt != NULL) {
@@ -923,7 +1055,10 @@ static int ssl_tls13_write_certificate_body(mbedtls_ssl_context *ssl,
             p_exts_len = p;
             p += 2;
 
-            ret = ssl_tls13_write_attestation_ext(ssl, p, end, &ext_len);
+            ret = ssl_tls13_write_attestation_ext(ssl, p, end,
+                                                  own_binder, own_binder_len,
+                                                  own_spki, own_spki_len,
+                                                  &ext_len);
             if (ret != 0) {
                 return ret;
             }
@@ -947,7 +1082,7 @@ static int ssl_tls13_write_certificate_body(mbedtls_ssl_context *ssl,
     }
 
 #if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
-    } /* end scope for write_attest_ext / first_entry */
+    } /* end scope for write_attest_ext / first_entry / own_spki_buf */
 #endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
 
     MBEDTLS_PUT_UINT24_BE(p - p_certificate_list_len - 3,
@@ -957,49 +1092,6 @@ static int ssl_tls13_write_certificate_body(mbedtls_ssl_context *ssl,
 
     MBEDTLS_SSL_PRINT_EXTS(
         3, MBEDTLS_SSL_HS_CERTIFICATE, ssl->handshake->sent_extensions);
-
-#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
-    /*
-     * M3-2: Compute our own attestation binder from our TIK (end-entity cert
-     * public key).  Server uses s_attest_base; client uses c_attest_base.
-     * The binder is passed to the Evidence provider in M3-5.
-     */
-    if (ssl->handshake->peer_evidence_content_format !=
-            MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE) {
-        const mbedtls_x509_crt *own_crt = mbedtls_ssl_own_cert(ssl);
-        if (own_crt == NULL) {
-            /* No TLS identity key — binder cannot be computed (M3-3 will
-             * require a cert when attestation is active). */
-            MBEDTLS_SSL_DEBUG_MSG(3, ("no own cert; skipping own binder "
-                                      "computation"));
-        } else {
-
-        int is_server = (ssl->conf->endpoint == MBEDTLS_SSL_IS_SERVER);
-        const unsigned char *base = is_server
-            ? ssl->handshake->s_attest_base
-            : ssl->handshake->c_attest_base;
-
-        int ret = ssl_tls13_compute_attest_binder_from_pk(
-            ssl,
-            &own_crt->pk,
-            base, ssl->handshake->attest_binder_len,
-            is_server
-                ? ssl->handshake->s_attest_binder
-                : ssl->handshake->c_attest_binder,
-            ssl->handshake->attest_binder_len);
-        if (ret != 0) {
-            MBEDTLS_SSL_DEBUG_RET(1, "ssl_tls13_compute_attest_binder_from_pk"
-                                  " (own)", ret);
-            return ret;
-        }
-        MBEDTLS_SSL_DEBUG_BUF(4, "own attest binder",
-            is_server
-                ? ssl->handshake->s_attest_binder
-                : ssl->handshake->c_attest_binder,
-            ssl->handshake->attest_binder_len);
-        } /* own_crt != NULL */
-    }
-#endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
 
     return 0;
 }

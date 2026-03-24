@@ -2051,6 +2051,20 @@ int ssl_tls13_derive_attest_binder(
  * returns the number of bytes written (positive) or a negative error code.
  * The DER starts at buf + sizeof(buf) - ret.
  */
+int ssl_tls13_extract_spki(const mbedtls_pk_context *pk,
+                           unsigned char *buf, size_t buf_size,
+                           const unsigned char **out, size_t *out_len)
+{
+    int len = mbedtls_pk_write_pubkey_der(pk, buf, buf_size);
+    if (len < 0) {
+        return len;
+    }
+    /* mbedtls_pk_write_pubkey_der() writes to the END of buf. */
+    *out     = buf + buf_size - (size_t) len;
+    *out_len = (size_t) len;
+    return 0;
+}
+
 int ssl_tls13_compute_attest_binder_from_pk(
     mbedtls_ssl_context *ssl,
     const mbedtls_pk_context *pk,
@@ -2059,19 +2073,18 @@ int ssl_tls13_compute_attest_binder_from_pk(
 {
     /* P-521 SPKI is the largest we'll see (~158 bytes); 512 is safe headroom. */
     unsigned char spki_buf[512];
-    int spki_len;
+    const unsigned char *spki;
+    size_t spki_len;
+    int ret;
 
-    spki_len = mbedtls_pk_write_pubkey_der(pk, spki_buf, sizeof(spki_buf));
-    if (spki_len < 0) {
-        return spki_len;
+    ret = ssl_tls13_extract_spki(pk, spki_buf, sizeof(spki_buf),
+                                 &spki, &spki_len);
+    if (ret != 0) {
+        return ret;
     }
 
-    /* DER is written at the end of spki_buf. */
-    return ssl_tls13_derive_attest_binder(
-        ssl,
-        base, base_len,
-        spki_buf + sizeof(spki_buf) - spki_len, (size_t) spki_len,
-        out, out_len);
+    return ssl_tls13_derive_attest_binder(ssl, base, base_len,
+                                          spki, spki_len, out, out_len);
 }
 #endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
 

@@ -759,6 +759,24 @@ int ssl_tls13_attest_binder_raw(
     const unsigned char *base, size_t base_len,
     const unsigned char *tik_pub_der, size_t tik_pub_der_len,
     unsigned char *out, size_t out_len);
+
+/**
+ * \brief Extract the SubjectPublicKeyInfo DER from a pk context.
+ *
+ * mbedtls_pk_write_pubkey_der() writes to the END of the supplied buffer;
+ * this wrapper returns a pointer to the DER start within that buffer.
+ *
+ * \param pk          Public key to encode.
+ * \param buf         Scratch buffer; must be large enough for the SPKI.
+ * \param buf_size    Size of \p buf (512 bytes is sufficient for P-521).
+ * \param out         Set to the start of the DER within \p buf on success.
+ * \param out_len     Set to the DER length on success.
+ *
+ * \return 0 on success, negative mbedtls error code on failure.
+ */
+int ssl_tls13_extract_spki(const mbedtls_pk_context *pk,
+                           unsigned char *buf, size_t buf_size,
+                           const unsigned char **out, size_t *out_len);
 #endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
 
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
