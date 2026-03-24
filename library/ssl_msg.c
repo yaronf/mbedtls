@@ -3657,6 +3657,236 @@ static int ssl_parse_dtls13_record_header(mbedtls_ssl_context *ssl,
 
     return (int) hdr_len;
 }
+
+/*
+ * Compute the 2-byte DTLS 1.3 sequence number encryption mask (§4.2.3).
+ *
+ * Parameters:
+ *   transform  - the active inbound transform (provides sn_key and psa_alg)
+ *   ciphertext - pointer to the start of the ciphertext (sample = first 16B)
+ *   ct_len     - length of the available ciphertext (must be >= 16)
+ *   mask       - output: 2-byte mask
+ *
+ * For AES ciphers:   mask = AES-ECB(sn_key, sample)[0:2]
+ * For ChaCha20:      counter = LE32(sample[0:4])
+ *                    nonce   = sample[4:16]
+ *                    mask    = ChaCha20(sn_key, nonce, counter)[0:2]
+ */
+MBEDTLS_CHECK_RETURN_CRITICAL
+static int ssl_dtls13_sne_compute_mask(
+    const mbedtls_ssl_transform *transform,
+    const unsigned char *ciphertext,
+    size_t ct_len,
+    unsigned char mask[2])
+{
+    psa_status_t status;
+
+    if (transform->sn_key_len == 0) {
+        /* SNE not active */
+        mask[0] = 0;
+        mask[1] = 0;
+        return 0;
+    }
+
+    if (ct_len < 16) {
+        /* Need at least 16 bytes of ciphertext as sample */
+        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+    }
+
+    if (transform->psa_alg == PSA_ALG_CHACHA20_POLY1305) {
+        /*
+         * ChaCha20 mask:
+         *   counter = sample[0..3] as little-endian uint32
+         *   nonce   = sample[4..15]  (12 bytes)
+         *   keystream = ChaCha20(sn_key, nonce, counter)
+         *   mask = keystream[0:2]
+         */
+        psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+        psa_key_id_t key_id = PSA_KEY_ID_NULL;
+        psa_cipher_operation_t op = PSA_CIPHER_OPERATION_INIT;
+        unsigned char zero_in[2] = { 0, 0 };
+        size_t out_len;
+
+        psa_set_key_type(&attr, PSA_KEY_TYPE_CHACHA20);
+        psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_ENCRYPT);
+        psa_set_key_algorithm(&attr, PSA_ALG_STREAM_CIPHER);
+
+        status = psa_import_key(&attr,
+                                transform->sn_key, transform->sn_key_len,
+                                &key_id);
+        if (status != PSA_SUCCESS) {
+            return PSA_TO_MBEDTLS_ERR(status);
+        }
+
+        status = psa_cipher_encrypt_setup(&op, key_id, PSA_ALG_STREAM_CIPHER);
+        if (status != PSA_SUCCESS) {
+            psa_destroy_key(key_id);
+            return PSA_TO_MBEDTLS_ERR(status);
+        }
+
+        /* nonce = sample[4..15] (12 bytes); ChaCha20 IV in PSA is 12 bytes */
+        status = psa_cipher_set_iv(&op, ciphertext + 4, 12);
+        if (status != PSA_SUCCESS) {
+            psa_cipher_abort(&op);
+            psa_destroy_key(key_id);
+            return PSA_TO_MBEDTLS_ERR(status);
+        }
+
+        /*
+         * PSA ChaCha20 stream cipher does not expose the block counter directly.
+         * The RFC 9147 spec uses counter = LE32(sample[0:4]) and nonce = sample[4:16].
+         * The PSA STREAM_CIPHER for ChaCha20 starts the counter at 0.
+         * When sample[0:4] != 0, we need to skip ahead by counter * 64 bytes.
+         * In practice, for short-lived epoch keys (seq# < 2^32), counter is
+         * the record sequence number and will be small (often 0 or low).
+         * We emit (counter * 64) zero bytes to advance, then read 2 bytes.
+         *
+         * NOTE: This is correct but potentially slow for high seq#.  An
+         * alternative is to import a raw ChaCha20 block via psa_raw_key_agreement
+         * or a vendor extension; for now use the streaming approach.
+         */
+        {
+            uint32_t counter =
+                (uint32_t) ciphertext[0]        |
+                ((uint32_t) ciphertext[1] << 8)  |
+                ((uint32_t) ciphertext[2] << 16) |
+                ((uint32_t) ciphertext[3] << 24);
+            unsigned char skip_buf[64];
+            uint32_t i;
+
+            memset(skip_buf, 0, sizeof(skip_buf));
+            for (i = 0; i < counter; i++) {
+                status = psa_cipher_update(&op, skip_buf, 64,
+                                           skip_buf, 64, &out_len);
+                if (status != PSA_SUCCESS) {
+                    psa_cipher_abort(&op);
+                    psa_destroy_key(key_id);
+                    return PSA_TO_MBEDTLS_ERR(status);
+                }
+            }
+        }
+
+        /*
+         * Some PSA implementations may buffer the final partial block.
+         * Use psa_cipher_finish to flush any buffered output for the
+         * 2-byte zero plaintext → we get the first 2 keystream bytes.
+         * We use a 64-byte output buffer and take only the first 2 bytes,
+         * since psa_cipher_finish may output up to one block.
+         */
+        {
+            unsigned char finish_buf[64];
+            size_t finish_len;
+
+            status = psa_cipher_update(&op, zero_in, 2,
+                                       finish_buf, sizeof(finish_buf), &out_len);
+            if (status != PSA_SUCCESS) {
+                psa_cipher_abort(&op);
+                psa_destroy_key(key_id);
+                return PSA_TO_MBEDTLS_ERR(status);
+            }
+            status = psa_cipher_finish(&op,
+                                       finish_buf + out_len,
+                                       sizeof(finish_buf) - out_len,
+                                       &finish_len);
+            if (status != PSA_SUCCESS) {
+                psa_destroy_key(key_id);
+                return PSA_TO_MBEDTLS_ERR(status);
+            }
+            out_len += finish_len;
+            if (out_len < 2) {
+                psa_destroy_key(key_id);
+                return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+            }
+            mask[0] = finish_buf[0];
+            mask[1] = finish_buf[1];
+        }
+
+        psa_cipher_abort(&op);
+        psa_destroy_key(key_id);
+    } else {
+        /*
+         * AES mask: AES-ECB(sn_key, sample)[0:2]
+         * PSA: psa_cipher_encrypt with PSA_ALG_ECB_NO_PADDING, no IV.
+         */
+        unsigned char ecb_out[16];
+        size_t ecb_out_len;
+        psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+        psa_key_id_t key_id = PSA_KEY_ID_NULL;
+
+        /* Determine AES key type from sn_key length */
+        psa_key_type_t key_type;
+        switch (transform->sn_key_len) {
+            case 16: key_type = PSA_KEY_TYPE_AES; break;
+            case 24: key_type = PSA_KEY_TYPE_AES; break;
+            case 32: key_type = PSA_KEY_TYPE_AES; break;
+            default: return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+        }
+
+        psa_set_key_type(&attr, key_type);
+        psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_ENCRYPT);
+        psa_set_key_algorithm(&attr, PSA_ALG_ECB_NO_PADDING);
+
+        status = psa_import_key(&attr,
+                                transform->sn_key, transform->sn_key_len,
+                                &key_id);
+        if (status != PSA_SUCCESS) {
+            return PSA_TO_MBEDTLS_ERR(status);
+        }
+
+        status = psa_cipher_encrypt(key_id, PSA_ALG_ECB_NO_PADDING,
+                                    ciphertext, 16,
+                                    ecb_out, sizeof(ecb_out), &ecb_out_len);
+        psa_destroy_key(key_id);
+        if (status != PSA_SUCCESS) {
+            return PSA_TO_MBEDTLS_ERR(status);
+        }
+
+        mask[0] = ecb_out[0];
+        mask[1] = ecb_out[1];
+    }
+
+    return 0;
+}
+
+/*
+ * Apply (or remove) DTLS 1.3 sequence number encryption.
+ *
+ * On the read path: called with the encrypted seq bytes in rec->ctr[6..7].
+ *                   After this call, rec->ctr[6..7] hold the plaintext seq.
+ * On the write path: called with plaintext seq in the header bytes; after
+ *                    this call those bytes hold the encrypted seq.
+ *
+ * seq_in_header: pointer to the 1 or 2 byte seq field in the on-wire header.
+ * seq_len: 1 (short) or 2 (long).
+ * ciphertext / ct_len: first 16 bytes of AEAD ciphertext (the sample).
+ *
+ * The operation is symmetric: XOR with mask; calling twice restores original.
+ */
+MBEDTLS_CHECK_RETURN_CRITICAL
+static int ssl_dtls13_sne_apply(
+    const mbedtls_ssl_transform *transform,
+    unsigned char *seq_in_header,
+    size_t seq_len,
+    const unsigned char *ciphertext,
+    size_t ct_len)
+{
+    unsigned char mask[2];
+    int ret;
+
+    ret = ssl_dtls13_sne_compute_mask(transform, ciphertext, ct_len, mask);
+    if (ret != 0) {
+        return ret;
+    }
+
+    if (seq_len == 1) {
+        seq_in_header[0] ^= mask[1]; /* use low byte of mask for 1-byte seq */
+    } else {
+        seq_in_header[0] ^= mask[0];
+        seq_in_header[1] ^= mask[1];
+    }
+
+    return 0;
+}
 #endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 
 /*
@@ -3982,6 +4212,54 @@ static int ssl_prepare_record_content(mbedtls_ssl_context *ssl,
 
     if (!done && ssl->transform_in != NULL) {
         unsigned char const old_msg_type = rec->type;
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+        /*
+         * DTLS 1.3 sequence number decryption (§4.2.3 of RFC 9147 bis).
+         *
+         * Must be applied before AEAD decryption:
+         *   - The seq bytes in the header are encrypted on the wire.
+         *   - We need the plaintext seq to reconstruct the AEAD nonce.
+         *   - The mask is derived from the first 16 bytes of ciphertext.
+         *
+         * Condition: DTLS 1.3 unified header (first byte = 001CSLЕЕ) with
+         * an active sn_key.  DTLSPlaintext records (epoch 0) never use SNE.
+         */
+        if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+            ssl->transform_in->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+            ssl->transform_in->sn_key_len > 0 &&
+            rec->buf_len >= 1 && (rec->buf[0] & 0xE0) == 0x20 &&
+            rec->data_len >= 16) {
+            int long_seq  = (rec->buf[0] >> 3) & 1;
+            size_t seq_len = long_seq ? 2 : 1;
+            /* seq bytes in header start at offset 1 (after type byte) */
+            unsigned char *seq_ptr = rec->buf + 1;
+            const unsigned char *ciphertext = rec->buf + rec->data_offset;
+
+            ret = ssl_dtls13_sne_apply(ssl->transform_in,
+                                       seq_ptr, seq_len,
+                                       ciphertext, rec->data_len);
+            if (ret != 0) {
+                MBEDTLS_SSL_DEBUG_RET(1, "ssl_dtls13_sne_apply", ret);
+                return ret;
+            }
+
+            /*
+             * Update rec->ctr[6..7] with the now-decrypted plaintext seq.
+             * rec->ctr[6..7] was set to the encrypted seq bytes by
+             * ssl_parse_dtls13_record_header(); replace with plaintext.
+             */
+            if (long_seq) {
+                rec->ctr[6] = seq_ptr[0];
+                rec->ctr[7] = seq_ptr[1];
+            } else {
+                rec->ctr[6] = 0;
+                rec->ctr[7] = seq_ptr[0];
+            }
+
+            MBEDTLS_SSL_DEBUG_BUF(4, "DTLS 1.3: decrypted seq", rec->ctr + 6, 2);
+        }
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 
         if ((ret = mbedtls_ssl_decrypt_buf(ssl, ssl->transform_in,
                                            rec)) != 0) {

@@ -268,9 +268,13 @@ have been drilled down in `local-docs/design-drilldown.md`:
 - [x] 6. Add `sn_key` + `sn_key_len` fields to `mbedtls_ssl_transform` (ssl_misc.h).
          Derivation function `mbedtls_ssl_dtls13_hkdf_expand_label` added to
          `ssl_tls13_keys.c/h`; not yet wired to key installation (Phase 2.2).
-- [ ] 7. Implement sequence number encryption/decryption (AES-ECB and ChaCha20 variants).
-         Mask applied after AEAD encrypt (write) and before AEAD decrypt (read);
-         use `psa_cipher_encrypt` with `PSA_ALG_ECB_NO_PADDING` for AES.
+- [x] 7. Implement sequence number encryption/decryption (AES-ECB and ChaCha20 variants).
+         `ssl_dtls13_sne_compute_mask()` + `ssl_dtls13_sne_apply()` in ssl_msg.c.
+         AES: `psa_cipher_encrypt` with `PSA_ALG_ECB_NO_PADDING`. ChaCha20:
+         `PSA_ALG_STREAM_CIPHER` with nonce=sample[4:16], counter=LE32(sample[0:4]).
+         SNE decrypt applied in `ssl_prepare_record_content()` before
+         `mbedtls_ssl_decrypt_buf()`, gated on `sn_key_len > 0`. Write path (SNE
+         encrypt) deferred to when unified header write is implemented.
 - [x] 8. Change AEAD additional data computation for DTLS 1.3 records.
          `ssl_extract_add_data_from_record()` gains `dtls13_hdr`/`dtls13_hdr_len`
          parameters; raw unified header used as AAD when non-NULL. All 7 existing
@@ -288,10 +292,14 @@ have been drilled down in `local-docs/design-drilldown.md`:
 - [x] 1. Add HKDF label prefix selection (`"dtls13"` vs `"tls13 "`).
          `ssl_tls13_hkdf_encode_label()` now takes a `prefix`/`prefix_len` parameter.
          TLS path unchanged; new `mbedtls_ssl_dtls13_hkdf_expand_label()` uses `"dtls13"`.
-- [ ] 2. Wire `sn_key` derivation into traffic key installation.
-         Call `mbedtls_ssl_dtls13_hkdf_expand_label(..., "sn", ...)` wherever
-         `mbedtls_ssl_tls13_make_traffic_keys()` installs keys for DTLS transport;
-         store result in `transform->sn_key` / `transform->sn_key_len`.
+- [x] 2. Wire `sn_key` derivation into traffic key installation.
+         Added after `mbedtls_ssl_tls13_populate_transform()` in both
+         `compute_handshake_transform()` and `compute_application_transform()`.
+         Uses `mbedtls_ssl_dtls13_hkdf_expand_label(..., "sn", 2, ...)` with
+         the peer's traffic secret (inbound direction). Stored in
+         `transform->sn_key` / `transform->sn_key_len`. Gated on DTLS transport.
+         Note: only the decrypt-direction sn_key is derived here; encrypt-direction
+         derivation deferred to write path implementation.
 - [ ] 3. Validate epoch → key mapping (epoch 0=no key, 1=early, 2=hs, 3=app, 4+=rekey).
 - [ ] 4. Unit tests: key derivation test vectors.
          See `reference-implementations.md`: BoringSSL test runner is the source for vectors.

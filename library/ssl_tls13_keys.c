@@ -1758,6 +1758,60 @@ int mbedtls_ssl_tls13_compute_handshake_transform(mbedtls_ssl_context *ssl)
         MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_tls13_populate_transform", ret);
         goto cleanup;
     }
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+    /*
+     * DTLS 1.3: derive the sequence-number encryption key (sn_key) for the
+     * inbound direction from the peer's handshake traffic secret.
+     *
+     * sn_key = HKDF-Expand-Label(secret, "sn", "", key_length)  §4.2.3
+     *
+     * We store the decrypt-direction sn_key (used when reading incoming
+     * records).  The encrypt-direction key is derived from our own write
+     * secret; that will be stored in a separate field when the write path
+     * is implemented.
+     */
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+        psa_algorithm_t hs_hash_alg;
+        size_t hs_key_len = 0, hs_iv_len = 0;
+        const unsigned char *inbound_secret;
+        size_t inbound_secret_len;
+
+        hs_hash_alg = mbedtls_md_psa_alg_from_type(
+            (mbedtls_md_type_t) handshake->ciphersuite_info->mac);
+
+        ret = ssl_tls13_get_cipher_key_info(handshake->ciphersuite_info,
+                                            &hs_key_len, &hs_iv_len);
+        if (ret != 0) {
+            MBEDTLS_SSL_DEBUG_RET(1, "ssl_tls13_get_cipher_key_info", ret);
+            goto cleanup;
+        }
+
+        /* Inbound secret = peer's write secret */
+        if (ssl->conf->endpoint == MBEDTLS_SSL_IS_CLIENT) {
+            inbound_secret = handshake->tls13_hs_secrets.server_handshake_traffic_secret;
+        } else {
+            inbound_secret = handshake->tls13_hs_secrets.client_handshake_traffic_secret;
+        }
+        inbound_secret_len = PSA_HASH_LENGTH(hs_hash_alg);
+
+        ret = mbedtls_ssl_dtls13_hkdf_expand_label(
+            hs_hash_alg,
+            inbound_secret, inbound_secret_len,
+            (const unsigned char *) "sn", 2,
+            NULL, 0,
+            transform_handshake->sn_key, hs_key_len);
+        if (ret != 0) {
+            MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_dtls13_hkdf_expand_label(sn)", ret);
+            goto cleanup;
+        }
+        transform_handshake->sn_key_len = hs_key_len;
+
+        MBEDTLS_SSL_DEBUG_BUF(4, "DTLS 1.3 handshake sn_key (dec)",
+                              transform_handshake->sn_key, hs_key_len);
+    }
+#endif /* MBEDTLS_SSL_PROTO_DTLS */
+
     handshake->transform_handshake = transform_handshake;
 
 cleanup:
@@ -1849,6 +1903,54 @@ int mbedtls_ssl_tls13_compute_application_transform(mbedtls_ssl_context *ssl)
         MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_tls13_populate_transform", ret);
         goto cleanup;
     }
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+    /*
+     * DTLS 1.3: derive the inbound sequence-number encryption key (sn_key)
+     * from the peer's application traffic secret.  §4.2.3.
+     */
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+        const mbedtls_ssl_ciphersuite_t *app_cs = ssl->handshake->ciphersuite_info;
+        psa_algorithm_t app_hash_alg;
+        size_t app_key_len = 0, app_iv_len = 0;
+        const mbedtls_ssl_tls13_application_secrets *app_secrets =
+            &ssl->session_negotiate->app_secrets;
+        const unsigned char *inbound_secret;
+        size_t inbound_secret_len;
+
+        app_hash_alg = mbedtls_md_psa_alg_from_type(
+            (mbedtls_md_type_t) app_cs->mac);
+
+        ret = ssl_tls13_get_cipher_key_info(app_cs, &app_key_len, &app_iv_len);
+        if (ret != 0) {
+            MBEDTLS_SSL_DEBUG_RET(1, "ssl_tls13_get_cipher_key_info", ret);
+            goto cleanup;
+        }
+
+        /* Inbound secret = peer's write secret */
+        if (ssl->conf->endpoint == MBEDTLS_SSL_IS_CLIENT) {
+            inbound_secret = app_secrets->server_application_traffic_secret_N;
+        } else {
+            inbound_secret = app_secrets->client_application_traffic_secret_N;
+        }
+        inbound_secret_len = PSA_HASH_LENGTH(app_hash_alg);
+
+        ret = mbedtls_ssl_dtls13_hkdf_expand_label(
+            app_hash_alg,
+            inbound_secret, inbound_secret_len,
+            (const unsigned char *) "sn", 2,
+            NULL, 0,
+            transform_application->sn_key, app_key_len);
+        if (ret != 0) {
+            MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_dtls13_hkdf_expand_label(sn)", ret);
+            goto cleanup;
+        }
+        transform_application->sn_key_len = app_key_len;
+
+        MBEDTLS_SSL_DEBUG_BUF(4, "DTLS 1.3 application sn_key (dec)",
+                              transform_application->sn_key, app_key_len);
+    }
+#endif /* MBEDTLS_SSL_PROTO_DTLS */
 
     ssl->transform_application = transform_application;
 
