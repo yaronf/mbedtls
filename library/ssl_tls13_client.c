@@ -1262,8 +1262,9 @@ static int ssl_tls13_write_evidence_request_ext(mbedtls_ssl_context *ssl,
     *out_len = (size_t) (p - buf);
 
     mbedtls_ssl_tls13_set_hs_sent_ext_mask(ssl, MBEDTLS_TLS_EXT_EVIDENCE_REQUEST);
-    /* Sending evidence_request means we expect an attestation extension in
-     * the peer's Certificate — pre-authorise it for check_received_extension. */
+    /* evidence_proposal in EE is the server's response to evidence_request
+     * (it tells us which format it chose).  Pre-authorise both here. */
+    mbedtls_ssl_tls13_set_hs_sent_ext_mask(ssl, MBEDTLS_TLS_EXT_EVIDENCE_PROPOSAL);
     mbedtls_ssl_tls13_set_hs_sent_ext_mask(ssl, MBEDTLS_TLS_EXT_ATTESTATION);
 
     return 0;

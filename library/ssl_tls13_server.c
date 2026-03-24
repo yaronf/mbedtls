@@ -3172,6 +3172,31 @@ static int ssl_tls13_write_server_finished(mbedtls_ssl_context *ssl)
         return ret;
     }
 
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+    /* Snapshot c_attest_base at the CH...ServerFinished transcript checkpoint
+     * (§5.1.1).  Must be derived after ServerFinished is written (so it is
+     * included in the transcript) and before parsing the client Certificate
+     * (where we verify the peer's binder using c_attest_base). */
+    if (ssl->handshake->peer_evidence_content_format !=
+            MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE ||
+        ssl->handshake->own_evidence_content_format !=
+            MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE) {
+        ret = ssl_tls13_derive_attest_base(
+            ssl,
+            MBEDTLS_SSL_TLS1_3_LBL_WITH_LEN(c_attest_base),
+            ssl->handshake->c_attest_base,
+            sizeof(ssl->handshake->c_attest_base));
+        if (ret != 0) {
+            MBEDTLS_SSL_DEBUG_RET(
+                1, "ssl_tls13_derive_attest_base(c_attest_base)", ret);
+            MBEDTLS_SSL_PEND_FATAL_ALERT(
+                MBEDTLS_SSL_ALERT_MSG_HANDSHAKE_FAILURE,
+                MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE);
+            return ret;
+        }
+    }
+#endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
+
     ret = mbedtls_ssl_tls13_compute_application_transform(ssl);
     if (ret != 0) {
         MBEDTLS_SSL_PEND_FATAL_ALERT(

@@ -1972,14 +1972,14 @@ int ssl_tls13_attest_binder_raw(
      * HkdfLabel = uint16(hash_len) || uint8(label_len) || label ||
      *             uint8(ctx_len) || ctx
      * label = "tls13 " (6) + "attestation" (11) = 17 bytes
-     * ctx   = SPKI DER, up to ~158 bytes (P-521)
-     * Total: 2 + 1 + 17 + 1 + 158 = 179; use 256 for headroom.
+     * ctx   = SPKI DER: EC up to ~158 bytes (P-521), RSA-4096 ~550 bytes
+     * Total worst-case: 2 + 1 + 17 + 1 + 550 = 571; use 768 for headroom.
      */
     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
     size_t hash_len = PSA_HASH_LENGTH(hash_alg);
     psa_status_t status;
     psa_key_derivation_operation_t op = PSA_KEY_DERIVATION_OPERATION_INIT;
-    unsigned char hkdf_label[256];
+    unsigned char hkdf_label[768];
     size_t hkdf_label_len;
 
     if (base_len < hash_len || out_len < hash_len) {
@@ -2071,8 +2071,8 @@ int ssl_tls13_compute_attest_binder_from_pk(
     const unsigned char *base, size_t base_len,
     unsigned char *out, size_t out_len)
 {
-    /* P-521 SPKI is the largest we'll see (~158 bytes); 512 is safe headroom. */
-    unsigned char spki_buf[512];
+    /* RSA-4096 SPKI is the largest we'll see (~550 bytes); 768 is safe headroom. */
+    unsigned char spki_buf[768];
     const unsigned char *spki;
     size_t spki_len;
     int ret;

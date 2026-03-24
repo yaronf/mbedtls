@@ -37,6 +37,8 @@ foreach(exe IN LISTS executables)
             ssl_test_lib.c
             ${MBEDTLS_FRAMEWORK_DIR}/tests/programs/query_config.h
             ${CMAKE_CURRENT_BINARY_DIR}/../test/query_config.c)
+        list(APPEND extra_sources
+            ${CMAKE_CURRENT_SOURCE_DIR}/../../../attestation/synthetic_provider.c)
     endif()
     add_executable(${exe}
         ${exe}.c
@@ -48,6 +50,10 @@ foreach(exe IN LISTS executables)
     target_include_directories(${exe} PRIVATE ${MBEDTLS_FRAMEWORK_DIR}/tests/programs
                                               ${MBEDTLS_FRAMEWORK_DIR}/tests/include
                                               ${CMAKE_CURRENT_SOURCE_DIR}/../../tests/include)
+    if(exe STREQUAL "ssl_client2" OR exe STREQUAL "ssl_server2")
+        target_include_directories(${exe} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/../../../attestation)
+    endif()
     if(exe STREQUAL "ssl_client2" OR exe STREQUAL "ssl_server2")
         if(GEN_FILES)
             add_dependencies(${exe} generate_query_config_c)

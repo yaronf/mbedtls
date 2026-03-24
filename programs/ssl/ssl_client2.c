@@ -11,6 +11,10 @@
 
 #include "ssl_test_lib.h"
 
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+#include "synthetic_provider.h"
+#endif
+
 #include "test/psa_crypto_helpers.h"
 
 #if defined(MBEDTLS_SSL_TEST_IMPOSSIBLE)
@@ -110,6 +114,9 @@ int main(void)
 #define DFL_SRTP_FORCE_PROFILE  0
 #define DFL_SRTP_MKI            ""
 #define DFL_KEY_OPAQUE_ALG      "none"
+#define DFL_ATTESTATION         "none"
+#define DFL_OFFER_EVIDENCE      1
+#define DFL_REQUIRE_EVIDENCE    0
 
 #define GET_REQUEST "GET %s HTTP/1.0\r\nHost: %s\r\nExtra-header: "
 #define GET_REQUEST_END "\r\n\r\n"
@@ -443,6 +450,15 @@ int main(void)
 #define TLS1_3_VERSION_OPTIONS  ""
 #endif /* !MBEDTLS_SSL_PROTO_TLS1_3 */
 
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+#define USAGE_EARLY_ATTESTATION \
+    "    attestation=none|synthetic  Early attestation provider (default: none)\n"  \
+    "    offer_evidence=%%d           Send own Evidence in Certificate (default: 1)\n" \
+    "    require_evidence=%%d         Require peer to supply Evidence (default: 0)\n"
+#else
+#define USAGE_EARLY_ATTESTATION ""
+#endif
+
 #define USAGE4 \
     "    allow_sha1=%%d       default: 0\n"                                   \
     "    min_version=%%s      default: (library default: tls12)\n"            \
@@ -458,6 +474,7 @@ int main(void)
     "                                is printed if it is defined\n"           \
     USAGE_SERIALIZATION                                                       \
     USAGE_EXPORT                                                              \
+    USAGE_EARLY_ATTESTATION                                                   \
     "\n"
 
 /*
@@ -551,6 +568,11 @@ struct options {
     const char *mki;            /* The dtls mki value to use                */
     const char *key_opaque_alg1; /* Allowed opaque key alg 1                */
     const char *key_opaque_alg2; /* Allowed Opaque key alg 2                */
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+    const char *attestation;      /* attestation provider: none|synthetic   */
+    int offer_evidence;           /* send own Evidence in Certificate (0|1) */
+    int require_evidence;         /* require peer Evidence (0|1)            */
+#endif
 } opt;
 
 #include "ssl_test_common_source.c"
@@ -980,6 +1002,11 @@ int main(int argc, char *argv[])
     opt.mki                 = DFL_SRTP_MKI;
     opt.key_opaque_alg1     = DFL_KEY_OPAQUE_ALG;
     opt.key_opaque_alg2     = DFL_KEY_OPAQUE_ALG;
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+    opt.attestation         = DFL_ATTESTATION;
+    opt.offer_evidence      = DFL_OFFER_EVIDENCE;
+    opt.require_evidence    = DFL_REQUIRE_EVIDENCE;
+#endif
 
     p = q = NULL;
     if (argc < 1) {
@@ -1428,6 +1455,20 @@ usage:
                                      &opt.key_opaque_alg2) != 0) {
                 goto usage;
             }
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+        } else if (strcmp(p, "attestation") == 0) {
+            opt.attestation = q;
+        } else if (strcmp(p, "offer_evidence") == 0) {
+            opt.offer_evidence = atoi(q);
+            if (opt.offer_evidence < 0 || opt.offer_evidence > 1) {
+                goto usage;
+            }
+        } else if (strcmp(p, "require_evidence") == 0) {
+            opt.require_evidence = atoi(q);
+            if (opt.require_evidence < 0 || opt.require_evidence > 1) {
+                goto usage;
+            }
+#endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
         } else {
             /* This signals that the problem is with p not q */
             q = NULL;
@@ -2011,6 +2052,16 @@ usage:
         mbedtls_ssl_conf_early_data(&conf, opt.early_data);
     }
 #endif /* MBEDTLS_SSL_EARLY_DATA */
+
+#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
+    if (strcmp(opt.attestation, "synthetic") == 0) {
+        static mbedtls_ssl_attestation_conf ac_cli;
+        ac_cli = *mbedtls_attest_synthetic_provider();
+        ac_cli.offer_evidence        = opt.offer_evidence;
+        ac_cli.require_peer_evidence = opt.require_evidence;
+        mbedtls_ssl_conf_attestation(&conf, &ac_cli);
+    }
+#endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
 
     if ((ret = mbedtls_ssl_setup(&ssl, &conf)) != 0) {
         mbedtls_printf(" failed\n  ! mbedtls_ssl_setup returned -0x%x\n\n",

@@ -636,11 +636,26 @@ exit:
      * own_evidence_content_format != NONE means the peer offered Evidence
      * (negotiated in EncryptedExtensions), so we expect and must verify it.
      */
+    /* Verify peer Evidence if we expected to receive it.
+     *
+     * Field semantics differ by role:
+     *   Server: peer_evidence_content_format = format the *client* offered to
+     *     produce (from CH evidence_proposal).  Non-NONE means we expect to
+     *     receive Evidence from the client.
+     *   Client: own_evidence_content_format = format the server agreed to
+     *     produce (from EE evidence_proposal).  Non-NONE means we expect to
+     *     receive Evidence from the server.
+     */
+    {
+    int is_server = (ssl->conf->endpoint == MBEDTLS_SSL_IS_SERVER);
+    int expect_peer_evidence = is_server
+        ? (ssl->handshake->peer_evidence_content_format !=
+               MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE)
+        : (ssl->handshake->own_evidence_content_format !=
+               MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE);
     if (ret == 0 &&
         ssl->session_negotiate->peer_cert != NULL &&
-        ssl->handshake->own_evidence_content_format !=
-            MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE) {
-        int is_server = (ssl->conf->endpoint == MBEDTLS_SSL_IS_SERVER);
+        expect_peer_evidence) {
         const unsigned char *base = is_server
             ? ssl->handshake->c_attest_base
             : ssl->handshake->s_attest_base;
@@ -648,7 +663,7 @@ exit:
             ? ssl->handshake->c_attest_binder
             : ssl->handshake->s_attest_binder;
         /* Peer SPKI scratch buffer — needed for both binder and verify. */
-        unsigned char peer_spki_buf[512];
+        unsigned char peer_spki_buf[768];
         const unsigned char *peer_spki;
         size_t peer_spki_len;
 
@@ -710,7 +725,8 @@ exit:
                 }
             }
         }
-    }
+    } /* expect_peer_evidence */
+    } /* is_server / role scope */
 #endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
 
     return ret;
@@ -976,14 +992,30 @@ static int ssl_tls13_write_certificate_body(mbedtls_ssl_context *ssl,
          * write_attest_ext is true when the peer has requested Evidence from
          * us in a supported format (§4.1).
          */
+        /* Write our own attestation extension when the peer requested Evidence
+         * from us and we agreed on a format, AND we are configured to offer it.
+         *
+         * Field semantics by role:
+         *   Server: own_evidence_content_format = format server agreed to
+         *     produce (set from client's CH evidence_request).
+         *   Client: peer_evidence_content_format = format client was asked to
+         *     produce (set from server's EE evidence_request).
+         */
+        int endpoint_is_server = (ssl->conf->endpoint == MBEDTLS_SSL_IS_SERVER);
+        int should_produce_evidence = endpoint_is_server
+            ? (ssl->handshake->own_evidence_content_format !=
+                   MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE)
+            : (ssl->handshake->peer_evidence_content_format !=
+                   MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE);
         int write_attest_ext =
-            (ssl->handshake->peer_evidence_content_format !=
-             MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE);
+            should_produce_evidence &&
+            (ssl->conf->attest_conf != NULL &&
+             ssl->conf->attest_conf->offer_evidence);
         int first_entry = 1;
         const unsigned char *own_binder = NULL;
         size_t own_binder_len = 0;
-        /* SPKI scratch buffer: P-521 SPKI ≈ 158 bytes; 512 is safe. */
-        unsigned char own_spki_buf[512];
+        /* SPKI scratch buffer: RSA-4096 SPKI ≈ 550 bytes; 768 is safe. */
+        unsigned char own_spki_buf[768];
         const unsigned char *own_spki = NULL;
         size_t own_spki_len = 0;
 
