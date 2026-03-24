@@ -234,54 +234,64 @@ have been drilled down in `local-docs/design-drilldown.md`:
 *Goal: Ground-truth test vectors in hand before any code is written.*
 *See `reference-implementations.md` for BoringSSL test runner details.*
 
-- [ ] 1. Instrument BoringSSL's `ssl/test/runner/dtls.go` to dump: sn_key derivation
-         inputs/outputs, SNE mask values (AES-ECB and ChaCha20), full record
-         encode/decode round-trips with intermediate values.
-- [ ] 2. Store output in `local-docs/test-vectors/` as ground-truth for Phase 1 and 2
-         unit tests.
+- [x] 1. Instrument BoringSSL's `ssl/test/runner/dtls.go` and `conn.go` to dump:
+         sn_key derivation inputs/outputs, SNE mask values (AES-ECB and ChaCha20),
+         full record encode/decode round-trips with intermediate values.
+         Patches: `DTLS13_VECTORS` env var gates logging in `useTrafficSecret`,
+         `readDTLS13RecordHeader`, and `dtlsPackRecord`. BoringSSL cloned to
+         `/tmp/boringssl` (shallow, main branch 2026-03-25).
+- [x] 2. Store output in `local-docs/test-vectors/` as ground-truth for Phase 1 and 2
+         unit tests. Done: `local-docs/test-vectors/sne-vectors.txt` contains 3
+         vector sets (2× ChaCha20, 1× AES-128-GCM) with sn_key derivation, mask
+         computation, and encrypt/decrypt round-trips.
 
 ### Phase 1: Foundation (Record Layer + Epoch Management)
 *Goal: DTLS 1.3 records can be read and written correctly, no handshake yet.*
 *Design detail: see `design-drilldown.md` §1 (record layer integration) and §2 (transform slot model).*
 
-- [ ] 1. Add `DTLSCiphertext` unified header parsing and serialization to `ssl_msg.c`.
-         See drilldown §1: dispatch point is top of `ssl_parse_record_header()`; new
-         function `ssl_parse_dtls13_record_header()` fills `mbedtls_record` and returns
-         header byte count.
-- [ ] 2. Implement record type demultiplexing (first-byte dispatch).
-         See drilldown §1: `buf[0] & 0xE0 == 0x20` → DTLSCiphertext; 20/21/22/23/24/25/26 →
-         DTLSPlaintext; else reject silently.
+- [x] 1. Add `DTLSCiphertext` unified header parsing to `ssl_msg.c`.
+         `ssl_parse_dtls13_record_header()` added; fills `mbedtls_record` and returns
+         header byte count. Includes CID, 8/16-bit seq, optional length field.
+- [x] 2. Implement record type demultiplexing (first-byte dispatch).
+         `buf[0] & 0xE0 == 0x20` → `ssl_parse_dtls13_record_header()` at top of
+         `ssl_parse_record_header()`; DTLSPlaintext falls through to existing path.
 - [ ] 3. Handle last-record-in-datagram with omitted length field (L bit clear).
          Read loop in `ssl_get_next_record()` must consume remainder of datagram when
          no length field is present.
-- [ ] 4. Implement epoch reconstruction algorithm (§4.2.2).
-         See drilldown §1: new context fields `dtls13_epoch_max_seq[4]` and
-         `in_epoch_full`; index by `epoch & 0x3`.
+- [x] 4. Implement epoch reconstruction algorithm (§4.2.2).
+         New context fields `dtls13_epoch_max_seq[4]` and `in_epoch_full` in
+         `mbedtls_ssl_context` (ssl.h). Reconstruction logic in
+         `ssl_parse_dtls13_record_header()`.
 - [ ] 5. Implement per-epoch anti-replay sliding windows.
          See drilldown §2: epoch pool allows maintaining separate windows per retained
          epoch; existing `in_window`/`in_window_top` covers the active epoch only.
-- [ ] 6. Implement `sn_key` derivation in `ssl_tls13_keys.c`.
-         See drilldown summary table: `sn_key[32]` + `sn_key_len` added to
-         `mbedtls_ssl_transform`; derived alongside traffic key via
-         `HKDF-Expand-Label(Secret, "sn", "", key_length)`.
+- [x] 6. Add `sn_key` + `sn_key_len` fields to `mbedtls_ssl_transform` (ssl_misc.h).
+         Derivation function `mbedtls_ssl_dtls13_hkdf_expand_label` added to
+         `ssl_tls13_keys.c/h`; not yet wired to key installation (Phase 2.2).
 - [ ] 7. Implement sequence number encryption/decryption (AES-ECB and ChaCha20 variants).
-         See drilldown §1: mask applied after AEAD encrypt (write) and before AEAD
-         decrypt (read); uses `psa_cipher_encrypt` with `PSA_ALG_ECB_NO_PADDING`.
-- [ ] 8. Change AEAD additional data computation for DTLS 1.3 records.
-         See drilldown §1: `ssl_extract_add_data_from_record()` takes raw unified header
-         bytes as additional parameters; gated on `rec->tls_version == DTLS1_3`.
+         Mask applied after AEAD encrypt (write) and before AEAD decrypt (read);
+         use `psa_cipher_encrypt` with `PSA_ALG_ECB_NO_PADDING` for AES.
+- [x] 8. Change AEAD additional data computation for DTLS 1.3 records.
+         `ssl_extract_add_data_from_record()` gains `dtls13_hdr`/`dtls13_hdr_len`
+         parameters; raw unified header used as AAD when non-NULL. All 7 existing
+         call sites updated to pass `NULL, 0`.
 - [ ] 9. Implement `DTLSInnerPlaintext` serialization/deserialization.
-- [ ] 10. Add `dtls13_epoch_pool[4]` to `mbedtls_ssl_context`; implement install/lookup/evict.
-          See drilldown §2 for full `mbedtls_ssl_dtls13_epoch_slot` struct and operations.
+- [x] 10. Add `dtls13_epoch_pool[4]` to `mbedtls_ssl_context`; struct
+          `mbedtls_ssl_dtls13_epoch_slot` defined in `ssl.h`. Install/lookup/evict
+          helpers not yet implemented.
 - [ ] 11. Unit tests: round-trip encode/decode of DTLS 1.3 records against Phase 0 vectors.
 
 ### Phase 2: Key Schedule Integration
 *Goal: TLS 1.3 key schedule produces the right keys with "dtls13" label.*
 *Design detail: see `design-drilldown.md` summary table (sn_key in transform).*
 
-- [ ] 1. Add HKDF label prefix selection (`"dtls13"` vs `"tls13 "`) based on transport type.
-- [ ] 2. Add `sn_key` derivation alongside traffic keys; store in `mbedtls_ssl_transform`.
-         See drilldown §1 and summary table.
+- [x] 1. Add HKDF label prefix selection (`"dtls13"` vs `"tls13 "`).
+         `ssl_tls13_hkdf_encode_label()` now takes a `prefix`/`prefix_len` parameter.
+         TLS path unchanged; new `mbedtls_ssl_dtls13_hkdf_expand_label()` uses `"dtls13"`.
+- [ ] 2. Wire `sn_key` derivation into traffic key installation.
+         Call `mbedtls_ssl_dtls13_hkdf_expand_label(..., "sn", ...)` wherever
+         `mbedtls_ssl_tls13_make_traffic_keys()` installs keys for DTLS transport;
+         store result in `transform->sn_key` / `transform->sn_key_len`.
 - [ ] 3. Validate epoch → key mapping (epoch 0=no key, 1=early, 2=hs, 3=app, 4+=rekey).
 - [ ] 4. Unit tests: key derivation test vectors.
          See `reference-implementations.md`: BoringSSL test runner is the source for vectors.

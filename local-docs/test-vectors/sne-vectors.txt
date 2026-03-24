@@ -1,0 +1,141 @@
+# DTLS 1.3 Sequence Number Encryption Test Vectors
+#
+# Generated from BoringSSL ssl/test/runner (main branch, 2026-03-25)
+# via instrumented dtls.go / conn.go (DTLS13_VECTORS=1 env var).
+# Source: /tmp/boringssl (google/boringssl, shallow clone)
+#
+# Format:
+#   DTLS13_SNE_KEY     epoch=N suite=0xXXXX traffic_secret=<hex> sn_key=<hex>
+#   DTLS13_SNE_ENCRYPT epoch=N header=<hex> sample=<hex> mask=<hex> plain_seq=<hex>
+#   DTLS13_SNE_ENCRYPT_RESULT enc_seq=<hex>
+#   DTLS13_SNE_DECRYPT epoch=N header=<hex> sample=<hex> mask=<hex> enc_seq=<hex>
+#   DTLS13_SNE_DECRYPT_RESULT dec_seq=<hex>
+#
+# Cipher suites:
+#   0x1301 = TLS_AES_128_GCM_SHA256   (AES-ECB mask, sn_key = 16 bytes)
+#   0x1303 = TLS_CHACHA20_POLY1305_SHA256 (ChaCha20 mask, sn_key = 32 bytes)
+#
+# Header byte:  0x2e = epoch 2 (handshake), 0x2f = epoch 3 (application)
+#               format: 0b001011EE, C=0 S=1 L=1 EE=epoch[1:0]
+# sample:       first 16 bytes of ciphertext (after record header)
+# mask:         AES-ECB(sn_key, sample)[0:2]  or  ChaCha20 keystream [0:2]
+# enc_seq:      on-wire seq bytes = plain_seq XOR mask
+#
+# sn_key derivation (RFC 9147 §4.2.3 / bis §4.2.3):
+#   sn_key = HKDF-Expand-Label(traffic_secret, "sn", "", key_length)
+#   label prefix is "dtls13" (no space), unlike TLS 1.3's "tls13 "
+#
+# Test vectors are from real handshakes; traffic_secret values differ per run
+# because BoringSSL uses fresh ephemeral keys each time.
+# The invariant to test: AES-ECB(sn_key, sample)[0:2] == mask, and
+#   enc_seq == plain_seq XOR mask  (encrypt)
+#   dec_seq == enc_seq XOR mask    (decrypt, same operation)
+
+# ============================================================
+# VECTOR SET 1: TLS_CHACHA20_POLY1305_SHA256 (suite 0x1303)
+# Test: DTLS-Replay-TLS13 (BoringSSL runner)
+# ============================================================
+
+# --- Handshake epoch (epoch=2) ---
+DTLS13_SNE_KEY epoch=2 suite=0x1303 traffic_secret=9ffa268e91b420bd897d27235aa6bfbb0b7a33eddd821456f45b5c8e402d3fdc sn_key=90cfdd1f36dab2b52c9584a845e8511877cba792c884ee3ed10cc45080261f25
+DTLS13_SNE_DECRYPT epoch=2 header=2ee4030434 sample=8cbaae7c43585beb0ef926d9b4d5b02a mask=e403 enc_seq=e403
+DTLS13_SNE_DECRYPT_RESULT dec_seq=0000
+
+# --- Application epoch (epoch=3), server side keys ---
+DTLS13_SNE_KEY epoch=3 suite=0x1303 traffic_secret=20df9779e432cc95f1fd6c35c7a871bc8ac3329fc965c7edd9b4930ca34db826 sn_key=fec922627ff6e58350dac11b25494dc8df10fc52cb85ad27bcd0d0e9574d1251
+
+# --- Application epoch (epoch=2), client side keys ---
+DTLS13_SNE_KEY epoch=2 suite=0x1303 traffic_secret=d34f4c6b6502774c739a74caf648e25fef0a8cefb9d94fbb8fb4af5910609b23 sn_key=0defc4458751c3f309cb83093edaea862612f81a0f886cd3629c52e80ed7f926
+DTLS13_SNE_KEY epoch=3 suite=0x1303 traffic_secret=f955fe58eaae6f10038e796174ffebe29677f0cb2b501b7a9b7302030c49587b sn_key=c124acc717ee61ca0630085a1cdaeb2d1bfff7c28ccecd5788a5feda5a62bb10
+
+DTLS13_SNE_ENCRYPT epoch=2 header=2e0000003d sample=a2a5dce0d5b3a2f39249675232f3abd8 mask=f057 plain_seq=0000
+DTLS13_SNE_ENCRYPT_RESULT enc_seq=f057
+
+DTLS13_SNE_DECRYPT epoch=3 header=2f98bf0023 sample=1d318ce5ff6b7ab3e62d5b2760323810 mask=98bf enc_seq=98bf
+DTLS13_SNE_DECRYPT_RESULT dec_seq=0000
+
+DTLS13_SNE_ENCRYPT epoch=3 header=2f00000015 sample=473ce7c122437616941b8af24cbebab7 mask=58be plain_seq=0000
+DTLS13_SNE_ENCRYPT_RESULT enc_seq=58be
+
+DTLS13_SNE_ENCRYPT epoch=3 header=2f00010031 sample=6d2630aaa545c0be68dc8412de4cbd2c mask=9b29 plain_seq=0001
+DTLS13_SNE_ENCRYPT_RESULT enc_seq=9b28
+
+DTLS13_SNE_DECRYPT epoch=3 header=2fc14c018d sample=90f78aae01d2947fd86c73c59958dc19 mask=c14d enc_seq=c14c
+DTLS13_SNE_DECRYPT_RESULT dec_seq=0001
+
+DTLS13_SNE_ENCRYPT epoch=3 header=2f00020023 sample=9e2e6427ce86c507aa5d215ec5e654d1 mask=8ffe plain_seq=0002
+DTLS13_SNE_ENCRYPT_RESULT enc_seq=8ffc
+
+DTLS13_SNE_ENCRYPT epoch=3 header=2f00030013 sample=7a6b0927eaa55b5b8f4c545c815d564b mask=361b plain_seq=0003
+DTLS13_SNE_ENCRYPT_RESULT enc_seq=3618
+
+DTLS13_SNE_DECRYPT epoch=3 header=2f5d990013 sample=009184995bba6c8180ec054ae7531fed mask=5d9b enc_seq=5d99
+DTLS13_SNE_DECRYPT_RESULT dec_seq=0002
+
+DTLS13_SNE_ENCRYPT epoch=3 header=2f00040015 sample=c9a053b67c806dde5c8b32696f0f2d5a mask=d699 plain_seq=0004
+DTLS13_SNE_ENCRYPT_RESULT enc_seq=d69d
+
+# ============================================================
+# VECTOR SET 2: TLS_CHACHA20_POLY1305_SHA256 (suite 0x1303)
+# Second independent handshake (different ephemeral keys)
+# ============================================================
+
+DTLS13_SNE_KEY epoch=2 suite=0x1303 traffic_secret=268661048da3aed072748d94928329e282564e83f3b52f7cef79b3a6407abf79 sn_key=4be00b106cfa6b6029d3836f6b22ba53964df374508a681a7ed09d895a01222b
+DTLS13_SNE_DECRYPT epoch=2 header=2ef1500434 sample=e732eccbff7d71a12fa8e37575089150 mask=f150 enc_seq=f150
+DTLS13_SNE_DECRYPT_RESULT dec_seq=0000
+
+DTLS13_SNE_KEY epoch=3 suite=0x1303 traffic_secret=51204902544e3583f7fe16ac19d934427cb083ea5c3815dafc6d7d78dea5bbbd sn_key=30e7ffec21a8b243132f4a4e6e96b0f9a002aeee1f0f7f1e8ca8cab6e129b4ca
+DTLS13_SNE_KEY epoch=2 suite=0x1303 traffic_secret=c47793ae7f02eacd78911e41675152c457dd13796314b29a41e60f3762e0d578 sn_key=c58ded10d909181bd2f46440ed7cd1705202df6a3001fbec25b2e79ebbe84f9b
+DTLS13_SNE_KEY epoch=3 suite=0x1303 traffic_secret=97c7a2a2f0e867265c85e973d9ba45cbe4395cd7d42ef1e1705f3567e345c40c sn_key=511512c42488709b04daca2a00d01a5200ca633759e13823ac96bbd0cc9aa3df
+
+DTLS13_SNE_ENCRYPT epoch=2 header=2e0000003d sample=9fb0ac90cdead38345ebb45621bc4fa4 mask=ba33 plain_seq=0000
+DTLS13_SNE_ENCRYPT_RESULT enc_seq=ba33
+
+DTLS13_SNE_DECRYPT epoch=3 header=2f4e5e0023 sample=bfd6d8860837ed2f9797ac76a1820a75 mask=4e5e enc_seq=4e5e
+DTLS13_SNE_DECRYPT_RESULT dec_seq=0000
+
+DTLS13_SNE_ENCRYPT epoch=3 header=2f00000012 sample=9ea5665cebfdf91d61f4d5d822d2a679 mask=ee3c plain_seq=0000
+DTLS13_SNE_ENCRYPT_RESULT enc_seq=ee3c
+
+DTLS13_SNE_ENCRYPT epoch=3 header=2f00010012 sample=f5f89105432ca203b2dc2698bde133c9 mask=dbb7 plain_seq=0001
+DTLS13_SNE_ENCRYPT_RESULT enc_seq=dbb6
+
+# ============================================================
+# VECTOR SET 3: TLS_AES_128_GCM_SHA256 (suite 0x1301)
+# Test: DTLS-Retransmit-Client-Basic-TLS13 (BoringSSL runner)
+# Note: sn_key is 16 bytes (AES-128); mask = AES-ECB(sn_key, sample)[0:2]
+# ============================================================
+
+DTLS13_SNE_KEY epoch=2 suite=0x1301 traffic_secret=b9124db1b091716ae687131b7c6b987eb558408feeef7de203f63d09e48c98ee sn_key=554e0ac7e99a4dd3228bf8e3f19912f5
+
+DTLS13_SNE_ENCRYPT epoch=2 header=2e0000001f sample=beebd7f3f22978b608d54713c980c0c5 mask=1ff9 plain_seq=0000
+DTLS13_SNE_ENCRYPT_RESULT enc_seq=1ff9
+
+DTLS13_SNE_ENCRYPT epoch=2 header=2e000102e6 sample=d9c77b687be73e65ef16903e8a7c567e mask=6697 plain_seq=0001
+DTLS13_SNE_ENCRYPT_RESULT enc_seq=6696
+
+DTLS13_SNE_ENCRYPT epoch=2 header=2e00020121 sample=fdf6be4f91af93aa77ed824dc0ad8609 mask=765f plain_seq=0002
+DTLS13_SNE_ENCRYPT_RESULT enc_seq=765d
+
+DTLS13_SNE_ENCRYPT epoch=2 header=2e0003003d sample=7ae5da6cd690255a304cc181928da9ca mask=6cb4 plain_seq=0003
+DTLS13_SNE_ENCRYPT_RESULT enc_seq=6cb7
+
+DTLS13_SNE_KEY epoch=3 suite=0x1301 traffic_secret=81047da0a2caa32aac1a5b2a4c151d8e02b59998295090ee62105101ff12a1ba sn_key=f830caa78960ca273b30eed78ccfee52
+
+DTLS13_SNE_DECRYPT epoch=3 header=2f09310023 sample=10271a5a33b39c54cbff0c912f099a55 mask=0931 enc_seq=0931
+DTLS13_SNE_DECRYPT_RESULT dec_seq=0000
+
+DTLS13_SNE_ENCRYPT epoch=3 header=2f00000031 sample=dfccd13fec35869c9cf7775fa81b1a13 mask=0f26 plain_seq=0000
+DTLS13_SNE_ENCRYPT_RESULT enc_seq=0f26
+
+DTLS13_SNE_DECRYPT epoch=3 header=2fc7a100fb sample=25cf30d8f74e5841608056f7907aa8a7 mask=c7a0 enc_seq=c7a1
+DTLS13_SNE_DECRYPT_RESULT dec_seq=0001
+
+DTLS13_SNE_ENCRYPT epoch=3 header=2f00010023 sample=3e4feae5061cf39eed4ee9c1d51ec655 mask=0334 plain_seq=0001
+DTLS13_SNE_ENCRYPT_RESULT enc_seq=0335
+
+DTLS13_SNE_DECRYPT epoch=3 header=2f93a500af sample=f74a494ec4d8707f58cd22183fa7c1d6 mask=93a7 enc_seq=93a5
+DTLS13_SNE_DECRYPT_RESULT dec_seq=0002
+
+DTLS13_SNE_ENCRYPT epoch=3 header=2f00020023 sample=3a19ac02bd61c840d8cc8165f4c81d51 mask=fa80 plain_seq=0002
+DTLS13_SNE_ENCRYPT_RESULT enc_seq=fa82

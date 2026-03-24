@@ -1574,6 +1574,16 @@ struct mbedtls_ssl_config {
 #endif
 };
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+/** DTLS 1.3 epoch pool entry (§4.2.1 of RFC 9147 bis). */
+#define MBEDTLS_SSL_DTLS13_EPOCH_POOL_SIZE 4
+typedef struct {
+    uint64_t epoch;                   /*!< full 64-bit epoch value; 0=empty  */
+    mbedtls_ssl_transform *transform; /*!< NULL when slot is empty           */
+    uint64_t retired_at_ms;           /*!< monotonic ms when superseded      */
+} mbedtls_ssl_dtls13_epoch_slot;
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
+
 struct mbedtls_ssl_context {
     const mbedtls_ssl_config *MBEDTLS_PRIVATE(conf); /*!< configuration information          */
 
@@ -1672,6 +1682,14 @@ struct mbedtls_ssl_context {
     mbedtls_ssl_transform *MBEDTLS_PRIVATE(transform_application);
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    /** DTLS 1.3 epoch pool: retains old inbound transforms for reordered
+     *  records.  Indexed circularly; oldest retired_at_ms slot evicted first.
+     *  Use ssl_dtls13_epoch_pool_*() helpers in library/ssl_misc.h. */
+    mbedtls_ssl_dtls13_epoch_slot
+        MBEDTLS_PRIVATE(dtls13_epoch_pool)[MBEDTLS_SSL_DTLS13_EPOCH_POOL_SIZE];
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
+
     /*
      * Timers
      */
@@ -1707,6 +1725,22 @@ struct mbedtls_ssl_context {
     uint16_t MBEDTLS_PRIVATE(in_epoch);          /*!< DTLS epoch for incoming records  */
     size_t MBEDTLS_PRIVATE(next_record_offset);  /*!< offset of the next record in datagram
                                                     (equal to in_left if none)       */
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    /* DTLS 1.3 epoch tracking (§4.2.2 of RFC 9147 bis).
+     *
+     * in_epoch_full holds the full 64-bit inbound epoch (in_epoch only holds
+     * the 16-bit wire value used by DTLS 1.2).
+     *
+     * dtls13_epoch_max_seq[i] tracks the highest successfully deprotected
+     * record sequence number for the epoch whose low 2 bits equal i.  Used
+     * for sequence number reconstruction.  Reset to 0 on epoch transition. */
+    uint64_t MBEDTLS_PRIVATE(in_epoch_full);
+    uint64_t MBEDTLS_PRIVATE(dtls13_epoch_max_seq)[4];
+
+    /** Set when an ACK needs to be sent on the next I/O call (§7 of RFC 9147
+     *  bis).  Checked at the top of mbedtls_ssl_read_record(). */
+    uint8_t MBEDTLS_PRIVATE(dtls13_ack_pending);
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
 #if defined(MBEDTLS_SSL_DTLS_ANTI_REPLAY)
     uint64_t MBEDTLS_PRIVATE(in_window_top);     /*!< last validated record seq_num    */

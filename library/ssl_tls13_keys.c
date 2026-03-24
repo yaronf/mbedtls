@@ -82,6 +82,11 @@ struct mbedtls_ssl_tls13_labels_struct const mbedtls_ssl_tls13_labels =
 
 /* We need to tell the compiler that we meant to leave out the null character. */
 static const char tls13_label_prefix[6] MBEDTLS_ATTRIBUTE_UNTERMINATED_STRING = "tls13 ";
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+/* DTLS 1.3 uses "dtls13" (no trailing space) as the label prefix per
+ * draft-ietf-tls-rfc9147bis §5.8. */
+static const char dtls13_label_prefix[6] MBEDTLS_ATTRIBUTE_UNTERMINATED_STRING = "dtls13";
+#endif /* MBEDTLS_SSL_PROTO_DTLS */
 
 #define SSL_TLS1_3_KEY_SCHEDULE_HKDF_LABEL_LEN(label_len, context_len) \
     (2                     /* expansion length           */ \
@@ -100,10 +105,10 @@ static void ssl_tls13_hkdf_encode_label(
     size_t desired_length,
     const unsigned char *label, size_t label_len,
     const unsigned char *ctx, size_t ctx_len,
+    const char *prefix, size_t prefix_len,
     unsigned char *dst, size_t *dst_len)
 {
-    size_t total_label_len =
-        sizeof(tls13_label_prefix) + label_len;
+    size_t total_label_len = prefix_len + label_len;
     size_t total_hkdf_lbl_len =
         SSL_TLS1_3_KEY_SCHEDULE_HKDF_LABEL_LEN(total_label_len, ctx_len);
 
@@ -120,8 +125,8 @@ static void ssl_tls13_hkdf_encode_label(
 
     /* Add label incl. prefix */
     *p++ = MBEDTLS_BYTE_0(total_label_len);
-    memcpy(p, tls13_label_prefix, sizeof(tls13_label_prefix));
-    p += sizeof(tls13_label_prefix);
+    memcpy(p, prefix, prefix_len);
+    p += prefix_len;
     memcpy(p, label, label_len);
     p += label_len;
 
@@ -173,6 +178,8 @@ int mbedtls_ssl_tls13_hkdf_expand_label(
     ssl_tls13_hkdf_encode_label(buf_len,
                                 label, label_len,
                                 ctx, ctx_len,
+                                tls13_label_prefix,
+                                sizeof(tls13_label_prefix),
                                 hkdf_label,
                                 &hkdf_label_len);
 
@@ -214,6 +221,73 @@ cleanup:
     mbedtls_platform_zeroize(hkdf_label, hkdf_label_len);
     return PSA_TO_MBEDTLS_ERR(status);
 }
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+int mbedtls_ssl_dtls13_hkdf_expand_label(
+    psa_algorithm_t hash_alg,
+    const unsigned char *secret, size_t secret_len,
+    const unsigned char *label, size_t label_len,
+    const unsigned char *ctx, size_t ctx_len,
+    unsigned char *buf, size_t buf_len)
+{
+    unsigned char hkdf_label[SSL_TLS1_3_KEY_SCHEDULE_MAX_HKDF_LABEL_LEN];
+    size_t hkdf_label_len = 0;
+    psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
+    psa_status_t abort_status = PSA_ERROR_CORRUPTION_DETECTED;
+    psa_key_derivation_operation_t operation =
+        PSA_KEY_DERIVATION_OPERATION_INIT;
+
+    if (label_len > MBEDTLS_SSL_TLS1_3_HKDF_LABEL_MAX_LABEL_LEN) {
+        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+    }
+    if (ctx_len > MBEDTLS_SSL_TLS1_3_KEY_SCHEDULE_MAX_CONTEXT_LEN) {
+        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+    }
+    if (buf_len > MBEDTLS_SSL_TLS1_3_KEY_SCHEDULE_MAX_EXPANSION_LEN) {
+        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+    }
+    if (!PSA_ALG_IS_HASH(hash_alg)) {
+        return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
+    }
+
+    ssl_tls13_hkdf_encode_label(buf_len,
+                                label, label_len,
+                                ctx, ctx_len,
+                                dtls13_label_prefix,
+                                sizeof(dtls13_label_prefix),
+                                hkdf_label,
+                                &hkdf_label_len);
+
+    status = psa_key_derivation_setup(&operation, PSA_ALG_HKDF_EXPAND(hash_alg));
+    if (status != PSA_SUCCESS) {
+        goto cleanup;
+    }
+
+    status = psa_key_derivation_input_bytes(&operation,
+                                            PSA_KEY_DERIVATION_INPUT_SECRET,
+                                            secret,
+                                            secret_len);
+    if (status != PSA_SUCCESS) {
+        goto cleanup;
+    }
+
+    status = psa_key_derivation_input_bytes(&operation,
+                                            PSA_KEY_DERIVATION_INPUT_INFO,
+                                            hkdf_label,
+                                            hkdf_label_len);
+    if (status != PSA_SUCCESS) {
+        goto cleanup;
+    }
+
+    status = psa_key_derivation_output_bytes(&operation, buf, buf_len);
+
+cleanup:
+    abort_status = psa_key_derivation_abort(&operation);
+    status = (status == PSA_SUCCESS ? abort_status : status);
+    mbedtls_platform_zeroize(hkdf_label, hkdf_label_len);
+    return PSA_TO_MBEDTLS_ERR(status);
+}
+#endif /* MBEDTLS_SSL_PROTO_DTLS */
 
 MBEDTLS_CHECK_RETURN_CRITICAL
 static int ssl_tls13_make_traffic_key(

@@ -909,6 +909,22 @@ struct mbedtls_ssl_handshake_params {
 #endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
 
     uint16_t mtu;                       /*!<  Handshake mtu, used to fragment outgoing messages */
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    /*
+     * DTLS 1.3 ACK tracking (§7 of RFC 9147 bis).
+     *
+     * Records received from the peer's current incoming flight that we have
+     * processed or buffered.  These are sent in outgoing ACK messages.
+     * Cleared when we transition to receiving a new flight.
+     */
+#define MBEDTLS_SSL_DTLS13_MAX_ACK_RECORDS 16
+    struct {
+        uint64_t epoch;
+        uint64_t seq;
+    } dtls13_received_records[MBEDTLS_SSL_DTLS13_MAX_ACK_RECORDS];
+    uint8_t dtls13_received_record_count;
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
 
     /*
@@ -1135,6 +1151,15 @@ struct mbedtls_ssl_transform {
     unsigned char out_cid[MBEDTLS_SSL_CID_OUT_LEN_MAX];
 #endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+    /* DTLS 1.3 sequence number encryption key (§4.2.3 of RFC 9147 bis).
+     * Derived via HKDF-Expand-Label(traffic_secret, "sn", "", key_len)
+     * using the "dtls13" prefix.  Length is key_len (16 for AES-128/256-GCM,
+     * 32 for ChaCha20-Poly1305). */
+    unsigned char sn_key[MBEDTLS_SSL_MAX_KEY_LENGTH];
+    size_t        sn_key_len;         /*!< 0 when SNE is not active */
+#endif /* MBEDTLS_SSL_PROTO_DTLS */
+
 #if defined(MBEDTLS_SSL_KEEP_RANDBYTES)
     /* We need the Hello random bytes in order to re-derive keys from the
      * Master Secret and other session info and for the keying material
@@ -1234,6 +1259,19 @@ struct mbedtls_ssl_flight_item {
     size_t len;             /*!< length of p                            */
     unsigned char type;     /*!< type of the message: handshake or CCS  */
     mbedtls_ssl_flight_item *next;  /*!< next handshake message(s)              */
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    /* DTLS 1.3: record numbers of each transmission of this message.
+     * A message may be retransmitted with a different record number each time.
+     * We track the last MBEDTLS_SSL_DTLS13_MAX_RECORDS_PER_FLIGHT_ITEM
+     * transmissions in a ring buffer so that incoming ACKs can be matched.
+     * sent_record_epoch[i] holds the low byte of the epoch for entry i. */
+#define MBEDTLS_SSL_DTLS13_MAX_RECORDS_PER_FLIGHT_ITEM 4
+    uint64_t sent_records[MBEDTLS_SSL_DTLS13_MAX_RECORDS_PER_FLIGHT_ITEM];
+    uint8_t  sent_record_epoch[MBEDTLS_SSL_DTLS13_MAX_RECORDS_PER_FLIGHT_ITEM];
+    uint8_t  sent_record_count;  /*!< number of valid entries (ring head) */
+    uint8_t  acked;              /*!< true if any sent_records[] was ACKed */
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 };
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
 

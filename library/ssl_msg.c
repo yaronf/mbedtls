@@ -569,7 +569,9 @@ static void ssl_extract_add_data_from_record(unsigned char *add_data,
                                              mbedtls_record *rec,
                                              mbedtls_ssl_protocol_version
                                              tls_version,
-                                             size_t taglen)
+                                             size_t taglen,
+                                             const unsigned char *dtls13_hdr,
+                                             size_t dtls13_hdr_len)
 {
     /* Several types of ciphers have been defined for use with TLS and DTLS,
      * and the MAC calculations for those ciphers differ slightly. Further
@@ -666,6 +668,23 @@ static void ssl_extract_add_data_from_record(unsigned char *add_data,
 #if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
     const unsigned char seq_num_placeholder[] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
 #endif
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    /* DTLS 1.3 AAD = the raw unified header bytes (§4.3.3 of RFC 9147 bis).
+     * This is distinct from TLS 1.3 where the AAD is the TLSCiphertext
+     * opaque_type + legacy_version + length. */
+    if (tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+        dtls13_hdr != NULL && dtls13_hdr_len > 0) {
+        memcpy(add_data, dtls13_hdr, dtls13_hdr_len);
+        *add_data_len = dtls13_hdr_len;
+        return;
+    }
+    (void) dtls13_hdr;
+    (void) dtls13_hdr_len;
+#else
+    (void) dtls13_hdr;
+    (void) dtls13_hdr_len;
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
     if (tls_version == MBEDTLS_SSL_VERSION_TLS1_3) {
@@ -918,7 +937,8 @@ int mbedtls_ssl_encrypt_buf(mbedtls_ssl_context *ssl,
 
         ssl_extract_add_data_from_record(add_data, &add_data_len, rec,
                                          transform->tls_version,
-                                         transform->taglen);
+                                         transform->taglen,
+                                         NULL, 0);
 
         status = psa_mac_sign_setup(&operation, transform->psa_mac_enc,
                                     transform->psa_mac_alg);
@@ -1023,7 +1043,8 @@ hmac_failed_etm_disabled:
          */
         ssl_extract_add_data_from_record(add_data, &add_data_len, rec,
                                          transform->tls_version,
-                                         transform->taglen);
+                                         transform->taglen,
+                                         NULL, 0);
 
         MBEDTLS_SSL_DEBUG_BUF(4, "IV used (internal)",
                               iv, transform->ivlen);
@@ -1202,7 +1223,8 @@ hmac_failed_etm_disabled:
 
             ssl_extract_add_data_from_record(add_data, &add_data_len,
                                              rec, transform->tls_version,
-                                             transform->taglen);
+                                             transform->taglen,
+                                             NULL, 0);
 
             MBEDTLS_SSL_DEBUG_MSG(3, ("using encrypt then mac"));
             MBEDTLS_SSL_DEBUG_BUF(4, "MAC'd meta-data", add_data,
@@ -1391,7 +1413,8 @@ int mbedtls_ssl_decrypt_buf(mbedtls_ssl_context const *ssl,
          */
         ssl_extract_add_data_from_record(add_data, &add_data_len, rec,
                                          transform->tls_version,
-                                         transform->taglen);
+                                         transform->taglen,
+                                         NULL, 0);
         MBEDTLS_SSL_DEBUG_BUF(4, "additional data used for AEAD",
                               add_data, add_data_len);
 
@@ -1502,7 +1525,8 @@ int mbedtls_ssl_decrypt_buf(mbedtls_ssl_context const *ssl,
             rec->data_len -= transform->maclen;
             ssl_extract_add_data_from_record(add_data, &add_data_len, rec,
                                              transform->tls_version,
-                                             transform->taglen);
+                                             transform->taglen,
+                                             NULL, 0);
 
             /* Calculate expected MAC. */
             MBEDTLS_SSL_DEBUG_BUF(4, "MAC'd meta-data", add_data,
@@ -1737,7 +1761,8 @@ hmac_failed_etm_enabled:
         rec->data_len -= transform->maclen;
         ssl_extract_add_data_from_record(add_data, &add_data_len, rec,
                                          transform->tls_version,
-                                         transform->taglen);
+                                         transform->taglen,
+                                         NULL, 0);
 
 #if defined(MBEDTLS_SSL_PROTO_TLS1_2)
         /*
@@ -3506,6 +3531,134 @@ static int ssl_check_record_type(uint8_t record_type)
     return 0;
 }
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+/*
+ * Parse a DTLS 1.3 DTLSCiphertext unified header (§4.3.3 of RFC 9147 bis).
+ *
+ * The first byte encodes:  0 0 1 C S L E E
+ *   bit 7-5 = 0b001  (distinguishes from DTLSPlaintext and TLS records)
+ *   bit 4    = C      CID present
+ *   bit 3    = S      sequence-number length: 0→8-bit, 1→16-bit
+ *   bit 2    = L      length field present
+ *   bit 1-0  = EE     low 2 bits of epoch
+ *
+ * On success, fills *rec (buf, buf_len, data_offset, data_len, ctr, type=0,
+ * ver) and returns the header length consumed.  rec->type is set to 0 here;
+ * the real content type is found inside DTLSInnerPlaintext after decryption.
+ *
+ * On failure returns a negative error code; the datagram should be silently
+ * discarded (not a fatal alert).
+ */
+MBEDTLS_CHECK_RETURN_CRITICAL
+static int ssl_parse_dtls13_record_header(mbedtls_ssl_context *ssl,
+                                          unsigned char *buf,
+                                          size_t len,
+                                          mbedtls_record *rec)
+{
+    size_t hdr_len;
+    uint8_t type_byte = buf[0];
+    int has_cid   = (type_byte >> 4) & 1;
+    int long_seq  = (type_byte >> 3) & 1;  /* 1 = 16-bit seq, 0 = 8-bit */
+    int has_len   = (type_byte >> 2) & 1;
+    uint8_t epoch_bits = type_byte & 0x03;
+    size_t seq_len = long_seq ? 2 : 1;
+    size_t cid_len = 0;
+
+    /* Minimum header: type(1) + seq(1 or 2) */
+    hdr_len = 1 + seq_len;
+
+    if (has_cid) {
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+        cid_len = ssl->conf->cid_len;
+#endif
+        hdr_len += cid_len;
+    }
+    if (has_len) {
+        hdr_len += 2;
+    }
+
+    if (len < hdr_len) {
+        MBEDTLS_SSL_DEBUG_MSG(1, ("DTLS 1.3: datagram too short for unified header"));
+        return MBEDTLS_ERR_SSL_INVALID_RECORD;
+    }
+
+    /* --- Sequence number reconstruction (§4.2.2 of RFC 9147 bis) ---
+     *
+     * The on-wire seq is the low 8 or 16 bits, still encrypted at this point
+     * (SNE is applied later, after we locate the ciphertext sample).  Store
+     * the encrypted bytes in rec->ctr[2..] for now; the caller will decrypt
+     * them once it has the transform. */
+    memset(rec->ctr, 0, sizeof(rec->ctr));
+
+    /* rec->ctr[0..1] = epoch (16-bit big-endian, reconstructed below) */
+    /* rec->ctr[2..7] = reconstructed sequence number (set after SNE)  */
+
+    /* Store encrypted seq bytes at ctr[6] (1-byte) or ctr[6..7] (2-byte) */
+    if (long_seq) {
+        rec->ctr[6] = buf[1];
+        rec->ctr[7] = buf[2];
+    } else {
+        rec->ctr[6] = 0;
+        rec->ctr[7] = buf[1];
+    }
+
+    /* Epoch reconstruction: combine epoch_bits with in_epoch_full. */
+    {
+        uint64_t base = ssl->in_epoch_full;
+        uint64_t candidate = (base & ~(uint64_t)0x03) | epoch_bits;
+        /* If candidate is more than half a period behind base, advance it. */
+        if (candidate + 2 < base) {
+            candidate += 4;
+        }
+        /* Store low 16 bits in ctr[0..1] for compatibility with existing
+         * anti-replay code (which uses the 16-bit epoch). */
+        rec->ctr[0] = (uint8_t)(candidate >> 8);
+        rec->ctr[1] = (uint8_t)(candidate);
+    }
+
+    /* Record content length */
+    if (has_len) {
+        size_t content_len;
+        size_t len_offset = 1 + seq_len + cid_len;
+        content_len = MBEDTLS_GET_UINT16_BE(buf, len_offset);
+        if (len < hdr_len + content_len) {
+            MBEDTLS_SSL_DEBUG_MSG(1, ("DTLS 1.3: datagram truncated"));
+            return MBEDTLS_ERR_SSL_INVALID_RECORD;
+        }
+        rec->data_len = content_len;
+    } else {
+        /* No length field: record runs to end of datagram */
+        rec->data_len = len - hdr_len;
+    }
+
+    rec->buf        = buf;
+    rec->buf_len    = hdr_len + rec->data_len;
+    rec->data_offset = hdr_len;
+
+    /* CID */
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+    if (has_cid && cid_len > 0) {
+        rec->cid_len = (uint8_t) cid_len;
+        memcpy(rec->cid, buf + 1 + seq_len, cid_len);
+    } else
+#endif
+    {
+        rec->cid_len = 0;
+    }
+
+    /* Content type: unknown until after decryption (DTLSInnerPlaintext) */
+    rec->type = 0;
+
+    /* tls_version: signal DTLS 1.3 to downstream code */
+    rec->ver[0] = 0xfe;   /* DTLS version on wire for DTLS 1.2 compat */
+    rec->ver[1] = 0xfd;
+
+    MBEDTLS_SSL_DEBUG_BUF(4, "DTLS 1.3 unified header", buf, hdr_len);
+
+    return (int) hdr_len;
+}
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
+
 /*
  * ContentType type;
  * ProtocolVersion version;
@@ -3531,6 +3684,36 @@ static int ssl_parse_record_header(mbedtls_ssl_context const *ssl,
                                    size_t len,
                                    mbedtls_record *rec)
 {
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    /*
+     * DTLS 1.3 / DTLS 1.2 demultiplexing (§5.2 of RFC 9147 bis).
+     *
+     * Unified (DTLSCiphertext) header: first byte has bits 7-5 = 0b001.
+     * DTLSPlaintext header:           first byte is a ContentType (20-26).
+     * TLS-over-TCP records:           not reachable here (DTLS transport only).
+     *
+     * For DTLS 1.3, when the connection is using TLS 1.3 and epoch > 0, the
+     * peer uses the unified header.  We accept unified headers any time the
+     * first byte has the 0b001CSLЕЕ pattern, regardless of negotiated version,
+     * so that early packets (e.g. from a DTLS 1.3 peer) are handled correctly.
+     */
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+        len >= 1 && (buf[0] & 0xE0) == 0x20) {
+        int hdr_len = ssl_parse_dtls13_record_header(
+            (mbedtls_ssl_context *) ssl, buf, len, rec);
+        if (hdr_len < 0) {
+            /* Silently discard malformed unified-header records. */
+            return MBEDTLS_ERR_SSL_UNEXPECTED_RECORD;
+        }
+        /* Signal to the caller that this is a DTLS 1.3 record by setting
+         * tls_version on the rec.  The existing caller (ssl_get_next_record)
+         * only inspects rec->type and rec->ctr, so this is safe. */
+        rec->ver[0] = 0xfe;
+        rec->ver[1] = 0xfd;
+        return 0;
+    }
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
+
     mbedtls_ssl_protocol_version tls_version;
 
     size_t const rec_hdr_type_offset    = 0;

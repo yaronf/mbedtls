@@ -115,6 +115,23 @@ int mbedtls_ssl_tls13_hkdf_expand_label(
     const unsigned char *ctx, size_t ctx_len,
     unsigned char *buf, size_t buf_len);
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+/**
+ * \brief           DTLS 1.3 variant of HKDF-Expand-Label.
+ *
+ *                  Identical to mbedtls_ssl_tls13_hkdf_expand_label() except
+ *                  the label prefix is "dtls13" (no trailing space) instead of
+ *                  "tls13 ", per draft-ietf-tls-rfc9147bis §5.8.
+ */
+MBEDTLS_CHECK_RETURN_CRITICAL
+int mbedtls_ssl_dtls13_hkdf_expand_label(
+    psa_algorithm_t hash_alg,
+    const unsigned char *secret, size_t secret_len,
+    const unsigned char *label, size_t label_len,
+    const unsigned char *ctx, size_t ctx_len,
+    unsigned char *buf, size_t buf_len);
+#endif /* MBEDTLS_SSL_PROTO_DTLS */
+
 /**
  * \brief           This function is part of the TLS 1.3 key schedule.
  *                  It extracts key and IV for the actual client/server traffic
