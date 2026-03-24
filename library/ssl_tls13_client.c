@@ -2894,7 +2894,7 @@ static int ssl_tls13_process_server_finished(mbedtls_ssl_context *ssl)
 
 #if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
     /* Snapshot c_attest_base at the ClientHello...Server-Finished checkpoint. */
-    if (ssl->handshake->c_attest_base[0] == 0 &&
+    if (!ssl->handshake->c_attest_base_derived &&
         (ssl->handshake->own_evidence_content_format !=
              MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE ||
          ssl->handshake->peer_evidence_content_format !=
@@ -2910,6 +2910,7 @@ static int ssl_tls13_process_server_finished(mbedtls_ssl_context *ssl)
                 MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE);
             return ret;
         }
+        ssl->handshake->c_attest_base_derived = 1;
     }
 #endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
 

@@ -1979,7 +1979,7 @@ int ssl_tls13_attest_binder_raw(
     size_t hash_len = PSA_HASH_LENGTH(hash_alg);
     psa_status_t status;
     psa_key_derivation_operation_t op = PSA_KEY_DERIVATION_OPERATION_INIT;
-    unsigned char hkdf_label[768];
+    unsigned char hkdf_label[MBEDTLS_ATTEST_SPKI_MAX_SIZE];
     size_t hkdf_label_len;
 
     if (base_len < hash_len || out_len < hash_len) {
@@ -2071,8 +2071,7 @@ int ssl_tls13_compute_attest_binder_from_pk(
     const unsigned char *base, size_t base_len,
     unsigned char *out, size_t out_len)
 {
-    /* RSA-4096 SPKI is the largest we'll see (~550 bytes); 768 is safe headroom. */
-    unsigned char spki_buf[768];
+    unsigned char spki_buf[MBEDTLS_ATTEST_SPKI_MAX_SIZE];
     const unsigned char *spki;
     size_t spki_len;
     int ret;

@@ -36,6 +36,12 @@ extern "C" {
 #endif
 
 /**
+ * Maximum size of a SubjectPublicKeyInfo DER buffer used in attestation paths.
+ * RSA-4096 SPKI ≈ 550 bytes; 768 provides headroom for future algorithms.
+ */
+#define MBEDTLS_ATTEST_SPKI_MAX_SIZE 768
+
+/**
  * \brief   Callback type: generate attestation Evidence.
  *
  *          Called by the TLS stack when it is about to write the

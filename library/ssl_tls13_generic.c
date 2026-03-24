@@ -663,7 +663,7 @@ exit:
             ? ssl->handshake->c_attest_binder
             : ssl->handshake->s_attest_binder;
         /* Peer SPKI scratch buffer — needed for both binder and verify. */
-        unsigned char peer_spki_buf[768];
+        unsigned char peer_spki_buf[MBEDTLS_ATTEST_SPKI_MAX_SIZE];
         const unsigned char *peer_spki;
         size_t peer_spki_len;
 
@@ -673,6 +673,7 @@ exit:
             &peer_spki, &peer_spki_len);
         if (ret != 0) {
             MBEDTLS_SSL_DEBUG_RET(1, "ssl_tls13_extract_spki (peer)", ret);
+            return ret;
         }
 
         if (ret == 0) {
@@ -721,7 +722,7 @@ exit:
                         MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE);
                     ret = MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE;
                 } else {
-                    MBEDTLS_SSL_DEBUG_MSG(3, ("attestation Evidence verified OK"));
+                    MBEDTLS_SSL_DEBUG_MSG(2, ("attestation Evidence verified OK"));
                 }
             }
         }
@@ -1015,7 +1016,7 @@ static int ssl_tls13_write_certificate_body(mbedtls_ssl_context *ssl,
         const unsigned char *own_binder = NULL;
         size_t own_binder_len = 0;
         /* SPKI scratch buffer: RSA-4096 SPKI ≈ 550 bytes; 768 is safe. */
-        unsigned char own_spki_buf[768];
+        unsigned char own_spki_buf[MBEDTLS_ATTEST_SPKI_MAX_SIZE];
         const unsigned char *own_spki = NULL;
         size_t own_spki_len = 0;
 

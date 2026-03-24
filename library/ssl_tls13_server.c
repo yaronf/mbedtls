@@ -3194,6 +3194,7 @@ static int ssl_tls13_write_server_finished(mbedtls_ssl_context *ssl)
                 MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE);
             return ret;
         }
+        ssl->handshake->c_attest_base_derived = 1;
     }
 #endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
 
@@ -3395,30 +3396,6 @@ static int ssl_tls13_process_client_finished(mbedtls_ssl_context *ssl)
         MBEDTLS_SSL_DEBUG_RET(
             1, "mbedtls_ssl_tls13_compute_resumption_master_secret", ret);
     }
-
-#if defined(MBEDTLS_SSL_EARLY_ATTESTATION)
-    {
-        mbedtls_ssl_handshake_params *handshake = ssl->handshake;
-        if (handshake->peer_evidence_content_format !=
-                MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE ||
-            handshake->own_evidence_content_format !=
-                MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE) {
-            psa_algorithm_t hash_alg = mbedtls_md_psa_alg_from_type(
-                (mbedtls_md_type_t) handshake->ciphersuite_info->mac);
-            handshake->attest_binder_len = PSA_HASH_LENGTH(hash_alg);
-            ret = ssl_tls13_derive_attest_base(
-                ssl,
-                MBEDTLS_SSL_TLS1_3_LBL_WITH_LEN(c_attest_base),
-                handshake->c_attest_base,
-                sizeof(handshake->c_attest_base));
-            if (ret != 0) {
-                MBEDTLS_SSL_DEBUG_RET(
-                    1, "ssl_tls13_derive_attest_base(c_attest_base)", ret);
-                return ret;
-            }
-        }
-    }
-#endif /* MBEDTLS_SSL_EARLY_ATTESTATION */
 
     mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_HANDSHAKE_WRAPUP);
     return 0;
