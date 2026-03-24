@@ -2076,6 +2076,11 @@ usage:
         } else if (strcmp(opt.attestation, "tamper-truncate") == 0) {
             base = mbedtls_attest_tamper_truncate_provider();
         }
+        if (base == NULL && strcmp(opt.attestation, "none") != 0) {
+            mbedtls_printf(" failed\n  ! unknown attestation provider '%s'\n\n",
+                           opt.attestation);
+            goto usage;
+        }
         if (base != NULL) {
             static mbedtls_ssl_attestation_conf ac_cli;
             ac_cli = *base;

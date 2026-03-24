@@ -633,26 +633,22 @@ exit:
      *   server (we are server, peer is client): use c_attest_base / c_binder
      *   client (we are client, peer is server): use s_attest_base / s_binder
      *
-     * own_evidence_content_format != NONE means the peer offered Evidence
-     * (negotiated in EncryptedExtensions), so we expect and must verify it.
+     * peer_evidence_content_format != NONE means the peer agreed to produce
+     * Evidence (negotiated in EncryptedExtensions), so we expect and must
+     * verify it.
      */
     /* Verify peer Evidence if we expected to receive it.
      *
-     * Field semantics differ by role:
-     *   Server: peer_evidence_content_format = format the *client* offered to
-     *     produce (from CH evidence_proposal).  Non-NONE means we expect to
-     *     receive Evidence from the client.
-     *   Client: own_evidence_content_format = format the server agreed to
-     *     produce (from EE evidence_proposal).  Non-NONE means we expect to
-     *     receive Evidence from the server.
+     * peer_evidence_content_format records the format the peer agreed to
+     * produce (server: from CH evidence_proposal; client: from EE
+     * evidence_request).  Non-NONE means we expect Evidence in the peer's
+     * Certificate.  Both roles use the same field.
      */
     {
     int is_server = (ssl->conf->endpoint == MBEDTLS_SSL_IS_SERVER);
-    int expect_peer_evidence = is_server
-        ? (ssl->handshake->peer_evidence_content_format !=
-               MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE)
-        : (ssl->handshake->own_evidence_content_format !=
-               MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE);
+    int expect_peer_evidence =
+        (ssl->handshake->peer_evidence_content_format !=
+             MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE);
     if (ret == 0 &&
         ssl->session_negotiate->peer_cert != NULL &&
         expect_peer_evidence) {
@@ -1014,18 +1010,13 @@ static int ssl_tls13_write_certificate_body(mbedtls_ssl_context *ssl,
         /* Write our own attestation extension when the peer requested Evidence
          * from us and we agreed on a format, AND we are configured to offer it.
          *
-         * Field semantics by role:
-         *   Server: own_evidence_content_format = format server agreed to
-         *     produce (set from client's CH evidence_request).
-         *   Client: peer_evidence_content_format = format client was asked to
-         *     produce (set from server's EE evidence_request).
+         * own_evidence_content_format = format *we* agreed to produce
+         * (server: set from CH evidence_request; client: set from EE
+         * evidence_request).  Both roles use the same field.
          */
-        int endpoint_is_server = (ssl->conf->endpoint == MBEDTLS_SSL_IS_SERVER);
-        int should_produce_evidence = endpoint_is_server
-            ? (ssl->handshake->own_evidence_content_format !=
-                   MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE)
-            : (ssl->handshake->peer_evidence_content_format !=
-                   MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE);
+        int should_produce_evidence =
+            (ssl->handshake->own_evidence_content_format !=
+                 MBEDTLS_SSL_EVIDENCE_CONTENT_FORMAT_NONE);
         int write_attest_ext =
             should_produce_evidence &&
             (ssl->conf->attest_conf != NULL &&

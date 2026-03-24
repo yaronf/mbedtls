@@ -2377,15 +2377,15 @@ static int ssl_tls13_parse_encrypted_extensions(mbedtls_ssl_context *ssl,
                 MBEDTLS_SSL_DEBUG_MSG(3, ("found EE evidence_request extension"));
                 /*
                  * Server is telling us which format it wants in our
-                 * Certificate extension → store as peer_evidence_content_format
-                 * (what *our* peer — the server — is requesting from us).
+                 * Certificate extension → store as own_evidence_content_format
+                 * (the format *we* will produce and send).
                  */
                 if (ssl->conf->attest_conf != NULL &&
                     ssl->conf->attest_conf->offer_evidence) {
                     ret = ssl_tls13_parse_ee_evidence_type_ext(
                         ssl, p, p + extension_data_len,
                         ssl->conf->attest_conf,
-                        &handshake->peer_evidence_content_format);
+                        &handshake->own_evidence_content_format);
                     if (ret != 0) {
                         MBEDTLS_SSL_DEBUG_RET(
                             1, "ssl_tls13_parse_ee_evidence_type_ext", ret);
@@ -2398,15 +2398,15 @@ static int ssl_tls13_parse_encrypted_extensions(mbedtls_ssl_context *ssl,
                 MBEDTLS_SSL_DEBUG_MSG(3, ("found EE evidence_proposal extension"));
                 /*
                  * Server is telling us which format it will use in its own
-                 * Certificate extension → store as own_evidence_content_format
-                 * (what *we* requested from the server).
+                 * Certificate extension → store as peer_evidence_content_format
+                 * (the format the *peer* — the server — will produce).
                  */
                 if (ssl->conf->attest_conf != NULL &&
                     ssl->conf->attest_conf->request_peer_evidence) {
                     ret = ssl_tls13_parse_ee_evidence_type_ext(
                         ssl, p, p + extension_data_len,
                         ssl->conf->attest_conf,
-                        &handshake->own_evidence_content_format);
+                        &handshake->peer_evidence_content_format);
                     if (ret != 0) {
                         MBEDTLS_SSL_DEBUG_RET(
                             1, "ssl_tls13_parse_ee_evidence_type_ext", ret);
