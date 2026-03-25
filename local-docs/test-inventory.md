@@ -1,6 +1,6 @@
 # DTLS 1.3 Test Inventory
 
-**Last updated:** 2026-03-26 (Option B transcript re-hash, no-cookie fallback now passing)
+**Last updated:** 2026-03-26 (Phase 3b.7 proxy test parity — 7 new tests passing)
 **Branch:** `dtls13`
 
 Tests are grouped by type.  Status: `pass` = currently passing, `fail` = currently failing (expected), `todo` = not yet written.
@@ -100,6 +100,14 @@ These use `ssl_client2` / `ssl_server2` over loopback UDP.
 | `DTLS 1.3 client, DTLS 1.2 server: negotiate down to DTLS 1.2 (no cookie)`  | pass | —                                                       |
 | `DTLS 1.3 client, DTLS 1.2 server: negotiate down to DTLS 1.2 (with cookie)`| pass | —                                                       |
 | `DTLS 1.3: HRR+cookie exchange (cookie enabled)`                             | pass | —                                                       |
+| `DTLS 1.3: loss recovery via retransmit`                                     | pass | —                                                       |
+| `DTLS 1.3: proxy — duplicate every packet`                                   | pass | —                                                       |
+| `DTLS 1.3: proxy — duplicate every packet, anti-replay off`                  | pass | —                                                       |
+| `DTLS 1.3: proxy — multiple records in same datagram`                        | pass | —                                                       |
+| `DTLS 1.3: proxy — multiple records in same datagram, duplicate every packet`| pass | —                                                       |
+| `DTLS 1.3: proxy — 3d, basic handshake`                                      | pass | —                                                       |
+| `DTLS 1.3: proxy — 3d, client auth`                                          | pass | —                                                       |
+| `DTLS 1.3: proxy — 3d, nbio`                                                 | pass | —                                                       |
 
 
 ### Planned — to be added as phases complete
@@ -109,8 +117,6 @@ Names below are the intended exact ssl-opt.sh strings (to be used verbatim in `r
 | Test name                                                                    | Phase | Notes                                                                                                               |
 | ---------------------------------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------- |
 | `DTLS 1.3: cookie disabled — 1-RTT handshake`                                | 3b.1  | Server configured with cookie disabled; handshake completes without HRR round-trip                                 |
-| `DTLS 1.3: amplification limit enforced (cookie path)`                       | 3b.2  | With cookie enabled: server flight stays within 3× budget after cookie exchange validates client address            |
-| `DTLS 1.3: loss recovery via retransmit`                                     | 3b.5  | Inject packet loss via udp_proxy; handshake completes                                                              |
 | `DTLS 1.3: per-epoch anti-replay`                                            | 1.5   | Replay a post-handshake record via udp_proxy; silently dropped, connection stays live                              |
 | `DTLS 1.3: session resumption (PSK)`                                         | 4     | Both sides print "Protocol is DTLSv1.3", resumed                                                                   |
 | `DTLS 1.3: 0-RTT early data`                                                 | 4     | Client sends data before server Finished                                                                            |
@@ -152,9 +158,16 @@ See `local-docs/reference-implementations.md` for setup instructions.
 - **Transcript hash correctness**: no unit test verifying that DTLS framing fields are
   stripped before hashing. Should add a test vector derived from a known BoringSSL or
   wolfSSL transcript.
-- **Amplification limit** (Phase 3b.2): enforcement requires cookie exchange (Phase 3b.1)
-  to give the server enough byte budget. Pre-cookie handshakes legitimately exceed 3×
-  (cert alone can do it); the SHOULD in RFC 9147 §4.2.1 acknowledges this.
+- **bad_ad proxy tests** (Phase 3b.7 deferred): `bad_ad=1` proxy option corrupts records
+  indiscriminately including handshake records. DTLS 1.3 correctly fatals on bad-MAC at
+  `SERVER_FINISHED` state; the connection dies before app-data exchange. Needs either a
+  proxy option to restrict corruption to app-data records, or investigation of whether
+  the state guard should be relaxed for 1.3. See `proxy-test-parity.md`.
+- **Handshake fragmentation for large messages** (future phase): the DTLS 1.3 write path
+  does not fragment outgoing handshake messages that exceed the MTU. Server Certificate
+  hits `INTERNAL_ERROR` with `mtu=512`. Blocks `DTLS 1.3: fragmenting — proxy MTU + 3d`
+  and `nbio` variants. Needs its own implementation phase.
+- **Amplification limit** (Phase 3b.2 dropped): decided not to implement; see implementation plan.
 - **Anti-replay** (Phase 1.5): per-epoch sliding windows not yet implemented. Test
   (replayed record silently dropped) assigned to Phase 1.5.
 - **AEAD limit / KeyUpdate trigger** (Phase 5.3): no test for automatic KeyUpdate when

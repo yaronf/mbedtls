@@ -2294,7 +2294,24 @@ int mbedtls_ssl_flight_transmit(mbedtls_ssl_context *ssl)
 
     while (ssl->handshake->cur_msg != NULL) {
         size_t max_frag_len;
-        const mbedtls_ssl_flight_item * const cur = ssl->handshake->cur_msg;
+        mbedtls_ssl_flight_item * const cur = ssl->handshake->cur_msg;
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+        /* DTLS 1.3: skip items that have already been acknowledged. */
+        if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+            ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+            cur->acked) {
+            MBEDTLS_SSL_DEBUG_MSG(3, ("flight item already acked, skipping"));
+            if (cur->next != NULL) {
+                ssl->handshake->cur_msg = cur->next;
+                ssl->handshake->cur_msg_p = cur->next->p + 12;
+            } else {
+                ssl->handshake->cur_msg = NULL;
+                ssl->handshake->cur_msg_p = NULL;
+            }
+            continue;
+        }
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 
         int const is_finished =
             (cur->type == MBEDTLS_SSL_MSG_HANDSHAKE &&
@@ -2404,6 +2421,32 @@ int mbedtls_ssl_flight_transmit(mbedtls_ssl_context *ssl)
         }
 
         /* Actually send the message out */
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+        /* DTLS 1.3: record the outbound epoch+seq before the write so we can
+         * match incoming ACKs to this flight item.  cur_out_ctr[0..1] is the
+         * epoch and cur_out_ctr[2..7] is the 48-bit sequence number; the
+         * counter is incremented inside ssl_write_datagram_frames() so we
+         * snapshot it before the call. */
+        if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+            ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+            uint8_t idx = cur->sent_record_count %
+                          MBEDTLS_SSL_DTLS13_MAX_RECORDS_PER_FLIGHT_ITEM;
+            cur->sent_record_epoch[idx] = ssl->cur_out_ctr[1]; /* low epoch byte */
+            cur->sent_records[idx] =
+                ((uint64_t) ssl->cur_out_ctr[2] << 40) |
+                ((uint64_t) ssl->cur_out_ctr[3] << 32) |
+                ((uint64_t) ssl->cur_out_ctr[4] << 24) |
+                ((uint64_t) ssl->cur_out_ctr[5] << 16) |
+                ((uint64_t) ssl->cur_out_ctr[6] <<  8) |
+                ((uint64_t) ssl->cur_out_ctr[7]);
+            if (cur->sent_record_count < MBEDTLS_SSL_DTLS13_MAX_RECORDS_PER_FLIGHT_ITEM) {
+                cur->sent_record_count++;
+            }
+            MBEDTLS_SSL_DEBUG_MSG(3, ("DTLS 1.3: flight item sent epoch=%u seq=%llu",
+                                      (unsigned) cur->sent_record_epoch[idx],
+                                      (unsigned long long) cur->sent_records[idx]));
+        }
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
         if ((ret = mbedtls_ssl_write_record(ssl, force_flush)) != 0) {
             MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_write_record", ret);
             return ret;
@@ -5642,6 +5685,14 @@ static int ssl_dtls13_process_ack(mbedtls_ssl_context *ssl,
         MBEDTLS_SSL_DEBUG_MSG(2, ("ACK: full flight acked; cancelling retransmit timer"));
         mbedtls_ssl_set_timer(ssl, 0);
         hs->retransmit_state = MBEDTLS_SSL_RETRANS_FINISHED;
+    } else {
+        /* Partial ACK: retransmit only the unacked items immediately.
+         * Reset to the start of the flight so flight_transmit iterates all
+         * items; acked ones will be skipped by the acked-item check above. */
+        MBEDTLS_SSL_DEBUG_MSG(2, ("ACK: partial — retransmitting unacked items"));
+        hs->cur_msg   = hs->flight;
+        hs->cur_msg_p = hs->flight->p + 12;
+        hs->retransmit_state = MBEDTLS_SSL_RETRANS_SENDING;
     }
 
     return 0;

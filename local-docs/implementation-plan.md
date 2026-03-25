@@ -439,8 +439,8 @@ have been drilled down in `local-docs/design-drilldown.md`:
          not a MUST, and implementing it in the record layer is over-engineered:
          it would require tracking bytes across every send/recv call, the threshold
          is routinely exceeded by a single certificate flight anyway, and the
-         infrastructure already added (`dtls13_bytes_from_peer`, `dtls13_bytes_sent`,
-         `dtls13_peer_verified`) will be removed as dead code.
+         infrastructure (`dtls13_bytes_from_peer`, `dtls13_bytes_sent`,
+         `dtls13_peer_verified`) has been removed as dead code.
          The cookie (Phase 3b.1) is the correct and sufficient mitigation.
 - [x] 3. Implement ACK message parsing and serialization.
          `ssl_dtls13_parse_ack()` and `ssl_dtls13_write_ack()` in `ssl_msg.c`.
@@ -454,12 +454,30 @@ have been drilled down in `local-docs/design-drilldown.md`:
          (client side, DTLS transport) after server Finished verified.
          ACK injected at the top of `mbedtls_ssl_read_record()` when the flag
          is set; flag cleared after successful send.
-- [ ] 5. Extend retransmit state machine: selective retransmission when ACK received.
-         See drilldown §3: new `ssl_dtls13_process_ack()` marks `flight_item->acked`;
-         `mbedtls_ssl_flight_transmit()` skips acked items. New fields `sent_records[]`
-         and `acked` on `mbedtls_ssl_flight_item`.
+- [x] 5. Extend retransmit state machine: selective retransmission when ACK received.
+         `ssl_dtls13_process_ack()` marks `flight_item->acked`; partial ACK transitions
+         to SENDING so unacked items are retransmitted immediately.
+         `mbedtls_ssl_flight_transmit()` skips acked items and captures outbound
+         epoch+seq into `sent_records[]` / `sent_record_epoch[]` before each write
+         so ACK matching works.
+         ssl-opt.sh test "DTLS 1.3: loss recovery via retransmit" passes
+         (drop=5 delay=5 duplicate=5 via udp_proxy).
 - [ ] 6. Interop: mbedtls client ↔ wolfSSL server, and wolfSSL client ↔ mbedtls server.
          See `reference-implementations.md`.
+- [~] 7. Proxy test parity: port all immediately-portable DTLS 1.2 proxy tests to DTLS 1.3.
+         Full analysis in `local-docs/proxy-test-parity.md`.
+         Done (7 tests passing):
+           duplicate every packet; duplicate + anti-replay off;
+           multiple records in same datagram; same + duplicate;
+           3d basic handshake; 3d client auth; 3d nbio.
+         Deferred — bad_ad: proxy corrupts handshake records; DTLS 1.3 fatals on
+           bad-MAC at SERVER_FINISHED; needs investigation or proxy option.
+         Deferred — fragmentation+3d: DTLS 1.3 write path does not yet fragment
+           outgoing handshake messages exceeding MTU (server Certificate hits
+           INTERNAL_ERROR at mtu=512). Needs its own implementation phase.
+         Deferred to Phase 4: 3d+PSK, 3d+ticket, 3d+resumption variants.
+         Deferred to Phase 3b.6: 3d+openssl/gnutls interop.
+         Not applicable: CCS tests, renegotiation tests, CKE tests.
 
 ### Phase 4: Session Resumption and PSK
 *Goal: PSK and resumption handshakes work, including 0-RTT.*

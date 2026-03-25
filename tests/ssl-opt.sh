@@ -14048,6 +14048,109 @@ run_test    "DTLS 1.3: HRR+cookie exchange (cookie enabled)" \
             -c "received HelloRetryRequest message" \
             -s "cookie verified"
 
+client_needs_more_time 4
+requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
+run_test    "DTLS 1.3: loss recovery via retransmit" \
+            -p "$P_PXY drop=5 delay=5 duplicate=5" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=2 hs_timeout=250-60000" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=2 hs_timeout=250-60000" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3"
+
+# ---------------------------------------------------------------------------
+# DTLS 1.3 proxy test parity (see local-docs/proxy-test-parity.md)
+# ---------------------------------------------------------------------------
+
+not_with_valgrind # spurious resend due to timeout
+requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
+run_test    "DTLS 1.3: proxy — duplicate every packet" \
+            -p "$P_PXY duplicate=1" \
+            "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 debug_level=2 hs_timeout=10000-20000" \
+            "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 debug_level=2 hs_timeout=10000-20000" \
+            0 \
+            -c "record from another epoch" \
+            -s "record from another epoch" \
+            -S "resend" \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3"
+
+# Note: in DTLS 1.3 duplicated records from a past epoch show as
+# "record from another epoch", not "replayed record" (which fires only
+# for same-epoch anti-replay hits).  anti_replay=0 disables same-epoch
+# checking; out-of-epoch duplicates are still logged.
+requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
+run_test    "DTLS 1.3: proxy — duplicate every packet, anti-replay off" \
+            -p "$P_PXY duplicate=1" \
+            "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 debug_level=2 anti_replay=0" \
+            "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 debug_level=2" \
+            0 \
+            -c "record from another epoch" \
+            -s "record from another epoch" \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3"
+
+requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
+run_test    "DTLS 1.3: proxy — multiple records in same datagram" \
+            -p "$P_PXY pack=50" \
+            "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 debug_level=2" \
+            "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 debug_level=2" \
+            0 \
+            -c "next record in same datagram" \
+            -s "next record in same datagram"
+
+requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
+run_test    "DTLS 1.3: proxy — multiple records in same datagram, duplicate every packet" \
+            -p "$P_PXY pack=50 duplicate=1" \
+            "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 debug_level=2" \
+            "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 debug_level=2" \
+            0 \
+            -c "next record in same datagram" \
+            -s "next record in same datagram"
+
+# bad_ad tests: deferred.  The proxy corrupts records indiscriminately,
+# including handshake records.  DTLS 1.3 correctly fatals on bad-MAC at
+# SERVER_FINISHED state (unlike 1.2 which is more forgiving there), so the
+# connection dies before app-data exchange.  Needs either a proxy option to
+# restrict corruption to app-data records or a separate investigation.
+# Tracked in proxy-test-parity.md.
+
+client_needs_more_time 2
+requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
+run_test    "DTLS 1.3: proxy — 3d, basic handshake" \
+            -p "$P_PXY drop=5 delay=5 duplicate=5" \
+            "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-10000 debug_level=2" \
+            "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-10000 debug_level=2" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3"
+
+client_needs_more_time 2
+requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
+run_test    "DTLS 1.3: proxy — 3d, client auth" \
+            -p "$P_PXY drop=5 delay=5 duplicate=5" \
+            "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-10000 auth_mode=required debug_level=2" \
+            "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-10000 debug_level=2" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3"
+
+client_needs_more_time 2
+requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
+run_test    "DTLS 1.3: proxy — 3d, nbio" \
+            -p "$P_PXY drop=5 delay=5 duplicate=5" \
+            "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-10000 nbio=2 debug_level=2" \
+            "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-10000 nbio=2 debug_level=2" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3"
+
+# fragmenting + 3d tests: deferred.  The DTLS 1.3 write path does not yet
+# fragment large handshake messages (server Certificate hits INTERNAL_ERROR
+# when the message exceeds MTU).  This is a real implementation gap tracked
+# as a future phase (handshake fragmentation for DTLS 1.3 outgoing messages).
+# See proxy-test-parity.md.
+
 if [ $FAILS -gt 255 ]; then
     # Clamp at 255 as caller gets exit code & 0xFF
     # (so 256 would be 0, or success, etc)
