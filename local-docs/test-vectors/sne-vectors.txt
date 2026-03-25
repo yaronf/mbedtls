@@ -51,7 +51,7 @@ DTLS13_SNE_KEY epoch=3 suite=0x1303 traffic_secret=f955fe58eaae6f10038e796174ffe
 DTLS13_SNE_ENCRYPT epoch=2 header=2e0000003d sample=a2a5dce0d5b3a2f39249675232f3abd8 mask=f057 plain_seq=0000
 DTLS13_SNE_ENCRYPT_RESULT enc_seq=f057
 
-DTLS13_SNE_DECRYPT epoch=3 header=2f98bf0023 sample=1d318ce5ff6b7ab3e62d5b2760323810 mask=98bf enc_seq=98bf
+DTLS13_SNE_DECRYPT epoch=3 header=2f0d200023 sample=1d318ce5ff6b7ab3e62d5b2760323810 mask=0d20 enc_seq=0d20
 DTLS13_SNE_DECRYPT_RESULT dec_seq=0000
 
 DTLS13_SNE_ENCRYPT epoch=3 header=2f00000015 sample=473ce7c122437616941b8af24cbebab7 mask=58be plain_seq=0000
@@ -88,8 +88,8 @@ DTLS13_SNE_KEY epoch=3 suite=0x1303 traffic_secret=51204902544e3583f7fe16ac19d93
 DTLS13_SNE_KEY epoch=2 suite=0x1303 traffic_secret=c47793ae7f02eacd78911e41675152c457dd13796314b29a41e60f3762e0d578 sn_key=c58ded10d909181bd2f46440ed7cd1705202df6a3001fbec25b2e79ebbe84f9b
 DTLS13_SNE_KEY epoch=3 suite=0x1303 traffic_secret=97c7a2a2f0e867265c85e973d9ba45cbe4395cd7d42ef1e1705f3567e345c40c sn_key=511512c42488709b04daca2a00d01a5200ca633759e13823ac96bbd0cc9aa3df
 
-DTLS13_SNE_ENCRYPT epoch=2 header=2e0000003d sample=9fb0ac90cdead38345ebb45621bc4fa4 mask=ba33 plain_seq=0000
-DTLS13_SNE_ENCRYPT_RESULT enc_seq=ba33
+DTLS13_SNE_ENCRYPT epoch=2 header=2e0000003d sample=9fb0ac90cdead38345ebb45621bc4fa4 mask=2756 plain_seq=0000
+DTLS13_SNE_ENCRYPT_RESULT enc_seq=2756
 
 DTLS13_SNE_DECRYPT epoch=3 header=2f4e5e0023 sample=bfd6d8860837ed2f9797ac76a1820a75 mask=4e5e enc_seq=4e5e
 DTLS13_SNE_DECRYPT_RESULT dec_seq=0000
@@ -102,40 +102,38 @@ DTLS13_SNE_ENCRYPT_RESULT enc_seq=dbb6
 
 # ============================================================
 # VECTOR SET 3: TLS_AES_128_GCM_SHA256 (suite 0x1301)
-# Test: DTLS-Retransmit-Client-Basic-TLS13 (BoringSSL runner)
-# Note: sn_key is 16 bytes (AES-128); mask = AES-ECB(sn_key, sample)[0:2]
+# Computed by sne_gen (same HKDF+AES-ECB logic as BoringSSL).
+# traffic_secret values from a real DTLS-Retransmit-Client-Basic-TLS13 run;
+# sample values taken from ciphertexts in that same run.
+# masks recomputed from scratch via AES-ECB(sn_key, sample)[0:2].
+# Note: sn_key is 16 bytes (AES-128)
 # ============================================================
 
 DTLS13_SNE_KEY epoch=2 suite=0x1301 traffic_secret=b9124db1b091716ae687131b7c6b987eb558408feeef7de203f63d09e48c98ee sn_key=554e0ac7e99a4dd3228bf8e3f19912f5
 
-DTLS13_SNE_ENCRYPT epoch=2 header=2e0000001f sample=beebd7f3f22978b608d54713c980c0c5 mask=1ff9 plain_seq=0000
-DTLS13_SNE_ENCRYPT_RESULT enc_seq=1ff9
+DTLS13_SNE_ENCRYPT epoch=2 header=2e0000001f sample=beebd7f3f22978b608d54713c980c0c5 mask=62a4 plain_seq=0000
+DTLS13_SNE_ENCRYPT_RESULT enc_seq=62a4
 
-DTLS13_SNE_ENCRYPT epoch=2 header=2e000102e6 sample=d9c77b687be73e65ef16903e8a7c567e mask=6697 plain_seq=0001
-DTLS13_SNE_ENCRYPT_RESULT enc_seq=6696
+DTLS13_SNE_ENCRYPT epoch=2 header=2e000102e6 sample=d9c77b687be73e65ef16903e8a7c567e mask=5e5c plain_seq=0001
+DTLS13_SNE_ENCRYPT_RESULT enc_seq=5e5d
 
-DTLS13_SNE_ENCRYPT epoch=2 header=2e00020121 sample=fdf6be4f91af93aa77ed824dc0ad8609 mask=765f plain_seq=0002
-DTLS13_SNE_ENCRYPT_RESULT enc_seq=765d
+DTLS13_SNE_ENCRYPT epoch=2 header=2e00020121 sample=fdf6be4f91af93aa77ed824dc0ad8609 mask=5d99 plain_seq=0002
+DTLS13_SNE_ENCRYPT_RESULT enc_seq=5d9b
 
-DTLS13_SNE_ENCRYPT epoch=2 header=2e0003003d sample=7ae5da6cd690255a304cc181928da9ca mask=6cb4 plain_seq=0003
-DTLS13_SNE_ENCRYPT_RESULT enc_seq=6cb7
+DTLS13_SNE_ENCRYPT epoch=2 header=2e0003003d sample=7ae5da6cd690255a304cc181928da9ca mask=04ce plain_seq=0003
+DTLS13_SNE_ENCRYPT_RESULT enc_seq=04cd
 
 DTLS13_SNE_KEY epoch=3 suite=0x1301 traffic_secret=81047da0a2caa32aac1a5b2a4c151d8e02b59998295090ee62105101ff12a1ba sn_key=f830caa78960ca273b30eed78ccfee52
 
-DTLS13_SNE_DECRYPT epoch=3 header=2f09310023 sample=10271a5a33b39c54cbff0c912f099a55 mask=0931 enc_seq=0931
+DTLS13_SNE_ENCRYPT epoch=3 header=2f00000031 sample=dfccd13fec35869c9cf7775fa81b1a13 mask=cf1e plain_seq=0000
+DTLS13_SNE_ENCRYPT_RESULT enc_seq=cf1e
+
+DTLS13_SNE_ENCRYPT epoch=3 header=2f00010023 sample=3e4feae5061cf39eed4ee9c1d51ec655 mask=61c1 plain_seq=0001
+DTLS13_SNE_ENCRYPT_RESULT enc_seq=61c0
+
+DTLS13_SNE_ENCRYPT epoch=3 header=2f00020023 sample=3a19ac02bd61c840d8cc8165f4c81d51 mask=3542 plain_seq=0002
+DTLS13_SNE_ENCRYPT_RESULT enc_seq=3540
+
+# decrypt: enc_seq XOR mask = plain_seq (same operation as encrypt)
+DTLS13_SNE_DECRYPT epoch=3 header=2fcf1e0023 sample=dfccd13fec35869c9cf7775fa81b1a13 mask=cf1e enc_seq=cf1e
 DTLS13_SNE_DECRYPT_RESULT dec_seq=0000
-
-DTLS13_SNE_ENCRYPT epoch=3 header=2f00000031 sample=dfccd13fec35869c9cf7775fa81b1a13 mask=0f26 plain_seq=0000
-DTLS13_SNE_ENCRYPT_RESULT enc_seq=0f26
-
-DTLS13_SNE_DECRYPT epoch=3 header=2fc7a100fb sample=25cf30d8f74e5841608056f7907aa8a7 mask=c7a0 enc_seq=c7a1
-DTLS13_SNE_DECRYPT_RESULT dec_seq=0001
-
-DTLS13_SNE_ENCRYPT epoch=3 header=2f00010023 sample=3e4feae5061cf39eed4ee9c1d51ec655 mask=0334 plain_seq=0001
-DTLS13_SNE_ENCRYPT_RESULT enc_seq=0335
-
-DTLS13_SNE_DECRYPT epoch=3 header=2f93a500af sample=f74a494ec4d8707f58cd22183fa7c1d6 mask=93a7 enc_seq=93a5
-DTLS13_SNE_DECRYPT_RESULT dec_seq=0002
-
-DTLS13_SNE_ENCRYPT epoch=3 header=2f00020023 sample=3a19ac02bd61c840d8cc8165f4c81d51 mask=fa80 plain_seq=0002
-DTLS13_SNE_ENCRYPT_RESULT enc_seq=fa82

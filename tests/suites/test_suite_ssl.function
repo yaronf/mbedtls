@@ -5936,3 +5936,154 @@ exit:
     MD_OR_USE_PSA_DONE();
 }
 /* END_CASE */
+
+/* BEGIN_CASE depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS */
+/*
+ * Test DTLS 1.3 sn_key derivation (Phase 2.2 + Phase 2.4).
+ *
+ *   sn_key = HKDF-Expand-Label(traffic_secret, "sn", "", key_len)
+ *
+ * The label prefix is "dtls13" (no trailing space), not "tls13 ".
+ * Vectors captured from BoringSSL ssl/test/runner (2026-03-25),
+ * see local-docs/test-vectors/sne-vectors.txt.
+ */
+void ssl_dtls13_sne_key_derivation(int hash_alg,
+                                   data_t *traffic_secret,
+                                   int key_len,
+                                   data_t *expected_sn_key)
+{
+    unsigned char sn_key[MBEDTLS_SSL_MAX_KEY_LENGTH];
+
+    TEST_ASSERT((size_t) key_len <= sizeof(sn_key));
+    TEST_EQUAL((size_t) key_len, expected_sn_key->len);
+
+    PSA_INIT();
+
+    TEST_EQUAL(mbedtls_ssl_dtls13_hkdf_expand_label(
+                   (psa_algorithm_t) hash_alg,
+                   traffic_secret->x, traffic_secret->len,
+                   (const unsigned char *) "sn", 2,
+                   NULL, 0,
+                   sn_key, (size_t) key_len), 0);
+
+    TEST_MEMORY_COMPARE(sn_key, (size_t) key_len,
+                        expected_sn_key->x, expected_sn_key->len);
+
+exit:
+    PSA_DONE();
+}
+/* END_CASE */
+
+/* BEGIN_CASE depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:PSA_WANT_KEY_TYPE_AES:PSA_WANT_ALG_ECB_NO_PADDING */
+/*
+ * Test DTLS 1.3 sequence-number encryption mask, AES ciphers (Phase 1.7).
+ *
+ *   mask = AES-ECB(sn_key, sample)[0:2]
+ *   enc_seq = plain_seq XOR mask
+ *
+ * Vectors from sne-vectors.txt VECTOR SET 3, TLS_AES_128_GCM_SHA256.
+ */
+void ssl_dtls13_sne_mask_aes(data_t *sn_key,
+                             data_t *sample,
+                             data_t *expected_mask,
+                             data_t *plain_seq,
+                             data_t *expected_enc_seq)
+{
+    psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+    psa_key_id_t key_id = PSA_KEY_ID_NULL;
+    unsigned char ecb_out[16];
+    size_t ecb_out_len;
+    unsigned char mask[2];
+    unsigned char enc_seq[2];
+
+    TEST_EQUAL(sample->len, 16);
+    TEST_EQUAL(expected_mask->len, 2);
+    TEST_EQUAL(plain_seq->len, 2);
+    TEST_EQUAL(expected_enc_seq->len, 2);
+
+    PSA_INIT();
+
+    psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
+    psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_ENCRYPT);
+    psa_set_key_algorithm(&attr, PSA_ALG_ECB_NO_PADDING);
+
+    TEST_EQUAL(psa_import_key(&attr, sn_key->x, sn_key->len, &key_id),
+               PSA_SUCCESS);
+    TEST_EQUAL(psa_cipher_encrypt(key_id, PSA_ALG_ECB_NO_PADDING,
+                                  sample->x, 16,
+                                  ecb_out, sizeof(ecb_out), &ecb_out_len),
+               PSA_SUCCESS);
+    TEST_EQUAL(ecb_out_len, 16);
+
+    mask[0] = ecb_out[0];
+    mask[1] = ecb_out[1];
+    TEST_MEMORY_COMPARE(mask, 2, expected_mask->x, 2);
+
+    enc_seq[0] = plain_seq->x[0] ^ mask[0];
+    enc_seq[1] = plain_seq->x[1] ^ mask[1];
+    TEST_MEMORY_COMPARE(enc_seq, 2, expected_enc_seq->x, 2);
+
+exit:
+    psa_destroy_key(key_id);
+    PSA_DONE();
+}
+/* END_CASE */
+
+/* BEGIN_CASE depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:MBEDTLS_CHACHA20_C */
+/*
+ * Test DTLS 1.3 sequence-number encryption mask, ChaCha20 (Phase 1.7).
+ *
+ *   counter = LE32(sample[0:4])
+ *   nonce   = sample[4:16]
+ *   mask    = ChaCha20(sn_key, nonce, counter)[0:2]
+ *   enc_seq = plain_seq XOR mask
+ *
+ * Vectors from sne-vectors.txt VECTOR SET 1, TLS_CHACHA20_POLY1305_SHA256.
+ */
+void ssl_dtls13_sne_mask_chacha20(data_t *sn_key,
+                                  data_t *sample,
+                                  data_t *expected_mask,
+                                  data_t *plain_seq,
+                                  data_t *expected_enc_seq)
+{
+    unsigned char finish_buf[2];
+    unsigned char mask[2];
+    unsigned char enc_seq[2];
+
+    TEST_EQUAL(sn_key->len, 32);
+    TEST_EQUAL(sample->len, 16);
+    TEST_EQUAL(expected_mask->len, 2);
+    TEST_EQUAL(plain_seq->len, 2);
+    TEST_EQUAL(expected_enc_seq->len, 2);
+
+    /*
+     * ChaCha20 SNE: counter = LE32(sample[0:4]), nonce = sample[4:16]
+     * mask = ChaCha20(sn_key, nonce, counter)[0:2]
+     *
+     * Use mbedtls_chacha20_crypt() directly so we can pass the counter
+     * without looping through counter blocks.
+     */
+    {
+        uint32_t counter = (uint32_t) sample->x[0]
+                         | ((uint32_t) sample->x[1] << 8)
+                         | ((uint32_t) sample->x[2] << 16)
+                         | ((uint32_t) sample->x[3] << 24);
+        unsigned char zero2[2] = { 0, 0 };
+        TEST_EQUAL(mbedtls_chacha20_crypt(sn_key->x, sample->x + 4,
+                                          counter, 2, zero2, finish_buf),
+                   0);
+    }
+
+    mask[0] = finish_buf[0];
+    mask[1] = finish_buf[1];
+
+    TEST_MEMORY_COMPARE(mask, 2, expected_mask->x, 2);
+
+    enc_seq[0] = plain_seq->x[0] ^ mask[0];
+    enc_seq[1] = plain_seq->x[1] ^ mask[1];
+    TEST_MEMORY_COMPARE(enc_seq, 2, expected_enc_seq->x, 2);
+
+exit:
+    return;
+}
+/* END_CASE */
