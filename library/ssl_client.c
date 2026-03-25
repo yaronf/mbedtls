@@ -510,34 +510,34 @@ static int ssl_write_client_hello_body(mbedtls_ssl_context *ssl,
     MBEDTLS_SSL_DEBUG_BUF(3, "session id", ssl->session_negotiate->id,
                           ssl->session_negotiate->id_len);
 
-    /* DTLS 1.2 ONLY
-     * ...
-     * opaque cookie<0..2^8-1>;
-     * ...
+    /* DTLS only: legacy_cookie field (RFC 6347 §4.1.2 for DTLS 1.2,
+     * RFC 9147 §5.3 for DTLS 1.3 where it MUST be zero-length).
+     * opaque legacy_cookie<0..2^8-1>;
      */
-#if defined(MBEDTLS_SSL_PROTO_TLS1_2) && defined(MBEDTLS_SSL_PROTO_DTLS)
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
     if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
-#if !defined(MBEDTLS_SSL_PROTO_TLS1_3)
         uint8_t cookie_len = 0;
-#else
-        uint16_t cookie_len = 0;
-#endif /* !MBEDTLS_SSL_PROTO_TLS1_3 */
 
-        if (handshake->cookie != NULL) {
+#if defined(MBEDTLS_SSL_PROTO_TLS1_2)
+        /* For DTLS 1.2 (or hybrid), include any HRR cookie from the server. */
+        if (handshake->cookie != NULL &&
+            ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_2) {
             MBEDTLS_SSL_DEBUG_BUF(3, "client hello, cookie",
                                   handshake->cookie,
                                   handshake->cookie_len);
-            cookie_len = handshake->cookie_len;
+            cookie_len = (uint8_t) handshake->cookie_len;
         }
+#endif /* MBEDTLS_SSL_PROTO_TLS1_2 */
 
+        /* DTLS 1.3: legacy_cookie MUST be zero-length (§5.3). */
         MBEDTLS_SSL_CHK_BUF_PTR(p, end, cookie_len + 1);
-        *p++ = (unsigned char) cookie_len;
+        *p++ = cookie_len;
         if (cookie_len > 0) {
             memcpy(p, handshake->cookie, cookie_len);
             p += cookie_len;
         }
     }
-#endif /* MBEDTLS_SSL_PROTO_TLS1_2 && MBEDTLS_SSL_PROTO_DTLS */
+#endif /* MBEDTLS_SSL_PROTO_DTLS */
 
     /* Write cipher_suites */
     ret = ssl_write_client_hello_cipher_suites(ssl, p, end,
@@ -848,18 +848,19 @@ static int ssl_prepare_client_hello(mbedtls_ssl_context *ssl)
          * compatibility only if one has not been created already, which is
          * the case if we are here for the TLS 1.3 second ClientHello.
          *
-         * Versions of TLS before TLS 1.3 supported a "session resumption"
-         * feature which has been merged with pre-shared keys in TLS 1.3
-         * version. A client which has a cached session ID set by a pre-TLS 1.3
-         * server SHOULD set this field to that value. In compatibility mode,
-         * this field MUST be non-empty, so a client not offering a pre-TLS 1.3
-         * session MUST generate a new 32-byte value. This value need not be
-         * random but SHOULD be unpredictable to avoid implementations fixating
-         * on a specific value (also known as ossification). Otherwise, it MUST
-         * be set as a zero-length vector ( i.e., a zero-valued single byte
-         * length field ).
+         * Compatibility mode is prohibited in DTLS 1.3 (RFC 9147 §5):
+         * legacy_session_id MUST be zero-length in DTLS 1.3 ClientHello.
+         *
+         * In TLS 1.3 compatibility mode, the field MUST be non-empty, so a
+         * client not offering a pre-TLS 1.3 session MUST generate a new
+         * 32-byte value.
          */
-        session_id_len = 32;
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+        if (ssl->conf->transport != MBEDTLS_SSL_TRANSPORT_DATAGRAM)
+#endif
+        {
+            session_id_len = 32;
+        }
     }
 #endif /* MBEDTLS_SSL_TLS1_3_COMPATIBILITY_MODE */
 

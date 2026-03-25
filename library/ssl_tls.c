@@ -1115,11 +1115,6 @@ static int ssl_conf_version_check(const mbedtls_ssl_context *ssl)
 
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
     if (mbedtls_ssl_conf_is_tls13_only(conf)) {
-        if (conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
-            MBEDTLS_SSL_DEBUG_MSG(1, ("DTLS 1.3 is not yet supported."));
-            return MBEDTLS_ERR_SSL_FEATURE_UNAVAILABLE;
-        }
-
         MBEDTLS_SSL_DEBUG_MSG(4, ("The SSL configuration is tls13 only."));
         return 0;
     }
@@ -1134,11 +1129,6 @@ static int ssl_conf_version_check(const mbedtls_ssl_context *ssl)
 
 #if defined(MBEDTLS_SSL_PROTO_TLS1_2) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
     if (mbedtls_ssl_conf_is_hybrid_tls12_tls13(conf)) {
-        if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
-            MBEDTLS_SSL_DEBUG_MSG(1, ("DTLS not yet supported in Hybrid TLS 1.3 + TLS 1.2"));
-            return MBEDTLS_ERR_SSL_FEATURE_UNAVAILABLE;
-        }
-
         MBEDTLS_SSL_DEBUG_MSG(4, ("The SSL configuration is TLS 1.3 or TLS 1.2."));
         return 0;
     }
@@ -2727,6 +2717,8 @@ const char *mbedtls_ssl_get_version(const mbedtls_ssl_context *ssl)
         switch (ssl->tls_version) {
             case MBEDTLS_SSL_VERSION_TLS1_2:
                 return "DTLSv1.2";
+            case MBEDTLS_SSL_VERSION_TLS1_3:
+                return "DTLSv1.3";
             default:
                 return "unknown (DTLS)";
         }
@@ -5139,6 +5131,13 @@ void mbedtls_ssl_free(mbedtls_ssl_context *ssl)
     mbedtls_ssl_transform_free(ssl->transform_application);
     mbedtls_free(ssl->transform_application);
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    /* Free any retained inbound transforms in the DTLS 1.3 epoch pool.
+     * Must be done after handshake_free (which may null transform_handshake
+     * when it was already moved to the pool). */
+    ssl_dtls13_epoch_pool_free(ssl);
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 
     if (ssl->session) {
         mbedtls_ssl_session_free(ssl->session);

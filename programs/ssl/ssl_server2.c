@@ -564,7 +564,7 @@ int main(void)
     "\n"
 
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
-#define TLS1_3_VERSION_OPTIONS  ", tls13"
+#define TLS1_3_VERSION_OPTIONS  ", tls13, dtls13"
 #else /* MBEDTLS_SSL_PROTO_TLS1_3 */
 #define TLS1_3_VERSION_OPTIONS  ""
 #endif /* !MBEDTLS_SSL_PROTO_TLS1_3 */
@@ -2064,7 +2064,8 @@ usage:
                 opt.min_version = MBEDTLS_SSL_VERSION_TLS1_2;
             }
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
-            else if (strcmp(q, "tls13") == 0) {
+            else if (strcmp(q, "tls13") == 0 ||
+                     strcmp(q, "dtls13") == 0) {
                 opt.min_version = MBEDTLS_SSL_VERSION_TLS1_3;
             }
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
@@ -2077,7 +2078,8 @@ usage:
                 opt.max_version = MBEDTLS_SSL_VERSION_TLS1_2;
             }
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
-            else if (strcmp(q, "tls13") == 0) {
+            else if (strcmp(q, "tls13") == 0 ||
+                     strcmp(q, "dtls13") == 0) {
                 opt.max_version = MBEDTLS_SSL_VERSION_TLS1_3;
             }
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
@@ -2103,6 +2105,10 @@ usage:
             else if (strcmp(q, "tls13") == 0) {
                 opt.min_version = MBEDTLS_SSL_VERSION_TLS1_3;
                 opt.max_version = MBEDTLS_SSL_VERSION_TLS1_3;
+            } else if (strcmp(q, "dtls13") == 0) {
+                opt.min_version = MBEDTLS_SSL_VERSION_TLS1_3;
+                opt.max_version = MBEDTLS_SSL_VERSION_TLS1_3;
+                opt.transport = MBEDTLS_SSL_TRANSPORT_DATAGRAM;
             }
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
             else {

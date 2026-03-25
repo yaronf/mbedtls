@@ -1158,6 +1158,18 @@ struct mbedtls_ssl_transform {
      * 32 for ChaCha20-Poly1305). */
     unsigned char sn_key[MBEDTLS_SSL_MAX_KEY_LENGTH];
     size_t        sn_key_len;         /*!< 0 when SNE is not active */
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    /* DTLS 1.3 epoch this transform belongs to (RFC 9147 §4.2.2):
+     *   0 = unset / DTLS 1.2 transform
+     *   1 = early data (0-RTT)
+     *   2 = handshake
+     *   3 = application (first)
+     *   4+ = post-handshake rekey
+     * Set during transform construction; used by set_inbound/outbound_transform
+     * to sync ssl->in_epoch / ssl->cur_out_ctr epoch bytes. */
+    uint16_t      dtls13_epoch;
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
 
 #if defined(MBEDTLS_SSL_KEEP_RANDBYTES)
@@ -1185,6 +1197,43 @@ static inline int mbedtls_ssl_transform_uses_aead(
     return 1;
 #endif
 }
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+/*
+ * DTLS 1.3 epoch pool helpers  (defined in ssl_msg.c).
+ *
+ * The pool retains inbound transforms from superseded epochs so that
+ * reordered records (arriving after an epoch transition) can still be
+ * decrypted (RFC 9147 §4.2.1).  The pool takes ownership of each transform
+ * inserted into it; callers must null their original owning pointer to avoid
+ * a double-free on teardown.
+ *
+ * Pool capacity : MBEDTLS_SSL_DTLS13_EPOCH_POOL_SIZE (4).
+ * Eviction policy: lowest epoch number (oldest) when all slots are full.
+ */
+
+/**
+ * \brief  Insert \p transform into the DTLS 1.3 epoch pool.
+ *         Pool takes ownership; caller must null their owning pointer.
+ *         May be called with transform == NULL (no-op).
+ */
+void ssl_dtls13_epoch_pool_insert(mbedtls_ssl_context *ssl,
+                                  mbedtls_ssl_transform *transform);
+
+/**
+ * \brief  Look up a transform in the pool by full epoch number.
+ * \return Matching transform (pool retains ownership), or NULL if not found.
+ */
+mbedtls_ssl_transform *ssl_dtls13_epoch_pool_lookup(
+    const mbedtls_ssl_context *ssl,
+    uint64_t epoch);
+
+/**
+ * \brief  Free all transforms in the pool.  Called from mbedtls_ssl_free().
+ */
+void ssl_dtls13_epoch_pool_free(mbedtls_ssl_context *ssl);
+
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 
 /*
  * Internal representation of record frames

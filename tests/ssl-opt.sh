@@ -13968,6 +13968,34 @@ EOF
     fi
 fi
 
+# =============================================================================
+# Tests for DTLS 1.3
+# =============================================================================
+# These tests are gated on MBEDTLS_SSL_PROTO_TLS1_3.  Each test starts
+# failing and is expected to pass once the relevant Phase 3 work lands.
+# Do not remove tests when they start passing — keep them as regression guards.
+# =============================================================================
+
+requires_protocol_version dtls13
+run_test    "DTLS 1.3: full 1-RTT handshake" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=2" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=2" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3"
+
+# DTLS 1.3 client connecting to DTLS 1.2 server: must negotiate down to 1.2.
+# The client advertises both 0xfefc (1.3) and 0xfefd (1.2) in supported_versions;
+# the 1.2 server picks 1.2.  Requires MBEDTLS_SSL_PROTO_TLS1_2 on both sides.
+requires_protocol_version dtls13
+requires_protocol_version dtls12
+run_test    "DTLS 1.3 client, DTLS 1.2 server: negotiate down to DTLS 1.2" \
+            "$P_SRV dtls=1 force_version=dtls12 debug_level=2" \
+            "$P_CLI dtls=1 min_version=dtls12 max_version=dtls13 debug_level=2" \
+            0 \
+            -s "Protocol is DTLSv1.2" \
+            -c "Protocol is DTLSv1.2"
+
 if [ $FAILS -gt 255 ]; then
     # Clamp at 255 as caller gets exit code & 0xFF
     # (so 256 would be 0, or success, etc)

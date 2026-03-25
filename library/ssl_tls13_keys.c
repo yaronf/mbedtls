@@ -1287,6 +1287,12 @@ int mbedtls_ssl_tls13_compute_early_transform(mbedtls_ssl_context *ssl)
         MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_tls13_populate_transform", ret);
         goto cleanup;
     }
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    /* RFC 9147 §4.2.2: early data (0-RTT) epoch = 1 */
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+        transform_earlydata->dtls13_epoch = 1;
+    }
+#endif
     handshake->transform_earlydata = transform_earlydata;
 
 cleanup:
@@ -1809,6 +1815,11 @@ int mbedtls_ssl_tls13_compute_handshake_transform(mbedtls_ssl_context *ssl)
 
         MBEDTLS_SSL_DEBUG_BUF(4, "DTLS 1.3 handshake sn_key (dec)",
                               transform_handshake->sn_key, hs_key_len);
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+        /* RFC 9147 §4.2.2: handshake epoch = 2 */
+        transform_handshake->dtls13_epoch = 2;
+#endif
     }
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
 
@@ -1949,6 +1960,11 @@ int mbedtls_ssl_tls13_compute_application_transform(mbedtls_ssl_context *ssl)
 
         MBEDTLS_SSL_DEBUG_BUF(4, "DTLS 1.3 application sn_key (dec)",
                               transform_application->sn_key, app_key_len);
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+        /* RFC 9147 §4.2.2: first application epoch = 3 */
+        transform_application->dtls13_epoch = 3;
+#endif
     }
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
 

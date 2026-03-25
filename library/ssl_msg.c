@@ -2270,6 +2270,17 @@ int mbedtls_ssl_flight_transmit(mbedtls_ssl_context *ssl)
     if (ssl->handshake->retransmit_state != MBEDTLS_SSL_RETRANS_SENDING) {
         MBEDTLS_SSL_DEBUG_MSG(2, ("initialise flight transmission"));
 
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+        /* DTLS 1.3 bypasses the flight mechanism; nothing to retransmit here.
+         * Phase 3b will implement proper DTLS 1.3 reliability. */
+        if (ssl->handshake->flight == NULL) {
+            MBEDTLS_SSL_DEBUG_MSG(2, ("no flight to retransmit (DTLS 1.3)"));
+            ssl->handshake->retransmit_state = MBEDTLS_SSL_RETRANS_WAITING;
+            ret = 0;
+            goto cleanup;
+        }
+#endif
+
         ssl->handshake->cur_msg = ssl->handshake->flight;
         ssl->handshake->cur_msg_p = ssl->handshake->flight->p + 12;
         ret = ssl_swap_epochs(ssl);
@@ -2410,9 +2421,10 @@ int mbedtls_ssl_flight_transmit(mbedtls_ssl_context *ssl)
         mbedtls_ssl_set_timer(ssl, ssl->handshake->retransmit_timeout);
     }
 
+cleanup:
     MBEDTLS_SSL_DEBUG_MSG(2, ("<= mbedtls_ssl_flight_transmit"));
 
-    return 0;
+    return ret;
 }
 
 /*
@@ -2608,6 +2620,24 @@ int mbedtls_ssl_write_handshake_msg_ext(mbedtls_ssl_context *ssl,
 
         /* Update running hashes of handshake messages seen */
         if (hs_type != MBEDTLS_SSL_HS_HELLO_REQUEST && update_checksum != 0) {
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+            /* DTLS 1.3: RFC 9147 §5.2 — transcript hash uses TLS-style 4-byte
+             * header only, not the 8 extra DTLS framing bytes.  ssl->out_msg
+             * at this point has the full 12-byte DTLS header prepended, so
+             * skip bytes [4..11] (seq_num + frag_offset + frag_len) and hash
+             * only the 4-byte TLS header + body.
+             * Use conf->max_tls_version for pre-negotiation messages
+             * (ClientHello) where tls_version is not yet set. */
+            if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+                (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 ||
+                 ssl->conf->max_tls_version == MBEDTLS_SSL_VERSION_TLS1_3)) {
+                /* out_msg[0..3] = TLS-style header; out_msg[4..11] = DTLS-only;
+                 * out_msg[12..] = body.  hs_len = out_msglen - 4. */
+                size_t body_len = ssl->out_msglen - 12;
+                ret = mbedtls_ssl_add_hs_msg_to_checksum(
+                          ssl, hs_type, ssl->out_msg + 12, body_len);
+            } else
+#endif
             ret = ssl->handshake->update_checksum(ssl, ssl->out_msg,
                                                   ssl->out_msglen);
             if (ret != 0) {
@@ -2621,7 +2651,16 @@ int mbedtls_ssl_write_handshake_msg_ext(mbedtls_ssl_context *ssl,
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
     if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
         !(ssl->out_msgtype == MBEDTLS_SSL_MSG_HANDSHAKE &&
-          hs_type          == MBEDTLS_SSL_HS_HELLO_REQUEST)) {
+          hs_type          == MBEDTLS_SSL_HS_HELLO_REQUEST)
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+        /* DTLS 1.3: bypass the DTLS 1.2 flight/retransmit machinery; send
+         * immediately.  Phase 3b will add proper DTLS 1.3 reliability.
+         * Check both tls_version (set after ServerHello) and conf->max_tls_version
+         * (covers pre-negotiation messages like ClientHello). */
+        && ssl->tls_version != MBEDTLS_SSL_VERSION_TLS1_3
+        && ssl->conf->max_tls_version != MBEDTLS_SSL_VERSION_TLS1_3
+#endif
+        ) {
         if ((ret = ssl_flight_append(ssl)) != 0) {
             MBEDTLS_SSL_DEBUG_RET(1, "ssl_flight_append", ret);
             return ret;
@@ -3150,6 +3189,20 @@ int mbedtls_ssl_update_handshake_status(mbedtls_ssl_context *ssl)
     mbedtls_ssl_handshake_params * const hs = ssl->handshake;
 
     if (mbedtls_ssl_is_handshake_over(ssl) == 0 && hs != NULL) {
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+        /* DTLS 1.3: RFC 9147 §5.2 — transcript hash uses TLS-style 4-byte
+         * handshake header only (type + 3-byte length), not the 8 extra DTLS
+         * framing bytes (seq_num + frag_offset + frag_len).  The send path
+         * already does this via mbedtls_ssl_add_hs_hdr_to_checksum; mirror
+         * that here on the receive path. */
+        if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+            ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3) {
+            size_t body_len = ssl->in_hslen - 12;
+            ret = mbedtls_ssl_add_hs_msg_to_checksum(ssl, ssl->in_msg[0],
+                                                     ssl->in_msg + 12,
+                                                     body_len);
+        } else
+#endif
         ret = ssl->handshake->update_checksum(ssl, ssl->in_msg, ssl->in_hslen);
         if (ret != 0) {
             MBEDTLS_SSL_DEBUG_RET(1, "update_checksum", ret);
@@ -4139,7 +4192,27 @@ static int ssl_parse_record_header(mbedtls_ssl_context const *ssl,
                 return MBEDTLS_ERR_SSL_EARLY_MESSAGE;
             }
 
-            return MBEDTLS_ERR_SSL_UNEXPECTED_RECORD;
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+            /*
+             * DTLS 1.3: records from a previous epoch may still be in flight
+             * due to reordering (RFC 9147 §4.2.1, SHOULD retain keys up to
+             * MSL).  If the epoch pool has a matching transform, allow the
+             * record through for decryption.  The right transform will be
+             * selected in ssl_prepare_record_content() based on rec->ctr.
+             */
+            if (ssl->transform_in != NULL &&
+                ssl->transform_in->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+                ssl_dtls13_epoch_pool_lookup(ssl, (uint64_t) rec_epoch) != NULL) {
+                MBEDTLS_SSL_DEBUG_MSG(2, ("DTLS 1.3: record from old epoch %u "
+                                          "found in pool, allowing decryption",
+                                          (unsigned) rec_epoch));
+                /* Fall through — epoch check passes; decryption path will
+                 * use the pooled transform. */
+            } else
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
+            {
+                return MBEDTLS_ERR_SSL_UNEXPECTED_RECORD;
+            }
         }
 #if defined(MBEDTLS_SSL_DTLS_ANTI_REPLAY)
         /* For records from the correct epoch, check whether their
@@ -4192,9 +4265,33 @@ static int ssl_prepare_record_content(mbedtls_ssl_context *ssl,
                                       mbedtls_record *rec)
 {
     int ret, done = 0;
+    mbedtls_ssl_transform *transform_in = ssl->transform_in;
 
     MBEDTLS_SSL_DEBUG_BUF(4, "input record from network",
                           rec->buf, rec->buf_len);
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    /*
+     * DTLS 1.3: if this record belongs to a previous epoch that was allowed
+     * through the epoch check because it was found in the epoch pool (see
+     * ssl_parse_record_header()), resolve the correct transform from the pool.
+     */
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+        transform_in != NULL &&
+        transform_in->tls_version == MBEDTLS_SSL_VERSION_TLS1_3) {
+        uint16_t rec_epoch = MBEDTLS_GET_UINT16_BE(rec->ctr, 0);
+        if (rec_epoch != ssl->in_epoch) {
+            mbedtls_ssl_transform *pool_transform =
+                ssl_dtls13_epoch_pool_lookup(ssl, (uint64_t) rec_epoch);
+            if (pool_transform != NULL) {
+                MBEDTLS_SSL_DEBUG_MSG(3, ("DTLS 1.3: decrypting old-epoch "
+                                          "record with pooled transform "
+                                          "(epoch %u)", (unsigned) rec_epoch));
+                transform_in = pool_transform;
+            }
+        }
+    }
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 
     /*
      * In TLS 1.3, always treat ChangeCipherSpec records
@@ -4202,15 +4299,15 @@ static int ssl_prepare_record_content(mbedtls_ssl_context *ssl,
      * check the length and content and ignore them.
      */
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
-    if (ssl->transform_in != NULL &&
-        ssl->transform_in->tls_version == MBEDTLS_SSL_VERSION_TLS1_3) {
+    if (transform_in != NULL &&
+        transform_in->tls_version == MBEDTLS_SSL_VERSION_TLS1_3) {
         if (rec->type == MBEDTLS_SSL_MSG_CHANGE_CIPHER_SPEC) {
             done = 1;
         }
     }
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 
-    if (!done && ssl->transform_in != NULL) {
+    if (!done && transform_in != NULL) {
         unsigned char const old_msg_type = rec->type;
 
 #if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
@@ -4226,8 +4323,8 @@ static int ssl_prepare_record_content(mbedtls_ssl_context *ssl,
          * an active sn_key.  DTLSPlaintext records (epoch 0) never use SNE.
          */
         if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
-            ssl->transform_in->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
-            ssl->transform_in->sn_key_len > 0 &&
+            transform_in->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+            transform_in->sn_key_len > 0 &&
             rec->buf_len >= 1 && (rec->buf[0] & 0xE0) == 0x20 &&
             rec->data_len >= 16) {
             int long_seq  = (rec->buf[0] >> 3) & 1;
@@ -4236,7 +4333,7 @@ static int ssl_prepare_record_content(mbedtls_ssl_context *ssl,
             unsigned char *seq_ptr = rec->buf + 1;
             const unsigned char *ciphertext = rec->buf + rec->data_offset;
 
-            ret = ssl_dtls13_sne_apply(ssl->transform_in,
+            ret = ssl_dtls13_sne_apply(transform_in,
                                        seq_ptr, seq_len,
                                        ciphertext, rec->data_len);
             if (ret != 0) {
@@ -4261,7 +4358,7 @@ static int ssl_prepare_record_content(mbedtls_ssl_context *ssl,
         }
 #endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 
-        if ((ret = mbedtls_ssl_decrypt_buf(ssl, ssl->transform_in,
+        if ((ret = mbedtls_ssl_decrypt_buf(ssl, transform_in,
                                            rec)) != 0) {
             MBEDTLS_SSL_DEBUG_RET(1, "ssl_decrypt_buf", ret);
 
@@ -6471,6 +6568,91 @@ int mbedtls_ssl_close_notify(mbedtls_ssl_context *ssl)
     return 0;
 }
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+/*
+ * DTLS 1.3 epoch pool — implementation.
+ *
+ * These functions manage a small circular pool of retained inbound transforms.
+ * The pool allows records from recently-superseded epochs to be decrypted even
+ * after the session has transitioned to a newer epoch (RFC 9147 §4.2.1).
+ *
+ * Ownership: the pool owns every transform it holds.  Callers that insert
+ * a transform MUST set their original owning pointer to NULL immediately
+ * afterward to prevent a double-free in handshake / context teardown.
+ */
+
+void ssl_dtls13_epoch_pool_insert(mbedtls_ssl_context *ssl,
+                                  mbedtls_ssl_transform *transform)
+{
+    int i;
+    int evict;
+    uint64_t oldest_ts;
+    mbedtls_ssl_dtls13_epoch_slot *pool = ssl->dtls13_epoch_pool;
+
+    if (transform == NULL) {
+        return;
+    }
+
+    /* Find an empty slot first. */
+    for (i = 0; i < MBEDTLS_SSL_DTLS13_EPOCH_POOL_SIZE; i++) {
+        if (pool[i].transform == NULL) {
+            pool[i].epoch         = transform->dtls13_epoch;
+            pool[i].transform     = transform;
+            /* Use epoch number as ordering key: lower epoch = older. */
+            pool[i].retired_at_ms = (uint64_t) transform->dtls13_epoch;
+            return;
+        }
+    }
+
+    /* All slots occupied — evict the slot with the lowest retired_at_ms
+     * (i.e. the oldest epoch, least likely to be needed for decryption). */
+    evict     = 0;
+    oldest_ts = pool[0].retired_at_ms;
+    for (i = 1; i < MBEDTLS_SSL_DTLS13_EPOCH_POOL_SIZE; i++) {
+        if (pool[i].retired_at_ms < oldest_ts) {
+            oldest_ts = pool[i].retired_at_ms;
+            evict     = i;
+        }
+    }
+
+    mbedtls_ssl_transform_free(pool[evict].transform);
+    mbedtls_free(pool[evict].transform);
+
+    pool[evict].epoch         = transform->dtls13_epoch;
+    pool[evict].transform     = transform;
+    pool[evict].retired_at_ms = (uint64_t) transform->dtls13_epoch;
+}
+
+mbedtls_ssl_transform *ssl_dtls13_epoch_pool_lookup(
+    const mbedtls_ssl_context *ssl,
+    uint64_t epoch)
+{
+    int i;
+    const mbedtls_ssl_dtls13_epoch_slot *pool = ssl->dtls13_epoch_pool;
+
+    for (i = 0; i < MBEDTLS_SSL_DTLS13_EPOCH_POOL_SIZE; i++) {
+        if (pool[i].transform != NULL && pool[i].epoch == epoch) {
+            return pool[i].transform;
+        }
+    }
+    return NULL;
+}
+
+void ssl_dtls13_epoch_pool_free(mbedtls_ssl_context *ssl)
+{
+    int i;
+    mbedtls_ssl_dtls13_epoch_slot *pool = ssl->dtls13_epoch_pool;
+
+    for (i = 0; i < MBEDTLS_SSL_DTLS13_EPOCH_POOL_SIZE; i++) {
+        if (pool[i].transform != NULL) {
+            mbedtls_ssl_transform_free(pool[i].transform);
+            mbedtls_free(pool[i].transform);
+            pool[i].transform = NULL;
+        }
+    }
+}
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
+
 void mbedtls_ssl_transform_free(mbedtls_ssl_transform *transform)
 {
     if (transform == NULL) {
@@ -6493,6 +6675,25 @@ void mbedtls_ssl_set_inbound_transform(mbedtls_ssl_context *ssl,
 {
     ssl->transform_in = transform;
     memset(ssl->in_ctr, 0, MBEDTLS_SSL_SEQUENCE_NUMBER_LEN);
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    /*
+     * DTLS 1.3: sync in_epoch / in_epoch_full from the transform's epoch.
+     * For DTLS 1.2 transforms dtls13_epoch == 0, so we leave in_epoch alone
+     * (it is managed by the DTLS 1.2 epoch-increment path).
+     */
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+        transform != NULL && transform->dtls13_epoch != 0) {
+        ssl->in_epoch = transform->dtls13_epoch;
+        ssl->in_epoch_full = (uint64_t) transform->dtls13_epoch;
+        /* Reset per-epoch max-seq tracker for this epoch's low 2 bits. */
+        ssl->dtls13_epoch_max_seq[transform->dtls13_epoch & 0x03] = 0;
+#if defined(MBEDTLS_SSL_DTLS_ANTI_REPLAY)
+        /* Reset the anti-replay window for the new epoch. */
+        mbedtls_ssl_dtls_replay_reset(ssl);
+#endif
+    }
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 }
 
 void mbedtls_ssl_set_outbound_transform(mbedtls_ssl_context *ssl,
@@ -6500,6 +6701,19 @@ void mbedtls_ssl_set_outbound_transform(mbedtls_ssl_context *ssl,
 {
     ssl->transform_out = transform;
     memset(ssl->cur_out_ctr, 0, sizeof(ssl->cur_out_ctr));
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    /*
+     * DTLS 1.3: write epoch into the high 2 bytes of cur_out_ctr.
+     * cur_out_ctr layout (DTLS): [epoch_hi][epoch_lo][seq0..seq5]
+     * For DTLS 1.2 transforms dtls13_epoch == 0; epoch is managed separately.
+     */
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+        transform != NULL && transform->dtls13_epoch != 0) {
+        ssl->cur_out_ctr[0] = (unsigned char) (transform->dtls13_epoch >> 8);
+        ssl->cur_out_ctr[1] = (unsigned char) (transform->dtls13_epoch);
+    }
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 }
 
 #if defined(MBEDTLS_SSL_PROTO_DTLS)

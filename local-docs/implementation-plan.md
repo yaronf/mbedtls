@@ -255,9 +255,11 @@ have been drilled down in `local-docs/design-drilldown.md`:
 - [x] 2. Implement record type demultiplexing (first-byte dispatch).
          `buf[0] & 0xE0 == 0x20` → `ssl_parse_dtls13_record_header()` at top of
          `ssl_parse_record_header()`; DTLSPlaintext falls through to existing path.
-- [ ] 3. Handle last-record-in-datagram with omitted length field (L bit clear).
-         Read loop in `ssl_get_next_record()` must consume remainder of datagram when
-         no length field is present.
+- [x] 3. Handle last-record-in-datagram with omitted length field (L bit clear).
+         Already handled: `ssl_parse_dtls13_record_header()` sets
+         `rec->data_len = len - hdr_len` when L=0, so `rec->buf_len = len`.
+         `ssl_get_next_record()` sets `next_record_offset = rec.buf_len`, which
+         equals `in_left`, so the datagram is fully consumed. No code needed.
 - [x] 4. Implement epoch reconstruction algorithm (§4.2.2).
          New context fields `dtls13_epoch_max_seq[4]` and `in_epoch_full` in
          `mbedtls_ssl_context` (ssl.h). Reconstruction logic in
@@ -279,7 +281,11 @@ have been drilled down in `local-docs/design-drilldown.md`:
          `ssl_extract_add_data_from_record()` gains `dtls13_hdr`/`dtls13_hdr_len`
          parameters; raw unified header used as AAD when non-NULL. All 7 existing
          call sites updated to pass `NULL, 0`.
-- [ ] 9. Implement `DTLSInnerPlaintext` serialization/deserialization.
+- [x] 9. Implement `DTLSInnerPlaintext` serialization/deserialization.
+          Already handled by existing TLS 1.3 path: `ssl_build_inner_plaintext()`
+          (encrypt, ssl_msg.c:872) and `ssl_parse_inner_plaintext()` (decrypt,
+          ssl_msg.c:1834) both gate on `transform->tls_version == TLS1_3`, which
+          a DTLS 1.3 transform carries. No new code needed.
 - [x] 10. Add `dtls13_epoch_pool[4]` to `mbedtls_ssl_context`; struct
           `mbedtls_ssl_dtls13_epoch_slot` defined in `ssl.h`. Install/lookup/evict
           helpers not yet implemented.
@@ -302,51 +308,113 @@ have been drilled down in `local-docs/design-drilldown.md`:
          `transform->sn_key` / `transform->sn_key_len`. Gated on DTLS transport.
          Note: only the decrypt-direction sn_key is derived here; encrypt-direction
          derivation deferred to write path implementation.
-- [ ] 3. Validate epoch → key mapping (epoch 0=no key, 1=early, 2=hs, 3=app, 4+=rekey).
+- [x] 3. Validate epoch → key mapping (epoch 0=no key, 1=early, 2=hs, 3=app, 4+=rekey).
+         Added `dtls13_epoch` (uint16_t) to `mbedtls_ssl_transform`; set to 1/2/3 in
+         `compute_early/handshake/application_transform()` in `ssl_tls13_keys.c`.
+         `set_inbound_transform()` now syncs `ssl->in_epoch` and `ssl->in_epoch_full` from
+         `transform->dtls13_epoch` (and resets the per-epoch `dtls13_epoch_max_seq` slot).
+         `set_outbound_transform()` now writes epoch into `cur_out_ctr[0:2]`.
+         All gated on `MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3`.
 - [x] 4. Unit tests: key derivation test vectors.
          See `reference-implementations.md`: BoringSSL test runner is the source for vectors.
          Covered by `test_suite_ssl.dtls13` (7 sn_key derivation cases).
 
-### Phase 3: Basic Handshake (Full 1-RTT, Certificate-Based)
-*Goal: A full DTLS 1.3 handshake completes between mbedtls client and server, and interops with wolfSSL.*
-*Design detail: see `design-drilldown.md` §1 (transcript/epoch wiring), §3 (ACK + retransmit).*
+### Phase 3a: Handshake Completes (Full 1-RTT, mbedtls ↔ mbedtls)
+*Goal: "Protocol is DTLSv1.3" prints on both sides; self-test passes.*
+*Design detail: see `design-drilldown.md` §1 (transcript/epoch wiring).*
 
-- [ ] 1. Remove the "DTLS 1.3 not supported" guard.
-- [ ] 2. Decide and implement `MBEDTLS_SSL_DTLS13_ACK` config flag (or always-on):
-         ACK is mandatory for correct operation; leaning toward always-on when
-         `MBEDTLS_SSL_PROTO_DTLS` + `MBEDTLS_SSL_PROTO_TLS1_3` are both defined.
-- [ ] 3. Implement version negotiation: `supported_versions` extension with `0xfefc`
+- [x] 0. Test harness: add `force_version=dtls13` to `ssl_client2`/`ssl_server2` (sets
+         transport=datagram + min/max version TLS 1.3), and add a skeleton DTLS 1.3
+         test block in `tests/ssl-opt.sh` gated on `requires_protocol_version dtls13`.
+         Test "DTLS 1.3: full 1-RTT handshake" currently fails (server crashes at
+         guard before binding); will pass once Phase 3a is complete.
+- [x] 1. Remove the "DTLS 1.3 not supported" guard.
+         Removed the DTLS transport check from `ssl_conf_version_check()` in `ssl_tls.c`.
+         Server now binds and starts; handshake fails at version negotiation (Phase 3.3).
+- [x] 2. Decide and implement `MBEDTLS_SSL_DTLS13_ACK` config flag (or always-on):
+         Decision: always-on. ACK is mandatory per RFC 9147 §7; no optional flag.
+         The data structures (`dtls13_received_records`, `dtls13_ack_pending`) are
+         already compiled unconditionally under `MBEDTLS_SSL_PROTO_DTLS +
+         MBEDTLS_SSL_PROTO_TLS1_3` from Phase 1. No new code needed.
+- [x] 3. Implement version negotiation: `supported_versions` extension with `0xfefc`
          for DTLS 1.3; clean fallback to DTLS 1.2 when peer does not support 1.3.
-- [ ] 4. Adapt ClientHello construction: zero `legacy_session_id`, zero `legacy_cookie`,
+         Fixes: (1) `ssl_tls13_write_supported_versions_ext()` hardcoded STREAM transport
+         — fixed to `ssl->conf->transport`. (2) `fetch_handshake_msg()` hardcoded 4-byte
+         header skip — fixed to `mbedtls_ssl_hs_hdr_len(ssl)` (12 for DTLS). (3) Removed
+         second "DTLS not supported" guard in hybrid TLS 1.2+1.3 config path in `ssl_tls.c`.
+         (4) Added `dtls13` alias to `min_version`/`max_version` in both programs.
+         Added ssl-opt.sh test: "DTLS 1.3 client, DTLS 1.2 server: negotiate down to DTLS 1.2".
+         Both tests now fail at ClientHello body parsing (Phase 3.4).
+- [x] 4. Adapt ClientHello construction: zero `legacy_session_id`, zero `legacy_cookie`,
          correct `supported_versions`, no compatibility mode.
-- [ ] 5. Adapt ServerHello: no `legacy_session_id_echo`, `legacy_version = 0xfefd`.
-         Enforce client aborts with `illegal_parameter` if `legacy_session_id_echo` non-empty.
-- [ ] 6. Strip DTLS framing fields from transcript hash inputs.
-         See drilldown §1: identify all `ssl_update_checksum` call sites in
-         `ssl_tls13_generic.c` and client/server files; strip `message_seq`,
-         `fragment_offset`, `fragment_length` before hashing for DTLS 1.3.
-- [ ] 7. Implement HRR+cookie path (stateless server cookie via HMAC).
-- [ ] 8. Suppress EndOfEarlyData.
-- [ ] 9. Suppress ChangeCipherSpec.
-- [ ] 10. Enforce amplification limit: server MUST NOT send more than 3x bytes received
-          before address is validated (cookie exchange or completed handshake).
-- [ ] 11. Wire up epoch transitions: install handshake keys at epoch 2, app keys at epoch 3.
-          See drilldown §2: push old `transform_in` into `dtls13_epoch_pool` on each
-          transition rather than freeing it; `alt_transform_out` handles outbound retransmit.
-- [ ] 12. Implement ACK message parsing and serialization.
-          See drilldown §3: `ACK { RecordNumber record_numbers<0..2^16-1> }`;
-          `RecordNumber = { uint64 epoch; uint64 seq }`.
-- [ ] 13. Add ACK sending for the final client flight (required by spec).
-          See drilldown §3: set `dtls13_ack_pending` flag; ACK injected at top of
-          `mbedtls_ssl_read_record()` from `dtls13_received_records[]`.
-- [ ] 14. Extend retransmit state machine: selective retransmission when ACK received.
-          See drilldown §3: new `ssl_dtls13_process_ack()` marks `flight_item->acked`;
-          `mbedtls_ssl_flight_transmit()` skips acked items. New fields `sent_records[]`
-          and `acked` on `mbedtls_ssl_flight_item`.
-- [ ] 15. Self-test: mbedtls client ↔ mbedtls server full 1-RTT handshake, verify
-          record transcript and epoch transitions.
-- [ ] 16. Interop: mbedtls client ↔ wolfSSL server, and wolfSSL client ↔ mbedtls server.
-          See `reference-implementations.md`.
+         Client write (`ssl_client.c`): extended cookie-write block from
+         `PROTO_TLS1_2 && PROTO_DTLS` to `PROTO_DTLS` so DTLS 1.3 also writes
+         the zero-length `legacy_cookie` field required by RFC 9147 §5.3.
+         Server parse (`ssl_tls13_server.c`): added `legacy_cookie` skip after
+         `legacy_session_id` gated on `PROTO_DTLS`; updated min-length check to 39
+         for DTLS. Handshake now progresses: server completes ServerHello →
+         EncryptedExtensions → Certificate → Finished; client stalls waiting to
+         decrypt EncryptedExtensions (epoch transition not yet wired — Phase 3a.5).
+- [x] 5. Adapt ServerHello: no `legacy_session_id_echo`, `legacy_version = 0xfefd`.
+         Server (`ssl_tls13_write_server_hello_body`): use `mbedtls_ssl_write_version()`
+         with transport (emits `0xfefd` on DTLS, `0x0303` on TLS); send zero-length
+         `legacy_session_id_echo` for DTLS 1.3 (compatibility mode prohibited per
+         RFC 9147 §5.4). Client (`ssl_tls13_check_server_hello_session_id_echo`): for
+         DTLS transport, enforce echo is zero-length and abort with `illegal_parameter`
+         if not. Client (`ssl_client.c`): skip 32-byte fake session ID generation for
+         DTLS 1.3 (TLS 1.3 compatibility mode path gated out for DTLS transport).
+- [x] 6. Strip DTLS framing fields from transcript hash inputs.
+         Analysis: no code change required. The TLS 1.3 send path always calls
+         `mbedtls_ssl_add_hs_msg_to_checksum(ssl, type, body, body_len)` with
+         `update_checksum=0` in `finish_handshake_msg` — the 4-byte TLS-style header
+         is built internally, DTLS framing bytes are never included. The TLS 1.3
+         receive path calls `mbedtls_ssl_read_record(ssl, 0)` (update_hs_digest=0)
+         and uses `fetch_handshake_msg` which skips the full DTLS 12-byte header,
+         then explicit `add_hs_msg_to_checksum` with just the body. The raw-DTLS
+         `update_handshake_status` path is only reached when `update_hs_digest=1`,
+         which TLS 1.3 never sets. No DTLS framing bytes are hashed.
+- [x] 7. Suppress EndOfEarlyData.
+         Analysis: no code change required for the certificate-based 1-RTT path.
+         The `MBEDTLS_SSL_END_OF_EARLY_DATA` state is only entered when
+         `MBEDTLS_SSL_EARLY_DATA` is defined and early_data was accepted — neither
+         applies to the basic handshake. Will revisit in Phase 4 (early data).
+- [x] 8. Suppress ChangeCipherSpec.
+         `MBEDTLS_SSL_TLS1_3_COMPATIBILITY_MODE` CCS state transitions gated to
+         skip when `transport == DATAGRAM` (RFC 9147 §5 explicitly prohibits
+         compatibility mode in DTLS 1.3). Three client sites (after ClientHello
+         with early data, after HRR, after server Finished) and two server sites
+         (after ServerHello, after HRR) all updated with DTLS transport checks.
+- [x] 9. Wire up epoch transitions: install handshake keys at epoch 2, app keys at epoch 3.
+         Pool helpers `ssl_dtls13_epoch_pool_insert/lookup/free` added to `ssl_misc.h` /
+         `ssl_msg.c`. Epoch pool insert wired into `handshake_wrapup` (epoch 2→3) and
+         server END_OF_EARLY_DATA handler (epoch 1→2). Decrypt path in
+         `ssl_parse_record_header()` allows pool-epoch records through; `ssl_prepare_
+         record_content()` resolves the correct transform from the pool by `rec->ctr`
+         epoch. `mbedtls_ssl_free()` calls `ssl_dtls13_epoch_pool_free()`. Ownership
+         transfer nulls `handshake->transform_handshake` / `transform_earlydata` at
+         insert sites to prevent double-free in teardown.
+- [ ] 10. Self-test: mbedtls client ↔ mbedtls server full 1-RTT handshake; ssl-opt.sh
+          test "DTLS 1.3: full 1-RTT handshake" passes.
+
+### Phase 3b: Reliability Layer
+*Goal: Spec-compliant retransmission, ACK, HRR+cookie, amplification limit, wolfSSL interop.*
+*Design detail: see `design-drilldown.md` §3 (ACK + retransmit).*
+
+- [ ] 1. Implement HRR+cookie path (stateless server cookie via HMAC).
+- [ ] 2. Enforce amplification limit: server MUST NOT send more than 3x bytes received
+         before address is validated (cookie exchange or completed handshake).
+- [ ] 3. Implement ACK message parsing and serialization.
+         See drilldown §3: `ACK { RecordNumber record_numbers<0..2^16-1> }`;
+         `RecordNumber = { uint64 epoch; uint64 seq }`.
+- [ ] 4. Add ACK sending for the final client flight (required by spec).
+         See drilldown §3: set `dtls13_ack_pending` flag; ACK injected at top of
+         `mbedtls_ssl_read_record()` from `dtls13_received_records[]`.
+- [ ] 5. Extend retransmit state machine: selective retransmission when ACK received.
+         See drilldown §3: new `ssl_dtls13_process_ack()` marks `flight_item->acked`;
+         `mbedtls_ssl_flight_transmit()` skips acked items. New fields `sent_records[]`
+         and `acked` on `mbedtls_ssl_flight_item`.
+- [ ] 6. Interop: mbedtls client ↔ wolfSSL server, and wolfSSL client ↔ mbedtls server.
+         See `reference-implementations.md`.
 
 ### Phase 4: Session Resumption and PSK
 *Goal: PSK and resumption handshakes work, including 0-RTT.*

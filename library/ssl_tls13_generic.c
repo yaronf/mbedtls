@@ -67,14 +67,25 @@ int mbedtls_ssl_tls13_fetch_handshake_msg(mbedtls_ssl_context *ssl,
     }
 
     /*
-     * Jump handshake header (4 bytes, see Section 4 of RFC 8446).
-     *    ...
-     *    HandshakeType msg_type;
-     *    uint24 length;
-     *    ...
+     * Jump handshake header (4 bytes for TLS, 12 bytes for DTLS).
+     * TLS (RFC 8446 §4):  HandshakeType(1) + length(3)
+     * DTLS (RFC 9147 §5): HandshakeType(1) + length(3) + message_seq(2)
+     *                      + fragment_offset(3) + fragment_length(3)
      */
-    *buf = ssl->in_msg   + 4;
-    *buf_len = ssl->in_hslen - 4;
+    size_t hs_hdr_len = mbedtls_ssl_hs_hdr_len(ssl);
+    *buf = ssl->in_msg   + hs_hdr_len;
+    *buf_len = ssl->in_hslen - hs_hdr_len;
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+    /* DTLS 1.3: advance in_msg_seq so the next message is accepted.
+     * For TLS 1.3 over TCP this field is unused; for DTLS it is checked
+     * by ssl_consume_current_message / ssl_handle_message_type. */
+    if (ret == 0 &&
+        ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+        ssl->handshake != NULL) {
+        ssl->handshake->in_msg_seq++;
+    }
+#endif
 
 cleanup:
 
@@ -1211,6 +1222,21 @@ void mbedtls_ssl_tls13_handshake_wrapup(mbedtls_ssl_context *ssl)
     MBEDTLS_SSL_DEBUG_MSG(3, ("=> handshake wrapup"));
 
     MBEDTLS_SSL_DEBUG_MSG(1, ("Switch to application keys for inbound traffic"));
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    /*
+     * DTLS 1.3: retire the handshake-epoch (epoch 2) inbound transform into
+     * the epoch pool so reordered handshake-epoch records can still be
+     * decrypted after we move to epoch 3 (RFC 9147 §4.2.1).
+     * The pool takes ownership; null the handshake pointer to prevent
+     * mbedtls_ssl_handshake_free() from double-freeing it.
+     */
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+        ssl->handshake != NULL &&
+        ssl->handshake->transform_handshake != NULL) {
+        ssl_dtls13_epoch_pool_insert(ssl, ssl->handshake->transform_handshake);
+        ssl->handshake->transform_handshake = NULL;
+    }
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
     mbedtls_ssl_set_inbound_transform(ssl, ssl->transform_application);
 
     MBEDTLS_SSL_DEBUG_MSG(1, ("Switch to application keys for outbound traffic"));

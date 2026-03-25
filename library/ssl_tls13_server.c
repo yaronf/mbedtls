@@ -1264,6 +1264,10 @@ static int ssl_tls13_parse_client_hello(mbedtls_ssl_context *ssl,
      *     2  .  33   random bytes
      *    34  .  34   session id length ( 1 byte )
      *    35  . 34+x  session id
+     * [DTLS only]
+     *    ..  .  ..   legacy_cookie length ( 1 byte )
+     *    ..  .  ..   legacy_cookie ( 0 bytes for DTLS 1.3 )
+     * [end DTLS only]
      *    ..  .  ..   ciphersuite list length ( 2 bytes )
      *    ..  .  ..   ciphersuite list
      *    ..  .  ..   compression alg. list length ( 1 byte )
@@ -1273,11 +1277,16 @@ static int ssl_tls13_parse_client_hello(mbedtls_ssl_context *ssl,
      */
 
     /*
-     * Minimal length ( with everything empty and extensions omitted ) is
-     * 2 + 32 + 1 + 2 + 1 = 38 bytes. Check that first, so that we can
-     * read at least up to session id length without worrying.
+     * Minimal length for TLS 1.3 ( with everything empty and extensions
+     * omitted ) is 2 + 32 + 1 + 2 + 1 = 38 bytes.
+     * For DTLS add 1 byte for the zero-length legacy_cookie field.
      */
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+    MBEDTLS_SSL_CHK_BUF_READ_PTR(p, end,
+        ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM ? 39 : 38);
+#else
     MBEDTLS_SSL_CHK_BUF_READ_PTR(p, end, 38);
+#endif
 
     /* ...
      * ProtocolVersion legacy_version = 0x0303; // TLS 1.2
@@ -1316,6 +1325,19 @@ static int ssl_tls13_parse_client_hello(mbedtls_ssl_context *ssl,
      */
     MBEDTLS_SSL_CHK_BUF_READ_PTR(p, end, legacy_session_id_len + 2);
     p += legacy_session_id_len;
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+    /* DTLS only: skip legacy_cookie (RFC 9147 §5.3 — MUST be zero-length
+     * for DTLS 1.3; may be non-empty if client is doing DTLS 1.2 fallback
+     * via HelloVerifyRequest, but the TLS 1.3 server ignores it). */
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+        size_t cookie_len;
+        MBEDTLS_SSL_CHK_BUF_READ_PTR(p, end, 1);
+        cookie_len = *p++;
+        MBEDTLS_SSL_CHK_BUF_READ_PTR(p, end, cookie_len);
+        p += cookie_len;
+    }
+#endif /* MBEDTLS_SSL_PROTO_DTLS */
 
     /* ...
      * CipherSuite cipher_suites<2..2^16-2>;
@@ -2253,13 +2275,15 @@ static int ssl_tls13_write_server_hello_body(mbedtls_ssl_context *ssl,
     ssl->handshake->sent_extensions = MBEDTLS_SSL_EXT_MASK_NONE;
 
     /* ...
-     * ProtocolVersion legacy_version = 0x0303; // TLS 1.2
+     * ProtocolVersion legacy_version = 0x0303; // TLS 1.2 (TLS wire)
+     *                                = 0xfefd; // DTLSv1.2 (DTLS 1.3 wire, RFC 9147 §5.4)
      * ...
      * with ProtocolVersion defined as:
      * uint16 ProtocolVersion;
      */
     MBEDTLS_SSL_CHK_BUF_PTR(p, end, 2);
-    MBEDTLS_PUT_UINT16_BE(0x0303, p, 0);
+    mbedtls_ssl_write_version(p, ssl->conf->transport,
+                              MBEDTLS_SSL_VERSION_TLS1_2);
     p += 2;
 
     /* ...
@@ -2283,16 +2307,27 @@ static int ssl_tls13_write_server_hello_body(mbedtls_ssl_context *ssl,
     /* ...
      * opaque legacy_session_id_echo<0..32>;
      * ...
+     * DTLS 1.3 (RFC 9147 §5.4): compatibility mode is prohibited; the echo
+     * MUST be zero-length regardless of what the client sent.
+     * TLS 1.3: echo whatever the client sent in legacy_session_id.
      */
-    MBEDTLS_SSL_CHK_BUF_PTR(p, end, 1 + ssl->session_negotiate->id_len);
-    *p++ = (unsigned char) ssl->session_negotiate->id_len;
-    if (ssl->session_negotiate->id_len > 0) {
-        memcpy(p, &ssl->session_negotiate->id[0],
-               ssl->session_negotiate->id_len);
-        p += ssl->session_negotiate->id_len;
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+        MBEDTLS_SSL_CHK_BUF_PTR(p, end, 1);
+        *p++ = 0;
+    } else
+#endif /* MBEDTLS_SSL_PROTO_DTLS */
+    {
+        MBEDTLS_SSL_CHK_BUF_PTR(p, end, 1 + ssl->session_negotiate->id_len);
+        *p++ = (unsigned char) ssl->session_negotiate->id_len;
+        if (ssl->session_negotiate->id_len > 0) {
+            memcpy(p, &ssl->session_negotiate->id[0],
+                   ssl->session_negotiate->id_len);
+            p += ssl->session_negotiate->id_len;
 
-        MBEDTLS_SSL_DEBUG_BUF(3, "session id", ssl->session_negotiate->id,
-                              ssl->session_negotiate->id_len);
+            MBEDTLS_SSL_DEBUG_BUF(3, "session id", ssl->session_negotiate->id,
+                                  ssl->session_negotiate->id_len);
+        }
     }
 
     /* ...
@@ -2424,12 +2459,16 @@ static int ssl_tls13_write_server_hello(mbedtls_ssl_context *ssl)
     /* The server sends a dummy change_cipher_spec record immediately
      * after its first handshake message. This may either be after
      * a ServerHello or a HelloRetryRequest.
+     * DTLS 1.3 (RFC 9147 §5): compatibility mode is prohibited; skip CCS.
      */
-    mbedtls_ssl_handshake_set_state(
-        ssl, MBEDTLS_SSL_SERVER_CCS_AFTER_SERVER_HELLO);
-#else
-    mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_ENCRYPTED_EXTENSIONS);
+    if (ssl->conf->transport != MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+        mbedtls_ssl_handshake_set_state(
+            ssl, MBEDTLS_SSL_SERVER_CCS_AFTER_SERVER_HELLO);
+    } else
 #endif /* MBEDTLS_SSL_TLS1_3_COMPATIBILITY_MODE */
+    {
+        mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_ENCRYPTED_EXTENSIONS);
+    }
 
 cleanup:
 
@@ -2495,15 +2534,15 @@ static int ssl_tls13_write_hello_retry_request(mbedtls_ssl_context *ssl)
     ssl->handshake->hello_retry_request_flag = 1;
 
 #if defined(MBEDTLS_SSL_TLS1_3_COMPATIBILITY_MODE)
-    /* The server sends a dummy change_cipher_spec record immediately
-     * after its first handshake message. This may either be after
-     * a ServerHello or a HelloRetryRequest.
-     */
-    mbedtls_ssl_handshake_set_state(
-        ssl, MBEDTLS_SSL_SERVER_CCS_AFTER_HELLO_RETRY_REQUEST);
-#else
-    mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_CLIENT_HELLO);
+    /* DTLS 1.3 (RFC 9147 §5): compatibility mode is prohibited; skip CCS. */
+    if (ssl->conf->transport != MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+        mbedtls_ssl_handshake_set_state(
+            ssl, MBEDTLS_SSL_SERVER_CCS_AFTER_HELLO_RETRY_REQUEST);
+    } else
 #endif /* MBEDTLS_SSL_TLS1_3_COMPATIBILITY_MODE */
+    {
+        mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_CLIENT_HELLO);
+    }
 
 cleanup:
     MBEDTLS_SSL_DEBUG_MSG(2, ("<= write hello retry request"));
@@ -3025,6 +3064,18 @@ static int ssl_tls13_process_end_of_early_data(mbedtls_ssl_context *ssl)
         MBEDTLS_SSL_DEBUG_MSG(
             1, ("Switch to handshake keys for inbound traffic"
                 "( K_recv = handshake )"));
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+        /*
+         * DTLS 1.3: retire the early-data epoch (epoch 1) transform into the
+         * pool before installing epoch 2, so any reordered epoch-1 records
+         * still in flight can be decrypted (RFC 9147 §4.2.1).
+         */
+        if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+            ssl->handshake->transform_earlydata != NULL) {
+            ssl_dtls13_epoch_pool_insert(ssl, ssl->handshake->transform_earlydata);
+            ssl->handshake->transform_earlydata = NULL;
+        }
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
         mbedtls_ssl_set_inbound_transform(
             ssl, ssl->handshake->transform_handshake);
 

@@ -74,15 +74,16 @@ static int ssl_tls13_write_supported_versions_ext(mbedtls_ssl_context *ssl,
      * They are defined by the configuration.
      * Currently, we advertise only TLS 1.3 or both TLS 1.3 and TLS 1.2.
      */
-    mbedtls_ssl_write_version(p, MBEDTLS_SSL_TRANSPORT_STREAM,
+    mbedtls_ssl_write_version(p, ssl->conf->transport,
                               MBEDTLS_SSL_VERSION_TLS1_3);
-    MBEDTLS_SSL_DEBUG_MSG(3, ("supported version: [3:4]"));
-
+    MBEDTLS_SSL_DEBUG_MSG(3, ("supported version: [%04x]",
+                              (unsigned int) MBEDTLS_SSL_VERSION_TLS1_3));
 
     if (ssl->handshake->min_tls_version <= MBEDTLS_SSL_VERSION_TLS1_2) {
-        mbedtls_ssl_write_version(p + 2, MBEDTLS_SSL_TRANSPORT_STREAM,
+        mbedtls_ssl_write_version(p + 2, ssl->conf->transport,
                                   MBEDTLS_SSL_VERSION_TLS1_2);
-        MBEDTLS_SSL_DEBUG_MSG(3, ("supported version: [3:3]"));
+        MBEDTLS_SSL_DEBUG_MSG(3, ("supported version: [%04x]",
+                                  (unsigned int) MBEDTLS_SSL_VERSION_TLS1_2));
     }
 
     *out_len = 5 + versions_len;
@@ -1295,15 +1296,19 @@ int mbedtls_ssl_tls13_finalize_client_hello(mbedtls_ssl_context *ssl)
         }
 
 #if defined(MBEDTLS_SSL_TLS1_3_COMPATIBILITY_MODE)
-        mbedtls_ssl_handshake_set_state(
-            ssl, MBEDTLS_SSL_CLIENT_CCS_AFTER_CLIENT_HELLO);
-#else
-        MBEDTLS_SSL_DEBUG_MSG(
-            1, ("Switch to early data keys for outbound traffic"));
-        mbedtls_ssl_set_outbound_transform(
-            ssl, ssl->handshake->transform_earlydata);
-        ssl->early_data_state = MBEDTLS_SSL_EARLY_DATA_STATE_CAN_WRITE;
+        /* DTLS 1.3 (RFC 9147 §5): compatibility mode is prohibited; skip CCS. */
+        if (ssl->conf->transport != MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+            mbedtls_ssl_handshake_set_state(
+                ssl, MBEDTLS_SSL_CLIENT_CCS_AFTER_CLIENT_HELLO);
+        } else
 #endif
+        {
+            MBEDTLS_SSL_DEBUG_MSG(
+                1, ("Switch to early data keys for outbound traffic"));
+            mbedtls_ssl_set_outbound_transform(
+                ssl, ssl->handshake->transform_earlydata);
+            ssl->early_data_state = MBEDTLS_SSL_EARLY_DATA_STATE_CAN_WRITE;
+        }
     }
 #endif /* MBEDTLS_SSL_EARLY_DATA */
     return 0;
@@ -1548,7 +1553,25 @@ static int ssl_tls13_check_server_hello_session_id_echo(mbedtls_ssl_context *ssl
 
     MBEDTLS_SSL_CHK_BUF_READ_PTR(p, end, legacy_session_id_echo_len);
 
-    /* legacy_session_id_echo */
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+    /*
+     * DTLS 1.3 (RFC 9147 §5.4): compatibility mode is prohibited.
+     * The server MUST send a zero-length legacy_session_id_echo.
+     * Abort with illegal_parameter if it is non-empty.
+     */
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+        if (legacy_session_id_echo_len != 0) {
+            MBEDTLS_SSL_DEBUG_MSG(1, ("DTLS 1.3: non-empty legacy_session_id_echo"));
+            MBEDTLS_SSL_PEND_FATAL_ALERT(MBEDTLS_SSL_ALERT_MSG_ILLEGAL_PARAMETER,
+                                         MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER);
+            return MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER;
+        }
+        *buf = p;
+        return 0;
+    }
+#endif /* MBEDTLS_SSL_PROTO_DTLS */
+
+    /* TLS 1.3: echo must match what the client sent. */
     if (ssl->session_negotiate->id_len != legacy_session_id_echo_len ||
         memcmp(ssl->session_negotiate->id, p, legacy_session_id_echo_len) != 0) {
         MBEDTLS_SSL_DEBUG_BUF(3, "Expected Session ID",
@@ -2028,12 +2051,16 @@ static int ssl_tls13_process_server_hello(mbedtls_ssl_context *ssl)
         /* If not offering early data, the client sends a dummy CCS record
          * immediately before its second flight. This may either be before
          * its second ClientHello or before its encrypted handshake flight.
+         * DTLS 1.3 (RFC 9147 §5): compatibility mode is prohibited; skip CCS.
          */
-        mbedtls_ssl_handshake_set_state(
-            ssl, MBEDTLS_SSL_CLIENT_CCS_BEFORE_2ND_CLIENT_HELLO);
-#else
-        mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_CLIENT_HELLO);
+        if (ssl->conf->transport != MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+            mbedtls_ssl_handshake_set_state(
+                ssl, MBEDTLS_SSL_CLIENT_CCS_BEFORE_2ND_CLIENT_HELLO);
+        } else
 #endif /* MBEDTLS_SSL_TLS1_3_COMPATIBILITY_MODE */
+        {
+            mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_CLIENT_HELLO);
+        }
     } else {
         MBEDTLS_SSL_PROC_CHK(ssl_tls13_postprocess_server_hello(ssl));
         mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_ENCRYPTED_EXTENSIONS);
@@ -2612,11 +2639,15 @@ static int ssl_tls13_process_server_finished(mbedtls_ssl_context *ssl)
 #endif /* MBEDTLS_SSL_EARLY_DATA */
     {
 #if defined(MBEDTLS_SSL_TLS1_3_COMPATIBILITY_MODE)
-        mbedtls_ssl_handshake_set_state(
-            ssl, MBEDTLS_SSL_CLIENT_CCS_AFTER_SERVER_FINISHED);
-#else
-        mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_CLIENT_CERTIFICATE);
+        /* DTLS 1.3 (RFC 9147 §5): compatibility mode is prohibited; skip CCS. */
+        if (ssl->conf->transport != MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+            mbedtls_ssl_handshake_set_state(
+                ssl, MBEDTLS_SSL_CLIENT_CCS_AFTER_SERVER_FINISHED);
+        } else
 #endif /* MBEDTLS_SSL_TLS1_3_COMPATIBILITY_MODE */
+        {
+            mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_CLIENT_CERTIFICATE);
+        }
     }
 
     return 0;
