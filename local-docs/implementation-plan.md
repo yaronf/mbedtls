@@ -393,7 +393,7 @@ have been drilled down in `local-docs/design-drilldown.md`:
          epoch. `mbedtls_ssl_free()` calls `ssl_dtls13_epoch_pool_free()`. Ownership
          transfer nulls `handshake->transform_handshake` / `transform_earlydata` at
          insert sites to prevent double-free in teardown.
-- [ ] 10. Self-test: mbedtls client ↔ mbedtls server full 1-RTT handshake; ssl-opt.sh
+- [x] 10. Self-test: mbedtls client ↔ mbedtls server full 1-RTT handshake; ssl-opt.sh
           test "DTLS 1.3: full 1-RTT handshake" passes.
 
 ### Phase 3b: Reliability Layer
