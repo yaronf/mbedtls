@@ -88,18 +88,21 @@ These use `ssl_client2` / `ssl_server2` over loopback UDP.
 ### Planned — to be added as phases complete
 
 
-| Test name                                  | Phase | Notes                                                                     |
-| ------------------------------------------ | ----- | ------------------------------------------------------------------------- |
-| DTLS 1.3: HRR+cookie exchange              | 3b.1  | Server sends cookie in HRR; client echoes it; second ClientHello accepted |
-| DTLS 1.3: amplification limit              | 3b.2  | Server refuses to send > 3x bytes before address validated (requires cookie) |
-| DTLS 1.3: ACK sent for final client flight | 3b.4  | Client debug log shows ACK content type 26 transmitted after server Finished |
-| DTLS 1.3: loss recovery via retransmit     | 3b.5  | Inject packet loss via udp_proxy; handshake completes                     |
-| DTLS 1.3: session resumption (PSK)         | 4     | Both sides print "Protocol is DTLSv1.3", resumed                          |
-| DTLS 1.3: 0-RTT early data                 | 4     | Client sends data before server Finished                                  |
-| DTLS 1.3: KeyUpdate                        | 5     | Both sides complete KeyUpdate; epoch advances to 4                        |
-| DTLS 1.3: CID negotiation                  | 5     | CID extension present; records use CID format                             |
-| DTLS 1.3: post-handshake client auth       | 5     | Server sends CertificateRequest post-handshake                            |
-| DTLS 1.3: per-epoch anti-replay            | —     | Replayed record silently dropped                                          |
+| Test name                                             | Phase | Notes                                                                                                               |
+| ----------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------- |
+| DTLS 1.3: HRR+cookie exchange                         | 3b.1  | Server sends cookie in HRR; client echoes it; second ClientHello accepted                                          |
+| DTLS 1.3: amplification limit enforced                | 3b.2  | Blocked on 3b.1 (cookie). After cookie lands: verify dtls13_bytes_sent ≤ 3× dtls13_bytes_from_peer pre-validation  |
+| DTLS 1.3: loss recovery via retransmit                | 3b.5  | Inject packet loss via udp_proxy; handshake completes                                                              |
+| DTLS 1.3: per-epoch anti-replay                       | 1.5   | Replay a post-handshake record via udp_proxy; silently dropped, connection stays live                              |
+| DTLS 1.3: session resumption (PSK)                    | 4     | Both sides print "Protocol is DTLSv1.3", resumed                                                                   |
+| DTLS 1.3: 0-RTT early data                            | 4     | Client sends data before server Finished                                                                            |
+| DTLS 1.3: KeyUpdate (single)                          | 5.2   | Both sides complete KeyUpdate; epoch advances to 4; app data flows                                                 |
+| DTLS 1.3: KeyUpdate (3 sequential)                    | 5.2   | Client triggers 3 KeyUpdates; epoch advances 4→5→6; app data flows at each; old keys evicted                       |
+| DTLS 1.3: CID negotiation                             | 5.5   | CID extension in ClientHello/ServerHello; records use CID format; app data flows                                   |
+| DTLS 1.3: CID — address change continuity             | 5.5   | Peer changes src IP/port mid-session (udp_proxy remap); session continues via CID; app data flows                  |
+| DTLS 1.3: CID update (NewConnectionId)                | 5.5   | Peer sends NewConnectionId + retire_prior_to; both ends switch to new CID; old CID silently dropped                |
+| DTLS 1.3: CID — too_many_cids_requested               | 5.5   | Server returns too_many_cids_requested (alert 52) when RequestConnectionId count exceeds limit                     |
+| DTLS 1.3: post-handshake client auth                  | 5.6   | Server sends CertificateRequest post-handshake                                                                     |
 
 
 ---
@@ -122,12 +125,20 @@ See `local-docs/reference-implementations.md` for setup instructions.
 ## Coverage gaps / known missing tests
 
 - **Transcript hash correctness**: no unit test verifying that DTLS framing fields are
-stripped before hashing. Should add a test vector derived from a known BoringSSL or
-wolfSSL transcript.
-- **Amplification limit** (Phase 3b.2): no test for server refusing to send > 3x bytes
-before address validation.
+  stripped before hashing. Should add a test vector derived from a known BoringSSL or
+  wolfSSL transcript.
+- **Amplification limit** (Phase 3b.2): enforcement blocked on HRR+cookie (Phase 3b.1).
+  Pre-cookie, the server's flight routinely exceeds 3× a ClientHello. The planned test
+  requires cookie support to be meaningful.
+- **Anti-replay** (Phase 1.5): per-epoch sliding windows not yet implemented. Test
+  (replayed record silently dropped) assigned to Phase 1.5.
 - **AEAD limit / KeyUpdate trigger** (Phase 5.3): no test for automatic KeyUpdate when
-record count approaches AEAD confidentiality limit.
+  record count approaches AEAD confidentiality limit.
 - **Epoch pool correctness**: no unit test for `dtls13_epoch_pool` retain/lookup logic.
-Should be added when Phase 3.11 lands.
+  Should be added when Phase 3.11 lands.
+- **CID address-change continuity** (Phase 5.5): requires udp_proxy address-remap
+  capability; test design documented but not yet written.
+- **DTLS 1.2 fallback** (known fail): ClientHello transcript hash uses 4-byte TLS
+  header when `max_version=dtls13` but server picks 1.2; fix tracked under Option B
+  (re-hash after ServerHello) — not yet implemented.
 

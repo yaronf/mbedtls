@@ -267,6 +267,8 @@ have been drilled down in `local-docs/design-drilldown.md`:
 - [ ] 5. Implement per-epoch anti-replay sliding windows.
          See drilldown §2: epoch pool allows maintaining separate windows per retained
          epoch; existing `in_window`/`in_window_top` covers the active epoch only.
+         Test: integration test via udp_proxy that replays a record and verifies it
+         is silently dropped (no error surfaced to application, connection stays live).
 - [x] 6. Add `sn_key` + `sn_key_len` fields to `mbedtls_ssl_transform` (ssl_misc.h).
          Derivation function `mbedtls_ssl_dtls13_hkdf_expand_label` added to
          `ssl_tls13_keys.c/h`; not yet wired to key installation (Phase 2.2).
@@ -410,6 +412,9 @@ have been drilled down in `local-docs/design-drilldown.md`:
          Active enforcement deferred to Phase 3b.1 (cookie): without HRR+cookie the
          server's initial flight (including cert) typically exceeds 3× a ClientHello,
          so hard-blocking would break non-cookie handshakes.
+         Test (blocked on 3b.1): "DTLS 1.3: amplification limit enforced" — server
+         requires cookie exchange; without it the second ClientHello is never met with
+         > 3× bytes. Verify via debug counters (dtls13_bytes_sent / dtls13_bytes_from_peer).
 - [x] 3. Implement ACK message parsing and serialization.
          `ssl_dtls13_parse_ack()` and `ssl_dtls13_write_ack()` in `ssl_msg.c`.
          `MBEDTLS_SSL_MSG_ACK = 26` added to `ssl.h`; accepted by
@@ -450,11 +455,24 @@ have been drilled down in `local-docs/design-drilldown.md`:
 - [ ] 2. KeyUpdate: ACK required; new epoch (4+); retain old keys until new-epoch traffic received.
          See drilldown §2: epoch pool retains pre-update inbound transform until first
          successful decrypt with new keys.
+         Tests: (a) single KeyUpdate — both sides advance epoch to 4, app data flows;
+         (b) three sequential KeyUpdates — epoch advances to 4, 5, 6; app data flows
+         at each epoch; old epoch keys correctly evicted from pool.
 - [ ] 3. AEAD limit tracking: count authenticated records per epoch; trigger KeyUpdate.
 - [ ] 4. Count failed authentication attempts per epoch; close on limit.
 - [ ] 5. NewConnectionId (type 10) and RequestConnectionId (type 9): parse, send, ACK.
          Implement `cid_immediate` vs `cid_spare` semantics.
          Add `too_many_cids_requested` alert (value 52).
+         Tests:
+         (a) CID negotiation: CID extension present in ClientHello/ServerHello; records
+             use CID format post-handshake; app data flows.
+         (b) Address change continuity: after handshake, peer B changes source IP/port
+             (simulated via udp_proxy remapping); peer A continues the session using the
+             CID to identify the association; app data flows normally at the new address.
+         (c) CID update: peer sends NewConnectionId; peer retires old CID via
+             retire_prior_to field; both ends use new CID; old CID silently dropped.
+         (d) Excessive CID requests: server returns too_many_cids_requested alert when
+             RequestConnectionId count exceeds limit.
 - [ ] 6. Post-handshake client authentication: CertificateRequest → Certificate →
          CertificateVerify → Finished exchange with ACK wrapping for DTLS reliability.
 - [ ] 7. Self-test: KeyUpdate exchange, CID negotiation and update, post-handshake auth,
