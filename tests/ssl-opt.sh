@@ -13984,6 +13984,16 @@ run_test    "DTLS 1.3: full 1-RTT handshake" \
             -s "Protocol is DTLSv1.3" \
             -c "Protocol is DTLSv1.3"
 
+requires_protocol_version dtls13
+run_test    "DTLS 1.3: bidirectional application data (2 exchanges)" \
+            "$P_SRV dtls=1 force_version=dtls13 exchanges=2" \
+            "$P_CLI dtls=1 force_version=dtls13 exchanges=2" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -s "Read from client: 51 bytes read" \
+            -c "Read from server: 144 bytes read"
+
 # DTLS 1.3 client connecting to DTLS 1.2 server: must negotiate down to 1.2.
 # The client advertises both 0xfefc (1.3) and 0xfefd (1.2) in supported_versions;
 # the 1.2 server picks 1.2.  Requires MBEDTLS_SSL_PROTO_TLS1_2 on both sides.
