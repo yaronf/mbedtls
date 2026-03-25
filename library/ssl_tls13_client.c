@@ -574,6 +574,14 @@ static int ssl_tls13_write_cookie_ext(mbedtls_ssl_context *ssl,
         return 0;
     }
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    /* DTLS 1.2 HVR cookies are echoed in the legacy_cookie field, not here */
+    if (handshake->dtls_hvr_cookie) {
+        MBEDTLS_SSL_DEBUG_MSG(3, ("HVR cookie: echoed in legacy field, skip ext"));
+        return 0;
+    }
+#endif
+
     MBEDTLS_SSL_DEBUG_BUF(3, "client hello, cookie",
                           handshake->cookie,
                           handshake->cookie_len);
@@ -2049,8 +2057,112 @@ static int ssl_tls13_process_server_hello(mbedtls_ssl_context *ssl)
 
     MBEDTLS_SSL_DEBUG_MSG(2, ("=> %s", __func__));
 
-    MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_tls13_fetch_handshake_msg(
-                             ssl, MBEDTLS_SSL_HS_SERVER_HELLO, &buf, &buf_len));
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+    /*
+     * DTLS 1.2 servers that require address validation send a
+     * HelloVerifyRequest (handshake type 3) instead of a ServerHello.
+     * The TLS 1.3 client has not yet determined the server version, so we
+     * must detect and handle this before the strict type check in
+     * fetch_handshake_msg().
+     *
+     * Parse the HVR inline: extract the cookie, store it in
+     * handshake->cookie for inclusion in the retried ClientHello, reset
+     * the transcript, and loop back to CLIENT_HELLO.  The second
+     * ClientHello still goes through the TLS 1.3 write path; if the server
+     * then picks DTLS 1.2, Option B re-hashes the transcript.
+     */
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+        if ((ret = mbedtls_ssl_read_record(ssl, 0)) != 0) {
+            MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_read_record", ret);
+            goto cleanup;
+        }
+
+        if (ssl->in_msgtype == MBEDTLS_SSL_MSG_HANDSHAKE &&
+            ssl->in_msg[0] == MBEDTLS_SSL_HS_HELLO_VERIFY_REQUEST) {
+            const unsigned char *p = ssl->in_msg + mbedtls_ssl_hs_hdr_len(ssl);
+            const unsigned char *end = ssl->in_msg + ssl->in_hslen;
+            uint8_t cookie_len;
+
+            MBEDTLS_SSL_DEBUG_MSG(2, ("received HelloVerifyRequest"));
+
+            /* HelloVerifyRequest body: version (2) + cookie_len (1) + cookie */
+            if (end - p < 3) {
+                MBEDTLS_SSL_PEND_FATAL_ALERT(MBEDTLS_SSL_ALERT_MSG_DECODE_ERROR,
+                                             MBEDTLS_ERR_SSL_DECODE_ERROR);
+                ret = MBEDTLS_ERR_SSL_DECODE_ERROR;
+                goto cleanup;
+            }
+            p += 2; /* skip legacy_version */
+            cookie_len = *p++;
+            if ((size_t)(end - p) < cookie_len) {
+                MBEDTLS_SSL_PEND_FATAL_ALERT(MBEDTLS_SSL_ALERT_MSG_DECODE_ERROR,
+                                             MBEDTLS_ERR_SSL_DECODE_ERROR);
+                ret = MBEDTLS_ERR_SSL_DECODE_ERROR;
+                goto cleanup;
+            }
+
+            mbedtls_free(ssl->handshake->cookie);
+            ssl->handshake->cookie = mbedtls_calloc(1, cookie_len);
+            if (ssl->handshake->cookie == NULL) {
+                ret = MBEDTLS_ERR_SSL_ALLOC_FAILED;
+                goto cleanup;
+            }
+            memcpy(ssl->handshake->cookie, p, cookie_len);
+            ssl->handshake->cookie_len = cookie_len;
+            /* Mark as DTLS 1.2 HVR cookie so it is echoed in the legacy
+             * cookie field of the retried ClientHello, not as a TLS ext. */
+            ssl->handshake->dtls_hvr_cookie = 1;
+
+            /* Reset transcript — the retried ClientHello starts fresh.
+             * Also discard the saved first ClientHello so that the second
+             * ClientHello (with the cookie) is captured for Option B. */
+            mbedtls_free(ssl->handshake->dtls13_cli_hello);
+            ssl->handshake->dtls13_cli_hello     = NULL;
+            ssl->handshake->dtls13_cli_hello_len = 0;
+            if ((ret = mbedtls_ssl_reset_checksum(ssl)) != 0) {
+                goto cleanup;
+            }
+
+            /* Destroy the ECDHE private key from the first ClientHello so it
+             * is not left open when a fresh key share is generated for the
+             * retried ClientHello. */
+            if ((ret = ssl_tls13_reset_key_share(ssl)) != 0) {
+                goto cleanup;
+            }
+
+            /* Account for the HVR in the incoming sequence number so that
+             * the server's ServerHello flight (which starts at msg_seq 1)
+             * is accepted by the DTLS reassembly logic. */
+            ssl->handshake->in_msg_seq++;
+            mbedtls_ssl_recv_flight_completed(ssl);
+            mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_CLIENT_HELLO);
+            ret = 0;
+            goto cleanup;
+        }
+
+        /* Not a HVR — we already read the record, so skip the read inside
+         * fetch_handshake_msg and validate the type directly. */
+        if (ssl->in_msgtype != MBEDTLS_SSL_MSG_HANDSHAKE ||
+            ssl->in_msg[0] != MBEDTLS_SSL_HS_SERVER_HELLO) {
+            MBEDTLS_SSL_DEBUG_MSG(1, ("unexpected message (expected ServerHello)"));
+            MBEDTLS_SSL_PEND_FATAL_ALERT(MBEDTLS_SSL_ALERT_MSG_UNEXPECTED_MESSAGE,
+                                         MBEDTLS_ERR_SSL_UNEXPECTED_MESSAGE);
+            ret = MBEDTLS_ERR_SSL_UNEXPECTED_MESSAGE;
+            goto cleanup;
+        }
+
+        /* Advance in_msg_seq and set buf/buf_len as fetch_handshake_msg would */
+        ssl->handshake->in_msg_seq++;
+        size_t hs_hdr_len = mbedtls_ssl_hs_hdr_len(ssl);
+        buf     = ssl->in_msg   + hs_hdr_len;
+        buf_len = ssl->in_hslen - hs_hdr_len;
+    } else
+#endif /* MBEDTLS_SSL_PROTO_DTLS */
+    {
+        MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_tls13_fetch_handshake_msg(
+                                 ssl, MBEDTLS_SSL_HS_SERVER_HELLO,
+                                 &buf, &buf_len));
+    }
 
     ret = ssl_tls13_preprocess_server_hello(ssl, buf, buf + buf_len);
     if (ret < 0) {

@@ -874,6 +874,13 @@ struct mbedtls_ssl_handshake_params {
     uint16_t cookie_len;                /*!< DTLS: HelloVerifyRequest cookie length
                                          *   TLS1_3: HelloRetryRequest cookie length */
 #endif
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    /** Set when \c cookie was received in a DTLS 1.2 HelloVerifyRequest (as
+     *  opposed to a TLS 1.3 HRR \c cookie extension).  When set, the cookie
+     *  must be echoed in the DTLS legacy_cookie field of the retried
+     *  ClientHello, not in the TLS \c cookie extension. */
+    uint8_t dtls_hvr_cookie;
+#endif
 #endif /* MBEDTLS_SSL_CLI_C &&
           ( MBEDTLS_SSL_PROTO_DTLS ||
             MBEDTLS_SSL_PROTO_TLS1_3 ) */

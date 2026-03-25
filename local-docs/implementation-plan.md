@@ -414,16 +414,24 @@ have been drilled down in `local-docs/design-drilldown.md`:
 *Goal: Spec-compliant retransmission, ACK, HRR+cookie, amplification limit, wolfSSL interop.*
 *Design detail: see `design-drilldown.md` §3 (ACK + retransmit).*
 
-- [ ] 1. Implement HRR+cookie path (stateless server cookie via HMAC).
-         Server config flag `mbedtls_ssl_conf_dtls13_cookie()` (default: enabled).
-         When enabled: server sends HRR with `cookie` extension on first ClientHello;
-         client echoes cookie in second ClientHello; server validates before proceeding.
-         When disabled: server skips cookie exchange (for environments where ICE or
-         similar provides address validation — RFC 9147 §4.2.1 explicitly allows this).
-         Tests: (a) cookie enabled (default) — handshake completes via HRR round-trip;
-         (b) cookie disabled — handshake completes in 1-RTT; amplification proximity
-         logged at debug level 3 but not fatal.
-         Once (a) passes, Phase 3b.2 enforcement can be activated for the cookie path.
+- [x] 1. Implement HRR+cookie path (stateless server cookie via HMAC).
+         Uses the existing `f_cookie_write`/`f_cookie_check` callbacks (same as DTLS
+         1.2) — no new server config flag required.
+         Server (`ssl_tls13_server.c`): write `cookie` extension (TLS_EXT_COOKIE = 44)
+         in HRR when `is_hrr && DTLS && f_cookie_write != NULL`; validate echoed cookie
+         on second ClientHello when `hello_retry_request_flag`; reject with
+         `handshake_failure` if missing or invalid.
+         Client (`ssl_tls13_generic.c`): exempt `COOKIE` from the "must have been sent
+         by client" check in `check_received_extension` for HRR (RFC 8446 §4.2.2
+         server-initiated exception).
+         Client (`ssl_tls13_client.c`): detect DTLS 1.2 HelloVerifyRequest (type 3) in
+         the SERVER_HELLO state before the strict type check; store cookie in
+         `handshake->cookie` with `dtls_hvr_cookie=1` flag; reset key share and
+         transcript; loop back to CLIENT_HELLO.
+         Client (`ssl_client.c`): echo `dtls_hvr_cookie` in the legacy_cookie field of
+         the retried ClientHello (not as a TLS extension).
+         Tests: `DTLS 1.3: HRR+cookie exchange (cookie enabled)` passes; `DTLS 1.3
+         client, DTLS 1.2 server: negotiate down to DTLS 1.2 (with cookie)` passes.
 - [~] 2. Enforce amplification limit: server MUST NOT send more than 3x bytes received
          before address is validated (cookie exchange or completed handshake).
          Infrastructure complete: `dtls13_bytes_from_peer`, `dtls13_bytes_sent`, and

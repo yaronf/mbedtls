@@ -1673,6 +1673,53 @@ static int ssl_tls13_parse_client_hello(mbedtls_ssl_context *ssl,
                 break;
 #endif /* MBEDTLS_SSL_RECORD_SIZE_LIMIT */
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_DTLS_HELLO_VERIFY)
+            case MBEDTLS_TLS_EXT_COOKIE:
+                /*
+                 * DTLS 1.3 (RFC 9147 §5.6 / RFC 8446 §4.2.2): on a second
+                 * ClientHello following our HRR, validate the echoed cookie.
+                 * Ignore on the first ClientHello (no HRR yet).
+                 *
+                 * Extension data layout:
+                 *   cookie_data_length (2)
+                 *   cookie_data        (cookie_data_length)
+                 */
+                if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+                    ssl->handshake->hello_retry_request_flag &&
+                    ssl->conf->f_cookie_check != NULL) {
+                    uint16_t cookie_data_len;
+
+                    MBEDTLS_SSL_DEBUG_MSG(3, ("found cookie extension (second ClientHello)"));
+
+                    if (extension_data_len < 2) {
+                        MBEDTLS_SSL_PEND_FATAL_ALERT(
+                            MBEDTLS_SSL_ALERT_MSG_DECODE_ERROR,
+                            MBEDTLS_ERR_SSL_DECODE_ERROR);
+                        return MBEDTLS_ERR_SSL_DECODE_ERROR;
+                    }
+                    cookie_data_len = MBEDTLS_GET_UINT16_BE(p, 0);
+                    if (cookie_data_len + 2 != extension_data_len) {
+                        MBEDTLS_SSL_PEND_FATAL_ALERT(
+                            MBEDTLS_SSL_ALERT_MSG_DECODE_ERROR,
+                            MBEDTLS_ERR_SSL_DECODE_ERROR);
+                        return MBEDTLS_ERR_SSL_DECODE_ERROR;
+                    }
+
+                    if (ssl->conf->f_cookie_check(
+                            ssl->conf->p_cookie,
+                            p + 2, cookie_data_len,
+                            ssl->cli_id, ssl->cli_id_len) != 0) {
+                        MBEDTLS_SSL_DEBUG_MSG(1, ("cookie verification failed"));
+                        MBEDTLS_SSL_PEND_FATAL_ALERT(
+                            MBEDTLS_SSL_ALERT_MSG_HANDSHAKE_FAILURE,
+                            MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE);
+                        return MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE;
+                    }
+                    MBEDTLS_SSL_DEBUG_MSG(2, ("cookie verified"));
+                }
+                break;
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_DTLS_HELLO_VERIFY */
+
             default:
                 MBEDTLS_SSL_PRINT_EXT(
                     3, MBEDTLS_SSL_HS_CLIENT_HELLO,
@@ -1682,6 +1729,20 @@ static int ssl_tls13_parse_client_hello(mbedtls_ssl_context *ssl,
 
         p += extension_data_len;
     }
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_DTLS_HELLO_VERIFY)
+    /* On the second ClientHello after our HRR+cookie, the client MUST echo the
+     * cookie extension.  If it is absent, abort with missing_extension. */
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+        ssl->handshake->hello_retry_request_flag &&
+        ssl->conf->f_cookie_check != NULL &&
+        !(handshake->received_extensions & MBEDTLS_SSL_EXT_MASK(COOKIE))) {
+        MBEDTLS_SSL_DEBUG_MSG(1, ("second ClientHello missing required cookie extension"));
+        MBEDTLS_SSL_PEND_FATAL_ALERT(MBEDTLS_SSL_ALERT_MSG_MISSING_EXTENSION,
+                                     MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER);
+        return MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER;
+    }
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_DTLS_HELLO_VERIFY */
 
     MBEDTLS_SSL_PRINT_EXTS(3, MBEDTLS_SSL_HS_CLIENT_HELLO,
                            handshake->received_extensions);
@@ -2383,6 +2444,49 @@ static int ssl_tls13_write_server_hello_body(mbedtls_ssl_context *ssl,
         }
         p += output_len;
     }
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_DTLS_HELLO_VERIFY)
+    /*
+     * DTLS 1.3 (RFC 9147 §5.6): the server SHOULD include a cookie extension
+     * in HRR to force the client to demonstrate reachability.  Use the same
+     * f_cookie_write callback as the DTLS 1.2 HelloVerifyRequest path.
+     *
+     * Cookie extension wire format (RFC 8446 §4.2.2):
+     *   extension_type (2) = 44
+     *   extension_data_length (2) = cookie_data_length + 2
+     *   cookie_data_length (2)
+     *   cookie_data (cookie_data_length)
+     */
+    if (is_hrr &&
+        ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+        ssl->conf->f_cookie_write != NULL) {
+        unsigned char *cookie_len_byte;
+
+        MBEDTLS_SSL_CHK_BUF_PTR(p, end, 6);
+        MBEDTLS_PUT_UINT16_BE(MBEDTLS_TLS_EXT_COOKIE, p, 0);
+        /* extension_data_length placeholder — filled in below */
+        cookie_len_byte = p + 2;
+        p += 6; /* type(2) + ext_data_len(2) + cookie_data_len(2) */
+
+        unsigned char *cookie_start = p;
+        if ((ret = ssl->conf->f_cookie_write(ssl->conf->p_cookie,
+                                             &p, end,
+                                             ssl->cli_id,
+                                             ssl->cli_id_len)) != 0) {
+            MBEDTLS_SSL_DEBUG_RET(1, "f_cookie_write", ret);
+            return ret;
+        }
+        size_t cookie_data_len = (size_t)(p - cookie_start);
+
+        /* Fill in cookie_data_length (2 bytes immediately before cookie) */
+        MBEDTLS_PUT_UINT16_BE(cookie_data_len, cookie_len_byte + 2, 0);
+        /* Fill in extension_data_length = cookie_data_len + 2 */
+        MBEDTLS_PUT_UINT16_BE(cookie_data_len + 2, cookie_len_byte, 0);
+
+        mbedtls_ssl_tls13_set_hs_sent_ext_mask(ssl, MBEDTLS_TLS_EXT_COOKIE);
+        MBEDTLS_SSL_DEBUG_BUF(3, "HRR cookie", cookie_start, cookie_data_len);
+    }
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_DTLS_HELLO_VERIFY */
 
 #if defined(MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_SOME_PSK_ENABLED)
     if (!is_hrr && mbedtls_ssl_tls13_key_exchange_mode_with_psk(ssl)) {

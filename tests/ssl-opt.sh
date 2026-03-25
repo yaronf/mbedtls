@@ -14020,9 +14020,9 @@ run_test    "DTLS 1.3 client, DTLS 1.2 server: negotiate down to DTLS 1.2 (no co
             -s "Protocol is DTLSv1.2" \
             -c "Protocol is DTLSv1.2"
 
-# Same but with DTLS 1.2 HelloVerifyRequest enabled — currently fails because the
-# mixed-version client path doesn't handle HVR before version is determined.
-# Tracked as a known issue; will be fixed alongside Phase 3b.1 (DTLS 1.3 cookie).
+# Same but with DTLS 1.2 HelloVerifyRequest enabled (default cookies=1).
+# The client detects the HVR in the SERVER_HELLO state, stores the cookie,
+# and retries the ClientHello with the cookie in the legacy_cookie field.
 requires_protocol_version dtls13
 requires_protocol_version dtls12
 run_test    "DTLS 1.3 client, DTLS 1.2 server: negotiate down to DTLS 1.2 (with cookie)" \
@@ -14031,6 +14031,22 @@ run_test    "DTLS 1.3 client, DTLS 1.2 server: negotiate down to DTLS 1.2 (with 
             0 \
             -s "Protocol is DTLSv1.2" \
             -c "Protocol is DTLSv1.2"
+
+# DTLS 1.3 client connecting to DTLS 1.3 server with HRR+cookie.
+# Force an HRR by restricting the server to secp384r1 (client offers x25519
+# first, triggering a key_share mismatch).  Server includes a cookie extension
+# in the HRR; client echoes it in the second ClientHello; server validates and
+# completes the handshake.
+requires_protocol_version dtls13
+requires_config_enabled MBEDTLS_SSL_DTLS_HELLO_VERIFY
+run_test    "DTLS 1.3: HRR+cookie exchange (cookie enabled)" \
+            "$P_SRV dtls=1 force_version=dtls13 groups=secp384r1 debug_level=2" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=2" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -c "received HelloRetryRequest message" \
+            -s "cookie verified"
 
 if [ $FAILS -gt 255 ]; then
     # Clamp at 255 as caller gets exit code & 0xFF

@@ -1649,6 +1649,18 @@ int mbedtls_ssl_tls13_check_received_extension(
     switch (hs_msg_type) {
         case MBEDTLS_SSL_HS_SERVER_HELLO:
         case MBEDTLS_SSL_TLS1_3_HS_HELLO_RETRY_REQUEST:
+            /*
+             * RFC 8446 §4.2.2: the server MAY include a cookie extension in
+             * HRR even if the client did not send one in the initial
+             * ClientHello.  Skip the "sent by client" check for COOKIE.
+             */
+            if (received_extension_type == MBEDTLS_TLS_EXT_COOKIE) {
+                return 0;
+            }
+            if ((ssl->handshake->sent_extensions & extension_mask) != 0) {
+                return 0;
+            }
+            break;
         case MBEDTLS_SSL_HS_ENCRYPTED_EXTENSIONS:
         case MBEDTLS_SSL_HS_CERTIFICATE:
             /* Check if the received extension is sent by peer message.*/

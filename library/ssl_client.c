@@ -519,9 +519,17 @@ static int ssl_write_client_hello_body(mbedtls_ssl_context *ssl,
         uint8_t cookie_len = 0;
 
 #if defined(MBEDTLS_SSL_PROTO_TLS1_2)
-        /* For DTLS 1.2 (or hybrid), include any HRR cookie from the server. */
+        /* For DTLS 1.2 (or hybrid), include any HRR cookie from the server.
+         * Also include when a DTLS 1.2 HelloVerifyRequest cookie was received
+         * on a connection where max_version is DTLS 1.3 (dtls_hvr_cookie=1):
+         * the DTLS 1.2 server expects the cookie echoed in this legacy field,
+         * not as a TLS extension. */
         if (handshake->cookie != NULL &&
-            ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_2) {
+            (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_2
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+             || handshake->dtls_hvr_cookie
+#endif
+            )) {
             MBEDTLS_SSL_DEBUG_BUF(3, "client hello, cookie",
                                   handshake->cookie,
                                   handshake->cookie_len);
