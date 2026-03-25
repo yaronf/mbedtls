@@ -2645,6 +2645,7 @@ int mbedtls_ssl_write_handshake_msg_ext(mbedtls_ssl_context *ssl,
              * Use conf->max_tls_version for pre-negotiation messages
              * (ClientHello) where tls_version is not yet set. */
             if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+                ssl->tls_version != MBEDTLS_SSL_VERSION_TLS1_2 &&
                 (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 ||
                  ssl->conf->max_tls_version == MBEDTLS_SSL_VERSION_TLS1_3)) {
                 /* out_msg[0..3] = TLS-style header; out_msg[4..11] = DTLS-only;
@@ -2654,11 +2655,13 @@ int mbedtls_ssl_write_handshake_msg_ext(mbedtls_ssl_context *ssl,
                           ssl, hs_type, ssl->out_msg + 12, body_len);
             } else
 #endif
-            ret = ssl->handshake->update_checksum(ssl, ssl->out_msg,
-                                                  ssl->out_msglen);
-            if (ret != 0) {
-                MBEDTLS_SSL_DEBUG_RET(1, "update_checksum", ret);
-                return ret;
+            {
+                ret = ssl->handshake->update_checksum(ssl, ssl->out_msg,
+                                                      ssl->out_msglen);
+                if (ret != 0) {
+                    MBEDTLS_SSL_DEBUG_RET(1, "update_checksum", ret);
+                    return ret;
+                }
             }
         }
     }
@@ -2684,6 +2687,29 @@ int mbedtls_ssl_write_handshake_msg_ext(mbedtls_ssl_context *ssl,
     } else
 #endif
     {
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3) && \
+    defined(MBEDTLS_SSL_CLI_C)
+        /* DTLS 1.3 path bypasses the flight/retransmit machinery, but we save
+         * the ClientHello (with 12-byte DTLS header) for Option B: if the server
+         * picks DTLS 1.2, the client needs to re-hash ClientHello with the 12-byte
+         * header.  Store it in dtls13_cli_hello rather than the flight to avoid
+         * triggering the DTLS 1.2 retransmit path. */
+        if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+            ssl->out_msgtype == MBEDTLS_SSL_MSG_HANDSHAKE &&
+            hs_type == MBEDTLS_SSL_HS_CLIENT_HELLO &&
+            ssl->conf->endpoint == MBEDTLS_SSL_IS_CLIENT &&
+            ssl->handshake != NULL &&
+            ssl->handshake->dtls13_cli_hello == NULL) {
+            unsigned char *buf = mbedtls_calloc(1, ssl->out_msglen);
+            if (buf == NULL) {
+                MBEDTLS_SSL_DEBUG_MSG(1, ("alloc for dtls13_cli_hello failed"));
+                return MBEDTLS_ERR_SSL_ALLOC_FAILED;
+            }
+            memcpy(buf, ssl->out_msg, ssl->out_msglen);
+            ssl->handshake->dtls13_cli_hello     = buf;
+            ssl->handshake->dtls13_cli_hello_len = ssl->out_msglen;
+        }
+#endif
         if ((ret = mbedtls_ssl_write_record(ssl, force_flush)) != 0) {
             MBEDTLS_SSL_DEBUG_RET(1, "ssl_write_record", ret);
             return ret;
@@ -3265,10 +3291,12 @@ int mbedtls_ssl_update_handshake_status(mbedtls_ssl_context *ssl)
                                                      body_len);
         } else
 #endif
-        ret = ssl->handshake->update_checksum(ssl, ssl->in_msg, ssl->in_hslen);
-        if (ret != 0) {
-            MBEDTLS_SSL_DEBUG_RET(1, "update_checksum", ret);
-            return ret;
+        {
+            ret = ssl->handshake->update_checksum(ssl, ssl->in_msg, ssl->in_hslen);
+            if (ret != 0) {
+                MBEDTLS_SSL_DEBUG_RET(1, "update_checksum", ret);
+                return ret;
+            }
         }
     }
 

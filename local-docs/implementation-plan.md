@@ -345,8 +345,20 @@ have been drilled down in `local-docs/design-drilldown.md`:
          header skip — fixed to `mbedtls_ssl_hs_hdr_len(ssl)` (12 for DTLS). (3) Removed
          second "DTLS not supported" guard in hybrid TLS 1.2+1.3 config path in `ssl_tls.c`.
          (4) Added `dtls13` alias to `min_version`/`max_version` in both programs.
-         Added ssl-opt.sh test: "DTLS 1.3 client, DTLS 1.2 server: negotiate down to DTLS 1.2".
-         Both tests now fail at ClientHello body parsing (Phase 3.4).
+         (5) Option B transcript re-hash on DTLS 1.2 fallback (Phase 3a.3b):
+             When the DTLS 1.3 client receives a DTLS 1.2 ServerHello, the transcript
+             must be rebuilt using 12-byte DTLS handshake headers.  The TLS 1.3 send
+             path uses a 4-byte TLS-style checksum for DTLS 1.3 messages (RFC 9147
+             §5.2); the DTLS 1.3 bypass skips `ssl_flight_append`, so `flight` is NULL
+             at re-hash time.  Fix: save ClientHello bytes in
+             `handshake->dtls13_cli_hello` before sending; on fallback, reset the
+             checksum and re-hash ClientHello + ServerHello with 12-byte headers.
+             Guard added to outgoing-checksum condition
+             (`ssl->tls_version != MBEDTLS_SSL_VERSION_TLS1_2`) so post-fallback
+             outgoing messages (CKE, etc.) use the full 12-byte header.
+         ssl-opt.sh test "DTLS 1.3 client, DTLS 1.2 server: negotiate down to DTLS 1.2
+         (no cookie)" now passes.  The "with cookie" variant remains a known fail
+         pending Phase 3b.1 (HVR handling before version is known).
 - [x] 4. Adapt ClientHello construction: zero `legacy_session_id`, zero `legacy_cookie`,
          correct `supported_versions`, no compatibility mode.
          Client write (`ssl_client.c`): extended cookie-write block from

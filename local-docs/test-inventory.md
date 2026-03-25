@@ -1,6 +1,6 @@
 # DTLS 1.3 Test Inventory
 
-**Last updated:** 2026-03-25 (updated after Phase 3b.2–3b.4)
+**Last updated:** 2026-03-25 (Option B transcript re-hash, no-cookie fallback now passing)
 **Branch:** `dtls13`
 
 Tests are grouped by type.  Status: `[pass]` = currently passing, `[fail]` = currently failing (expected), `[todo]` = not yet written.
@@ -82,7 +82,8 @@ These use `ssl_client2` / `ssl_server2` over loopback UDP.
 | DTLS 1.3: full 1-RTT handshake                               | Both sides print "Protocol is DTLSv1.3"               | [pass] | —                                                                        |
 | DTLS 1.3: bidirectional application data (2 exchanges)       | Client sends 51 bytes, reads 144 bytes; 2 round trips | [pass] | —                                                                        |
 | DTLS 1.3: client ACKs server Finished flight                 | Client debug log shows "=> write ACK"                 | [pass] | —                                                                        |
-| DTLS 1.3 client, DTLS 1.2 server: negotiate down to DTLS 1.2 | Both sides print "Protocol is DTLSv1.2"               | [fail] | ClientHello transcript hash when max_version=dtls13 but server picks 1.2 |
+| DTLS 1.3 client, DTLS 1.2 server: negotiate down to DTLS 1.2 (no cookie) | Both sides print "Protocol is DTLSv1.2"               | [pass] | —                                                                        |
+| DTLS 1.3 client, DTLS 1.2 server: negotiate down to DTLS 1.2 (with cookie) | Both sides print "Protocol is DTLSv1.2"             | [fail] | HVR handling before version is known; fix planned in Phase 3b.1          |
 
 
 ### Planned — to be added as phases complete
@@ -139,7 +140,8 @@ See `local-docs/reference-implementations.md` for setup instructions.
   Should be added when Phase 3.11 lands.
 - **CID address-change continuity** (Phase 5.5): requires udp_proxy address-remap
   capability; test design documented but not yet written.
-- **DTLS 1.2 fallback** (known fail): ClientHello transcript hash uses 4-byte TLS
-  header when `max_version=dtls13` but server picks 1.2; fix tracked under Option B
-  (re-hash after ServerHello) — not yet implemented.
+- **DTLS 1.2 fallback with cookie** (known fail): The "with cookie" variant of the
+  DTLS 1.2 fallback test fails because the TLS 1.3 `fetch_handshake_msg(SERVER_HELLO)`
+  state rejects HelloVerifyRequest (type 3 ≠ 2) before the version is determined.
+  Fix planned in Phase 3b.1 (HVR + cookie implementation).
 

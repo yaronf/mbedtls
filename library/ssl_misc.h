@@ -924,6 +924,15 @@ struct mbedtls_ssl_handshake_params {
         uint64_t seq;
     } dtls13_received_records[MBEDTLS_SSL_DTLS13_MAX_ACK_RECORDS];
     uint8_t dtls13_received_record_count;
+
+#if defined(MBEDTLS_SSL_CLI_C)
+    /** ClientHello bytes with full 12-byte DTLS handshake header, saved for
+     *  DTLS 1.2 fallback transcript re-hash (Option B).  NULL unless a
+     *  DTLS 1.3 ClientHello was sent on a connection that might fall back to
+     *  DTLS 1.2 (i.e. min_version < TLS1_3). */
+    unsigned char *dtls13_cli_hello;
+    size_t         dtls13_cli_hello_len;
+#endif /* MBEDTLS_SSL_CLI_C */
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
 

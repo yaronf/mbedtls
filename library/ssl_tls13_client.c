@@ -1477,9 +1477,38 @@ static int ssl_tls13_preprocess_server_hello(mbedtls_ssl_context *ssl,
          */
         ssl->keep_current_message = 1;
         ssl->tls_version = MBEDTLS_SSL_VERSION_TLS1_2;
-        MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_add_hs_msg_to_checksum(
-                                 ssl, MBEDTLS_SSL_HS_SERVER_HELLO,
-                                 buf, (size_t) (end - buf)));
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+        if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+            /*
+             * DTLS 1.2 fallback: the transcript was built with DTLS 1.3 rules
+             * (4-byte TLS-style headers) up to this point.  DTLS 1.2 requires
+             * the full 12-byte DTLS handshake header in the transcript.
+             *
+             * Fix: reset the checksum and re-feed ClientHello from the outgoing
+             * flight buffer (which has the 12-byte header), then hash ServerHello
+             * via update_checksum directly (in_msg already has the 12-byte header).
+             */
+            MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_reset_checksum(ssl));
+
+            /* Re-hash ClientHello with the 12-byte DTLS header. */
+            if (handshake->dtls13_cli_hello != NULL) {
+                MBEDTLS_SSL_PROC_CHK(handshake->update_checksum(
+                                         ssl,
+                                         handshake->dtls13_cli_hello,
+                                         handshake->dtls13_cli_hello_len));
+            }
+
+            /* Hash ServerHello with the 12-byte DTLS header (in_msg). */
+            MBEDTLS_SSL_PROC_CHK(handshake->update_checksum(
+                                     ssl, ssl->in_msg, ssl->in_hslen));
+        } else
+#endif /* MBEDTLS_SSL_PROTO_DTLS */
+        {
+            MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_add_hs_msg_to_checksum(
+                                     ssl, MBEDTLS_SSL_HS_SERVER_HELLO,
+                                     buf, (size_t) (end - buf)));
+        }
 
         if (mbedtls_ssl_conf_tls13_is_some_ephemeral_enabled(ssl)) {
             ret = ssl_tls13_reset_key_share(ssl);
