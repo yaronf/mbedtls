@@ -403,6 +403,15 @@ have been drilled down in `local-docs/design-drilldown.md`:
 *Design detail: see `design-drilldown.md` §3 (ACK + retransmit).*
 
 - [ ] 1. Implement HRR+cookie path (stateless server cookie via HMAC).
+         Server config flag `mbedtls_ssl_conf_dtls13_cookie()` (default: enabled).
+         When enabled: server sends HRR with `cookie` extension on first ClientHello;
+         client echoes cookie in second ClientHello; server validates before proceeding.
+         When disabled: server skips cookie exchange (for environments where ICE or
+         similar provides address validation — RFC 9147 §4.2.1 explicitly allows this).
+         Tests: (a) cookie enabled (default) — handshake completes via HRR round-trip;
+         (b) cookie disabled — handshake completes in 1-RTT; amplification proximity
+         logged at debug level 3 but not fatal.
+         Once (a) passes, Phase 3b.2 enforcement can be activated for the cookie path.
 - [~] 2. Enforce amplification limit: server MUST NOT send more than 3x bytes received
          before address is validated (cookie exchange or completed handshake).
          Infrastructure complete: `dtls13_bytes_from_peer`, `dtls13_bytes_sent`, and

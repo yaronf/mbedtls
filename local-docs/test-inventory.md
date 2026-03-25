@@ -90,8 +90,9 @@ These use `ssl_client2` / `ssl_server2` over loopback UDP.
 
 | Test name                                             | Phase | Notes                                                                                                               |
 | ----------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------- |
-| DTLS 1.3: HRR+cookie exchange                         | 3b.1  | Server sends cookie in HRR; client echoes it; second ClientHello accepted                                          |
-| DTLS 1.3: amplification limit enforced                | 3b.2  | Blocked on 3b.1 (cookie). After cookie lands: verify dtls13_bytes_sent ≤ 3× dtls13_bytes_from_peer pre-validation  |
+| DTLS 1.3: HRR+cookie exchange (cookie enabled)        | 3b.1  | Server sends HRR+cookie; client echoes; handshake completes (2-RTT)                                               |
+| DTLS 1.3: cookie disabled — 1-RTT handshake           | 3b.1  | Server configured with cookie disabled; handshake completes without HRR round-trip                                |
+| DTLS 1.3: amplification limit enforced (cookie path)  | 3b.2  | With cookie enabled: server flight stays within 3× budget after cookie exchange validates client address           |
 | DTLS 1.3: loss recovery via retransmit                | 3b.5  | Inject packet loss via udp_proxy; handshake completes                                                              |
 | DTLS 1.3: per-epoch anti-replay                       | 1.5   | Replay a post-handshake record via udp_proxy; silently dropped, connection stays live                              |
 | DTLS 1.3: session resumption (PSK)                    | 4     | Both sides print "Protocol is DTLSv1.3", resumed                                                                   |
@@ -127,9 +128,9 @@ See `local-docs/reference-implementations.md` for setup instructions.
 - **Transcript hash correctness**: no unit test verifying that DTLS framing fields are
   stripped before hashing. Should add a test vector derived from a known BoringSSL or
   wolfSSL transcript.
-- **Amplification limit** (Phase 3b.2): enforcement blocked on HRR+cookie (Phase 3b.1).
-  Pre-cookie, the server's flight routinely exceeds 3× a ClientHello. The planned test
-  requires cookie support to be meaningful.
+- **Amplification limit** (Phase 3b.2): enforcement requires cookie exchange (Phase 3b.1)
+  to give the server enough byte budget. Pre-cookie handshakes legitimately exceed 3×
+  (cert alone can do it); the SHOULD in RFC 9147 §4.2.1 acknowledges this.
 - **Anti-replay** (Phase 1.5): per-epoch sliding windows not yet implemented. Test
   (replayed record silently dropped) assigned to Phase 1.5.
 - **AEAD limit / KeyUpdate trigger** (Phase 5.3): no test for automatic KeyUpdate when
