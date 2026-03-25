@@ -1,6 +1,6 @@
 # DTLS 1.3 Test Inventory
 
-**Last updated:** 2026-03-25 (Option B transcript re-hash, no-cookie fallback now passing)
+**Last updated:** 2026-03-26 (Option B transcript re-hash, no-cookie fallback now passing)
 **Branch:** `dtls13`
 
 Tests are grouped by type.  Status: `[pass]` = currently passing, `[fail]` = currently failing (expected), `[todo]` = not yet written.
@@ -9,7 +9,15 @@ Tests are grouped by type.  Status: `[pass]` = currently passing, `[fail]` = cur
 
 ## Unit Tests — `tests/suites/test_suite_ssl.dtls13`
 
-Run with: `./tests/test_suite_ssl.dtls13` (from the build directory)
+Run all:
+```
+cd build && ./tests/test_suite_ssl.dtls13
+```
+
+Run a single test by number:
+```
+cd build && ./tests/test_suite_ssl.dtls13 8      # test #8
+```
 
 These cover cryptographic primitives in isolation, with test vectors from BoringSSL.
 See `local-docs/test-vectors/sne-vectors.txt` for vector provenance.
@@ -70,41 +78,49 @@ Verifies ChaCha20 mask: `counter = LE32(sample[0:4])`, `nonce = sample[4:16]`,
 
 ## Integration Tests — `tests/ssl-opt.sh`
 
-Run with: `./ssl-opt.sh -f "DTLS 1.3"` (from `build/tests/`)
+Run the full DTLS 1.3 suite:
+```
+cd build/tests && ./ssl-opt.sh -f "DTLS 1.3"
+```
+
+Run a single test by exact name:
+```
+cd build/tests && ./ssl-opt.sh -f "DTLS 1.3: full 1-RTT handshake"
+```
 
 These use `ssl_client2` / `ssl_server2` over loopback UDP.
 
 ### Handshake and Application Data
 
-
-| Test name                                                    | Expected outcome                                      | Status | Blocked by                                                               |
-| ------------------------------------------------------------ | ----------------------------------------------------- | ------ | ------------------------------------------------------------------------ |
-| DTLS 1.3: full 1-RTT handshake                               | Both sides print "Protocol is DTLSv1.3"               | [pass] | —                                                                        |
-| DTLS 1.3: bidirectional application data (2 exchanges)       | Client sends 51 bytes, reads 144 bytes; 2 round trips | [pass] | —                                                                        |
-| DTLS 1.3: client ACKs server Finished flight                 | Client debug log shows "=> write ACK"                 | [pass] | —                                                                        |
-| DTLS 1.3 client, DTLS 1.2 server: negotiate down to DTLS 1.2 (no cookie) | Both sides print "Protocol is DTLSv1.2"               | [pass] | —                                                                        |
-| DTLS 1.3 client, DTLS 1.2 server: negotiate down to DTLS 1.2 (with cookie) | Both sides print "Protocol is DTLSv1.2"             | [fail] | HVR handling before version is known; fix planned in Phase 3b.1          |
+| Test name (exact ssl-opt.sh string)                                          | Status | Blocked by                                              |
+| ---------------------------------------------------------------------------- | ------ | ------------------------------------------------------- |
+| `DTLS 1.3: full 1-RTT handshake`                                             | [pass] | —                                                       |
+| `DTLS 1.3: bidirectional application data (2 exchanges)`                     | [pass] | —                                                       |
+| `DTLS 1.3: client ACKs server Finished flight`                               | [pass] | —                                                       |
+| `DTLS 1.3 client, DTLS 1.2 server: negotiate down to DTLS 1.2 (no cookie)`  | [pass] | —                                                       |
+| `DTLS 1.3 client, DTLS 1.2 server: negotiate down to DTLS 1.2 (with cookie)`| [fail] | HVR handling before version is known; Phase 3b.1        |
 
 
 ### Planned — to be added as phases complete
 
+Names below are the intended exact ssl-opt.sh strings (to be used verbatim in `run_test`).
 
-| Test name                                             | Phase | Notes                                                                                                               |
-| ----------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------- |
-| DTLS 1.3: HRR+cookie exchange (cookie enabled)        | 3b.1  | Server sends HRR+cookie; client echoes; handshake completes (2-RTT)                                               |
-| DTLS 1.3: cookie disabled — 1-RTT handshake           | 3b.1  | Server configured with cookie disabled; handshake completes without HRR round-trip                                |
-| DTLS 1.3: amplification limit enforced (cookie path)  | 3b.2  | With cookie enabled: server flight stays within 3× budget after cookie exchange validates client address           |
-| DTLS 1.3: loss recovery via retransmit                | 3b.5  | Inject packet loss via udp_proxy; handshake completes                                                              |
-| DTLS 1.3: per-epoch anti-replay                       | 1.5   | Replay a post-handshake record via udp_proxy; silently dropped, connection stays live                              |
-| DTLS 1.3: session resumption (PSK)                    | 4     | Both sides print "Protocol is DTLSv1.3", resumed                                                                   |
-| DTLS 1.3: 0-RTT early data                            | 4     | Client sends data before server Finished                                                                            |
-| DTLS 1.3: KeyUpdate (single)                          | 5.2   | Both sides complete KeyUpdate; epoch advances to 4; app data flows                                                 |
-| DTLS 1.3: KeyUpdate (3 sequential)                    | 5.2   | Client triggers 3 KeyUpdates; epoch advances 4→5→6; app data flows at each; old keys evicted                       |
-| DTLS 1.3: CID negotiation                             | 5.5   | CID extension in ClientHello/ServerHello; records use CID format; app data flows                                   |
-| DTLS 1.3: CID — address change continuity             | 5.5   | Peer changes src IP/port mid-session (udp_proxy remap); session continues via CID; app data flows                  |
-| DTLS 1.3: CID update (NewConnectionId)                | 5.5   | Peer sends NewConnectionId + retire_prior_to; both ends switch to new CID; old CID silently dropped                |
-| DTLS 1.3: CID — too_many_cids_requested               | 5.5   | Server returns too_many_cids_requested (alert 52) when RequestConnectionId count exceeds limit                     |
-| DTLS 1.3: post-handshake client auth                  | 5.6   | Server sends CertificateRequest post-handshake                                                                     |
+| Test name                                                                    | Phase | Notes                                                                                                               |
+| ---------------------------------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------- |
+| `DTLS 1.3: HRR+cookie exchange (cookie enabled)`                             | 3b.1  | Server sends HRR+cookie; client echoes; handshake completes (2-RTT)                                                |
+| `DTLS 1.3: cookie disabled — 1-RTT handshake`                                | 3b.1  | Server configured with cookie disabled; handshake completes without HRR round-trip                                 |
+| `DTLS 1.3: amplification limit enforced (cookie path)`                       | 3b.2  | With cookie enabled: server flight stays within 3× budget after cookie exchange validates client address            |
+| `DTLS 1.3: loss recovery via retransmit`                                     | 3b.5  | Inject packet loss via udp_proxy; handshake completes                                                              |
+| `DTLS 1.3: per-epoch anti-replay`                                            | 1.5   | Replay a post-handshake record via udp_proxy; silently dropped, connection stays live                              |
+| `DTLS 1.3: session resumption (PSK)`                                         | 4     | Both sides print "Protocol is DTLSv1.3", resumed                                                                   |
+| `DTLS 1.3: 0-RTT early data`                                                 | 4     | Client sends data before server Finished                                                                            |
+| `DTLS 1.3: KeyUpdate (single)`                                               | 5.2   | Both sides complete KeyUpdate; epoch advances to 4; app data flows                                                 |
+| `DTLS 1.3: KeyUpdate (3 sequential)`                                         | 5.2   | Client triggers 3 KeyUpdates; epoch advances 4→5→6; app data flows at each; old keys evicted                       |
+| `DTLS 1.3: CID negotiation`                                                  | 5.5   | CID extension in ClientHello/ServerHello; records use CID format; app data flows                                   |
+| `DTLS 1.3: CID — address change continuity`                                  | 5.5   | Peer changes src IP/port mid-session (udp_proxy remap); session continues via CID; app data flows                  |
+| `DTLS 1.3: CID update (NewConnectionId)`                                     | 5.5   | Peer sends NewConnectionId + retire_prior_to; both ends switch to new CID; old CID silently dropped                |
+| `DTLS 1.3: CID — too_many_cids_requested`                                    | 5.5   | Server returns too_many_cids_requested (alert 52) when RequestConnectionId count exceeds limit                     |
+| `DTLS 1.3: post-handshake client auth`                                       | 5.6   | Server sends CertificateRequest post-handshake                                                                     |
 
 
 ---
