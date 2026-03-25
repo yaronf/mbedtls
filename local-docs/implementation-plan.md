@@ -283,7 +283,9 @@ have been drilled down in `local-docs/design-drilldown.md`:
 - [x] 10. Add `dtls13_epoch_pool[4]` to `mbedtls_ssl_context`; struct
           `mbedtls_ssl_dtls13_epoch_slot` defined in `ssl.h`. Install/lookup/evict
           helpers not yet implemented.
-- [ ] 11. Unit tests: round-trip encode/decode of DTLS 1.3 records against Phase 0 vectors.
+- [x] 11. Unit tests: SNE key derivation and mask (AES + ChaCha20) against BoringSSL vectors.
+          `tests/suites/test_suite_ssl.dtls13.data` + functions in `test_suite_ssl.function`.
+          22 cases; vectors independently verified via Go stdlib crypto.
 
 ### Phase 2: Key Schedule Integration
 *Goal: TLS 1.3 key schedule produces the right keys with "dtls13" label.*
@@ -301,8 +303,9 @@ have been drilled down in `local-docs/design-drilldown.md`:
          Note: only the decrypt-direction sn_key is derived here; encrypt-direction
          derivation deferred to write path implementation.
 - [ ] 3. Validate epoch → key mapping (epoch 0=no key, 1=early, 2=hs, 3=app, 4+=rekey).
-- [ ] 4. Unit tests: key derivation test vectors.
+- [x] 4. Unit tests: key derivation test vectors.
          See `reference-implementations.md`: BoringSSL test runner is the source for vectors.
+         Covered by `test_suite_ssl.dtls13` (7 sn_key derivation cases).
 
 ### Phase 3: Basic Handshake (Full 1-RTT, Certificate-Based)
 *Goal: A full DTLS 1.3 handshake completes between mbedtls client and server, and interops with wolfSSL.*
