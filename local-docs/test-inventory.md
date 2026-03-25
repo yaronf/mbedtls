@@ -3,7 +3,7 @@
 **Last updated:** 2026-03-26 (Option B transcript re-hash, no-cookie fallback now passing)
 **Branch:** `dtls13`
 
-Tests are grouped by type.  Status: `[pass]` = currently passing, `[fail]` = currently failing (expected), `[todo]` = not yet written.
+Tests are grouped by type.  Status: `pass` = currently passing, `fail` = currently failing (expected), `todo` = not yet written.
 
 ---
 
@@ -29,13 +29,13 @@ Verifies `HKDF-Expand-Label(traffic_secret, "sn", "", key_len)` using the `"dtls
 
 | #   | Test name                                               | Status |
 | --- | ------------------------------------------------------- | ------ |
-| 1   | AES-128-GCM, epoch 2 (BoringSSL vec set 1)              | [pass] |
-| 2   | AES-128-GCM, epoch 3 (BoringSSL vec set 1)              | [pass] |
-| 3   | ChaCha20-Poly1305, epoch 2 (BoringSSL vec set 1)        | [pass] |
-| 4   | ChaCha20-Poly1305, epoch 3 server (BoringSSL vec set 1) | [pass] |
-| 5   | ChaCha20-Poly1305, epoch 2 client (BoringSSL vec set 1) | [pass] |
-| 6   | ChaCha20-Poly1305, epoch 3 client (BoringSSL vec set 1) | [pass] |
-| 7   | ChaCha20-Poly1305, epoch 2 (BoringSSL vec set 2)        | [pass] |
+| 1   | AES-128-GCM, epoch 2 (BoringSSL vec set 1)              | pass |
+| 2   | AES-128-GCM, epoch 3 (BoringSSL vec set 1)              | pass |
+| 3   | ChaCha20-Poly1305, epoch 2 (BoringSSL vec set 1)        | pass |
+| 4   | ChaCha20-Poly1305, epoch 3 server (BoringSSL vec set 1) | pass |
+| 5   | ChaCha20-Poly1305, epoch 2 client (BoringSSL vec set 1) | pass |
+| 6   | ChaCha20-Poly1305, epoch 3 client (BoringSSL vec set 1) | pass |
+| 7   | ChaCha20-Poly1305, epoch 2 (BoringSSL vec set 2)        | pass |
 
 
 ### SNE mask — AES-128-GCM (`ssl_dtls13_sne_mask_aes`)
@@ -45,14 +45,14 @@ Verifies `mask = AES-ECB(sn_key, sample)[0:2]` and `enc_seq = plain_seq XOR mask
 
 | #   | Test name                          | Status |
 | --- | ---------------------------------- | ------ |
-| 8   | epoch 2, seq 0 encrypt (vec set 3) | [pass] |
-| 9   | epoch 2, seq 1 encrypt (vec set 3) | [pass] |
-| 10  | epoch 2, seq 2 encrypt (vec set 3) | [pass] |
-| 11  | epoch 2, seq 3 encrypt (vec set 3) | [pass] |
-| 12  | epoch 3, seq 0 encrypt (vec set 3) | [pass] |
-| 13  | epoch 3, seq 1 encrypt (vec set 3) | [pass] |
-| 14  | epoch 3, seq 2 encrypt (vec set 3) | [pass] |
-| 15  | epoch 3, seq 0 decrypt (vec set 3) | [pass] |
+| 8   | epoch 2, seq 0 encrypt (vec set 3) | pass |
+| 9   | epoch 2, seq 1 encrypt (vec set 3) | pass |
+| 10  | epoch 2, seq 2 encrypt (vec set 3) | pass |
+| 11  | epoch 2, seq 3 encrypt (vec set 3) | pass |
+| 12  | epoch 3, seq 0 encrypt (vec set 3) | pass |
+| 13  | epoch 3, seq 1 encrypt (vec set 3) | pass |
+| 14  | epoch 3, seq 2 encrypt (vec set 3) | pass |
+| 15  | epoch 3, seq 0 decrypt (vec set 3) | pass |
 
 
 ### SNE mask — ChaCha20-Poly1305 (`ssl_dtls13_sne_mask_chacha20`)
@@ -63,13 +63,13 @@ Verifies ChaCha20 mask: `counter = LE32(sample[0:4])`, `nonce = sample[4:16]`,
 
 | #   | Test name                                    | Status |
 | --- | -------------------------------------------- | ------ |
-| 16  | epoch 2, seq 0 encrypt (BoringSSL vec set 1) | [pass] |
-| 17  | epoch 3, seq 0 encrypt (BoringSSL vec set 1) | [pass] |
-| 18  | epoch 3, seq 1 encrypt (BoringSSL vec set 1) | [pass] |
-| 19  | epoch 2, seq 0 encrypt (BoringSSL vec set 2) | [pass] |
-| 20  | epoch 3, seq 0 encrypt (BoringSSL vec set 2) | [pass] |
-| 21  | epoch 3, seq 1 encrypt (BoringSSL vec set 2) | [pass] |
-| 22  | epoch 2, seq 0 decrypt (BoringSSL vec set 1) | [pass] |
+| 16  | epoch 2, seq 0 encrypt (BoringSSL vec set 1) | pass |
+| 17  | epoch 3, seq 0 encrypt (BoringSSL vec set 1) | pass |
+| 18  | epoch 3, seq 1 encrypt (BoringSSL vec set 1) | pass |
+| 19  | epoch 2, seq 0 encrypt (BoringSSL vec set 2) | pass |
+| 20  | epoch 3, seq 0 encrypt (BoringSSL vec set 2) | pass |
+| 21  | epoch 3, seq 1 encrypt (BoringSSL vec set 2) | pass |
+| 22  | epoch 2, seq 0 decrypt (BoringSSL vec set 1) | pass |
 
 
 **Total: 22 / 22 passing**
@@ -94,11 +94,11 @@ These use `ssl_client2` / `ssl_server2` over loopback UDP.
 
 | Test name (exact ssl-opt.sh string)                                          | Status | Blocked by                                              |
 | ---------------------------------------------------------------------------- | ------ | ------------------------------------------------------- |
-| `DTLS 1.3: full 1-RTT handshake`                                             | [pass] | —                                                       |
-| `DTLS 1.3: bidirectional application data (2 exchanges)`                     | [pass] | —                                                       |
-| `DTLS 1.3: client ACKs server Finished flight`                               | [pass] | —                                                       |
-| `DTLS 1.3 client, DTLS 1.2 server: negotiate down to DTLS 1.2 (no cookie)`  | [pass] | —                                                       |
-| `DTLS 1.3 client, DTLS 1.2 server: negotiate down to DTLS 1.2 (with cookie)`| [fail] | HVR handling before version is known; Phase 3b.1        |
+| `DTLS 1.3: full 1-RTT handshake`                                             | pass | —                                                       |
+| `DTLS 1.3: bidirectional application data (2 exchanges)`                     | pass | —                                                       |
+| `DTLS 1.3: client ACKs server Finished flight`                               | pass | —                                                       |
+| `DTLS 1.3 client, DTLS 1.2 server: negotiate down to DTLS 1.2 (no cookie)`  | pass | —                                                       |
+| `DTLS 1.3 client, DTLS 1.2 server: negotiate down to DTLS 1.2 (with cookie)`| fail | HVR handling before version is known; Phase 3b.1        |
 
 
 ### Planned — to be added as phases complete
@@ -132,10 +132,10 @@ See `local-docs/reference-implementations.md` for setup instructions.
 
 | Scenario                               | Phase | Status |
 | -------------------------------------- | ----- | ------ |
-| mbedtls client ↔ wolfSSL server        | 3.16  | [todo] |
-| wolfSSL client ↔ mbedtls server        | 3.16  | [todo] |
-| mbedtls client ↔ wolfSSL server, PSK   | 4.6   | [todo] |
-| mbedtls client ↔ wolfSSL server, 0-RTT | 4.6   | [todo] |
+| mbedtls client ↔ wolfSSL server        | 3.16  | todo |
+| wolfSSL client ↔ mbedtls server        | 3.16  | todo |
+| mbedtls client ↔ wolfSSL server, PSK   | 4.6   | todo |
+| mbedtls client ↔ wolfSSL server, 0-RTT | 4.6   | todo |
 
 
 ---
