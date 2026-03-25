@@ -1742,24 +1742,6 @@ struct mbedtls_ssl_context {
      *  bis).  Checked at the top of mbedtls_ssl_read_record(). */
     uint8_t MBEDTLS_PRIVATE(dtls13_ack_pending);
 
-    /** Amplification limit tracking (RFC 9147 §4.9.1).
-     *
-     * dtls13_bytes_from_peer: total bytes received from the unvalidated peer
-     *   address.  Accumulated in mbedtls_ssl_fetch_input() on the server side.
-     *   Only meaningful while dtls13_peer_verified == 0.
-     *
-     * dtls13_peer_verified: set to 1 once the peer's address is validated.
-     *   Currently set after the server successfully verifies the client's
-     *   Finished message.  Will also be set by the HRR cookie path (Phase
-     *   3b.1) which provides earlier validation.  Enforcement of the 3×
-     *   amplification limit is deferred to Phase 3b.1; until then the fields
-     *   are populated and logged but writes are not gated.
-     *
-     * dtls13_bytes_sent: total bytes written to the network while
-     *   dtls13_peer_verified == 0, for limit accounting. */
-    uint32_t MBEDTLS_PRIVATE(dtls13_bytes_from_peer);
-    uint8_t  MBEDTLS_PRIVATE(dtls13_peer_verified);
-    uint32_t MBEDTLS_PRIVATE(dtls13_bytes_sent);
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
 #if defined(MBEDTLS_SSL_DTLS_ANTI_REPLAY)

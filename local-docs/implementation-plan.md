@@ -432,18 +432,16 @@ have been drilled down in `local-docs/design-drilldown.md`:
          the retried ClientHello (not as a TLS extension).
          Tests: `DTLS 1.3: HRR+cookie exchange (cookie enabled)` passes; `DTLS 1.3
          client, DTLS 1.2 server: negotiate down to DTLS 1.2 (with cookie)` passes.
-- [~] 2. Enforce amplification limit: server MUST NOT send more than 3x bytes received
-         before address is validated (cookie exchange or completed handshake).
-         Infrastructure complete: `dtls13_bytes_from_peer`, `dtls13_bytes_sent`, and
-         `dtls13_peer_verified` added to `mbedtls_ssl_context`; bytes tracked in
-         `mbedtls_ssl_fetch_input()` and `mbedtls_ssl_write_record()`; `peer_verified`
-         set after client Finished verified; proximity logged at debug level 3.
-         Active enforcement deferred to Phase 3b.1 (cookie): without HRR+cookie the
-         server's initial flight (including cert) typically exceeds 3× a ClientHello,
-         so hard-blocking would break non-cookie handshakes.
-         Test (blocked on 3b.1): "DTLS 1.3: amplification limit enforced" — server
-         requires cookie exchange; without it the second ClientHello is never met with
-         > 3× bytes. Verify via debug counters (dtls13_bytes_sent / dtls13_bytes_from_peer).
+- [dropped] 2. Enforce amplification limit in the record layer.
+         **Decision: not implementing.** The cookie already solves the address
+         validation problem — a validated client address is the goal, not byte
+         counting per se.  Hard send-blocking at 3× is a SHOULD (RFC 9147 §4.2.1),
+         not a MUST, and implementing it in the record layer is over-engineered:
+         it would require tracking bytes across every send/recv call, the threshold
+         is routinely exceeded by a single certificate flight anyway, and the
+         infrastructure already added (`dtls13_bytes_from_peer`, `dtls13_bytes_sent`,
+         `dtls13_peer_verified`) will be removed as dead code.
+         The cookie (Phase 3b.1) is the correct and sufficient mitigation.
 - [x] 3. Implement ACK message parsing and serialization.
          `ssl_dtls13_parse_ack()` and `ssl_dtls13_write_ack()` in `ssl_msg.c`.
          `MBEDTLS_SSL_MSG_ACK = 26` added to `ssl.h`; accepted by

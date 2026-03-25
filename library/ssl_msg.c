@@ -2024,21 +2024,6 @@ int mbedtls_ssl_fetch_input(mbedtls_ssl_context *ssl, size_t nb_want)
 
         ssl->in_left = ret;
 
-#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
-        /* Amplification limit (RFC 9147 §4.9.1): accumulate bytes received
-         * from the peer on the server side before address validation. */
-        if (ssl->conf->endpoint == MBEDTLS_SSL_IS_SERVER &&
-            ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
-            !ssl->dtls13_peer_verified) {
-            /* Saturate at UINT32_MAX to avoid wrap-around. */
-            if ((uint32_t) ret <= UINT32_MAX - ssl->dtls13_bytes_from_peer) {
-                ssl->dtls13_bytes_from_peer += (uint32_t) ret;
-            } else {
-                ssl->dtls13_bytes_from_peer = UINT32_MAX;
-            }
-        }
-#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
-
     } else
 #endif
     {
@@ -2834,37 +2819,6 @@ int mbedtls_ssl_write_record(mbedtls_ssl_context *ssl, int force_flush)
             }
         }
 
-#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
-        /* Amplification limit tracking (RFC 9147 §4.9.1).
-         *
-         * Log proximity to the 3x limit.  Active enforcement is deferred to
-         * Phase 3b.1 (HRR cookie exchange): without a cookie the server
-         * cannot fit its initial flight within 3x bytes of a typical
-         * ClientHello (certificate alone can exceed the budget).  Once
-         * Phase 3b.1 lands, the server will reject clients that skip the
-         * cookie round-trip and dtls13_peer_verified will be set by the
-         * cookie-verified path instead of (or in addition to) the Finished
-         * path below. */
-        if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
-            ssl->conf->endpoint == MBEDTLS_SSL_IS_SERVER &&
-            ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
-            !ssl->dtls13_peer_verified &&
-            ssl->dtls13_bytes_from_peer > 0) {
-            uint32_t allowance = ssl->dtls13_bytes_from_peer <= UINT32_MAX / 3
-                                 ? ssl->dtls13_bytes_from_peer * 3
-                                 : UINT32_MAX;
-            if (ssl->dtls13_bytes_sent + (uint32_t) protected_record_size
-                > allowance) {
-                MBEDTLS_SSL_DEBUG_MSG(3,
-                    ("amplification limit would be exceeded: sending %"
-                     MBEDTLS_PRINTF_SIZET " B"
-                     " (sent=%lu allowance=%lu) — not enforced pre-cookie",
-                     protected_record_size,
-                     (unsigned long) ssl->dtls13_bytes_sent,
-                     (unsigned long) allowance));
-            }
-        }
-#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
 
         /* Now write the potentially updated record content type. */
@@ -2881,20 +2835,6 @@ int mbedtls_ssl_write_record(mbedtls_ssl_context *ssl, int force_flush)
         ssl->out_left += protected_record_size;
         ssl->out_hdr  += protected_record_size;
         mbedtls_ssl_update_out_pointers(ssl, ssl->transform_out);
-
-#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
-        /* Track bytes sent for amplification limit accounting. */
-        if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
-            ssl->conf->endpoint == MBEDTLS_SSL_IS_SERVER &&
-            ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
-            !ssl->dtls13_peer_verified) {
-            if (protected_record_size <= UINT32_MAX - ssl->dtls13_bytes_sent) {
-                ssl->dtls13_bytes_sent += (uint32_t) protected_record_size;
-            } else {
-                ssl->dtls13_bytes_sent = UINT32_MAX;
-            }
-        }
-#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 
         for (i = 8; i > mbedtls_ssl_ep_len(ssl); i--) {
             if (++ssl->cur_out_ctr[i - 1] != 0) {
