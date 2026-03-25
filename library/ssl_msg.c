@@ -2023,6 +2023,22 @@ int mbedtls_ssl_fetch_input(mbedtls_ssl_context *ssl, size_t nb_want)
         }
 
         ssl->in_left = ret;
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+        /* Amplification limit (RFC 9147 §4.9.1): accumulate bytes received
+         * from the peer on the server side before address validation. */
+        if (ssl->conf->endpoint == MBEDTLS_SSL_IS_SERVER &&
+            ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+            !ssl->dtls13_peer_verified) {
+            /* Saturate at UINT32_MAX to avoid wrap-around. */
+            if ((uint32_t) ret <= UINT32_MAX - ssl->dtls13_bytes_from_peer) {
+                ssl->dtls13_bytes_from_peer += (uint32_t) ret;
+            } else {
+                ssl->dtls13_bytes_from_peer = UINT32_MAX;
+            }
+        }
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
+
     } else
 #endif
     {
@@ -2791,6 +2807,38 @@ int mbedtls_ssl_write_record(mbedtls_ssl_context *ssl, int force_flush)
                 return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
             }
         }
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+        /* Amplification limit tracking (RFC 9147 §4.9.1).
+         *
+         * Log proximity to the 3x limit.  Active enforcement is deferred to
+         * Phase 3b.1 (HRR cookie exchange): without a cookie the server
+         * cannot fit its initial flight within 3x bytes of a typical
+         * ClientHello (certificate alone can exceed the budget).  Once
+         * Phase 3b.1 lands, the server will reject clients that skip the
+         * cookie round-trip and dtls13_peer_verified will be set by the
+         * cookie-verified path instead of (or in addition to) the Finished
+         * path below. */
+        if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+            ssl->conf->endpoint == MBEDTLS_SSL_IS_SERVER &&
+            ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+            !ssl->dtls13_peer_verified &&
+            ssl->dtls13_bytes_from_peer > 0) {
+            uint32_t allowance = ssl->dtls13_bytes_from_peer <= UINT32_MAX / 3
+                                 ? ssl->dtls13_bytes_from_peer * 3
+                                 : UINT32_MAX;
+            if (ssl->dtls13_bytes_sent + (uint32_t) protected_record_size
+                > allowance) {
+                MBEDTLS_SSL_DEBUG_MSG(3,
+                    ("amplification limit would be exceeded: sending %"
+                     MBEDTLS_PRINTF_SIZET " B"
+                     " (sent=%lu allowance=%lu) — not enforced pre-cookie",
+                     protected_record_size,
+                     (unsigned long) ssl->dtls13_bytes_sent,
+                     (unsigned long) allowance));
+            }
+        }
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
 
         /* Now write the potentially updated record content type. */
@@ -2807,6 +2855,20 @@ int mbedtls_ssl_write_record(mbedtls_ssl_context *ssl, int force_flush)
         ssl->out_left += protected_record_size;
         ssl->out_hdr  += protected_record_size;
         mbedtls_ssl_update_out_pointers(ssl, ssl->transform_out);
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+        /* Track bytes sent for amplification limit accounting. */
+        if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+            ssl->conf->endpoint == MBEDTLS_SSL_IS_SERVER &&
+            ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+            !ssl->dtls13_peer_verified) {
+            if (protected_record_size <= UINT32_MAX - ssl->dtls13_bytes_sent) {
+                ssl->dtls13_bytes_sent += (uint32_t) protected_record_size;
+            } else {
+                ssl->dtls13_bytes_sent = UINT32_MAX;
+            }
+        }
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 
         for (i = 8; i > mbedtls_ssl_ep_len(ssl); i--) {
             if (++ssl->cur_out_ctr[i - 1] != 0) {
@@ -3577,7 +3639,8 @@ static int ssl_check_record_type(uint8_t record_type)
     if (record_type != MBEDTLS_SSL_MSG_HANDSHAKE &&
         record_type != MBEDTLS_SSL_MSG_ALERT &&
         record_type != MBEDTLS_SSL_MSG_CHANGE_CIPHER_SPEC &&
-        record_type != MBEDTLS_SSL_MSG_APPLICATION_DATA) {
+        record_type != MBEDTLS_SSL_MSG_APPLICATION_DATA &&
+        record_type != MBEDTLS_SSL_MSG_ACK) {
         return MBEDTLS_ERR_SSL_INVALID_RECORD;
     }
 
@@ -4539,6 +4602,39 @@ static int ssl_prepare_record_content(mbedtls_ssl_context *ssl,
         return MBEDTLS_ERR_SSL_INVALID_RECORD;
     }
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    /*
+     * DTLS 1.3: record the epoch and sequence number of every successfully
+     * processed record into dtls13_received_records[], so we can send an
+     * accurate ACK (RFC 9147 §7).  Only for encrypted records (epoch >= 2).
+     */
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+        ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+        ssl->handshake != NULL) {
+        uint16_t rec_epoch = MBEDTLS_GET_UINT16_BE(rec->ctr, 0);
+        if (rec_epoch >= 2) {
+            mbedtls_ssl_handshake_params *hs = ssl->handshake;
+            uint8_t idx = hs->dtls13_received_record_count;
+            if (idx < MBEDTLS_SSL_DTLS13_MAX_ACK_RECORDS) {
+                /* Reconstruct full 64-bit seq from the epoch-specific counter.
+                 * rec->ctr[2..7] holds the 6-byte sequence number field. */
+                uint64_t seq = ((uint64_t) rec->ctr[2] << 40) |
+                               ((uint64_t) rec->ctr[3] << 32) |
+                               ((uint64_t) rec->ctr[4] << 24) |
+                               ((uint64_t) rec->ctr[5] << 16) |
+                               ((uint64_t) rec->ctr[6] <<  8) |
+                               ((uint64_t) rec->ctr[7]);
+                hs->dtls13_received_records[idx].epoch = (uint64_t) rec_epoch;
+                hs->dtls13_received_records[idx].seq   = seq;
+                hs->dtls13_received_record_count = idx + 1;
+                MBEDTLS_SSL_DEBUG_MSG(4, ("DTLS 1.3: recorded epoch=%u seq=%llu for ACK",
+                                          (unsigned) rec_epoch,
+                                          (unsigned long long) seq));
+            }
+        }
+    }
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
+
     return 0;
 }
 
@@ -4557,6 +4653,10 @@ MBEDTLS_CHECK_RETURN_CRITICAL
 static int ssl_get_next_record(mbedtls_ssl_context *ssl);
 MBEDTLS_CHECK_RETURN_CRITICAL
 static int ssl_record_is_in_progress(mbedtls_ssl_context *ssl);
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+MBEDTLS_CHECK_RETURN_CRITICAL
+static int ssl_dtls13_write_ack(mbedtls_ssl_context *ssl);
+#endif
 
 int mbedtls_ssl_read_record(mbedtls_ssl_context *ssl,
                             unsigned update_hs_digest)
@@ -4564,6 +4664,21 @@ int mbedtls_ssl_read_record(mbedtls_ssl_context *ssl,
     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
 
     MBEDTLS_SSL_DEBUG_MSG(2, ("=> read record"));
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    /* Send any pending ACK before reading new data (RFC 9147 §7).
+     * This must happen before ssl_consume_current_message() discards
+     * the record we want to ACK. */
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+        ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+        ssl->dtls13_ack_pending) {
+        int ack_ret = ssl_dtls13_write_ack(ssl);
+        if (ack_ret != 0) {
+            MBEDTLS_SSL_DEBUG_RET(1, "ssl_dtls13_write_ack", ack_ret);
+            /* ACK send failure is non-fatal for the connection. */
+        }
+    }
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 
     if (ssl->keep_current_message == 0) {
         do {
@@ -5410,6 +5525,162 @@ static int ssl_get_next_record(mbedtls_ssl_context *ssl)
     return 0;
 }
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+
+/*
+ * Write an ACK message (RFC 9147 §7) into ssl->out_msg.
+ *
+ * Format:
+ *   uint16  length                  -- 2-byte count of RecordNumber entries
+ *   RecordNumber record_numbers[N]  -- N × 16 bytes each
+ *
+ *   struct RecordNumber {
+ *     uint64 epoch;
+ *     uint64 sequence_number;
+ *   };
+ *
+ * The record numbers are taken from handshake->dtls13_received_records[].
+ * Returns 0 on success.
+ */
+MBEDTLS_CHECK_RETURN_CRITICAL
+static int ssl_dtls13_write_ack(mbedtls_ssl_context *ssl)
+{
+    int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+    mbedtls_ssl_handshake_params *hs = ssl->handshake;
+    unsigned char *p;
+    size_t count;
+    size_t i;
+
+    if (hs == NULL) {
+        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+    }
+
+    count = hs->dtls13_received_record_count;
+
+    /* 2-byte length field + 16 bytes per RecordNumber */
+    ssl->out_msglen = 2 + count * 16;
+    ssl->out_msgtype = MBEDTLS_SSL_MSG_ACK;
+
+    p = ssl->out_msg;
+
+    MBEDTLS_PUT_UINT16_BE((uint16_t)(count * 16), p, 0);
+    p += 2;
+
+    for (i = 0; i < count; i++) {
+        MBEDTLS_PUT_UINT64_BE(hs->dtls13_received_records[i].epoch, p, 0);
+        p += 8;
+        MBEDTLS_PUT_UINT64_BE(hs->dtls13_received_records[i].seq, p, 0);
+        p += 8;
+    }
+
+    MBEDTLS_SSL_DEBUG_MSG(2, ("=> write ACK (%u record numbers)", (unsigned) count));
+
+    ret = mbedtls_ssl_write_record(ssl, SSL_FORCE_FLUSH);
+    if (ret != 0) {
+        MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_write_record (ACK)", ret);
+        return ret;
+    }
+
+    ssl->dtls13_ack_pending = 0;
+    MBEDTLS_SSL_DEBUG_MSG(2, ("<= write ACK"));
+    return 0;
+}
+
+/*
+ * Parse an incoming ACK message (RFC 9147 §7).
+ *
+ * Updates flight_item->acked for any flight items whose sent record numbers
+ * appear in the ACK.  If all items are acked, the retransmit timer is
+ * cancelled and the retransmit state is advanced.
+ *
+ * On parse errors the record is silently discarded (non-fatal for DTLS).
+ */
+MBEDTLS_CHECK_RETURN_CRITICAL
+static int ssl_dtls13_process_ack(mbedtls_ssl_context *ssl,
+                                  const unsigned char *buf,
+                                  const unsigned char *end)
+{
+    mbedtls_ssl_handshake_params *hs = ssl->handshake;
+    uint16_t list_len;
+    uint16_t count;
+    uint16_t i;
+    int all_acked;
+    mbedtls_ssl_flight_item *item;
+
+    /* Need at least 2 bytes for the length field. */
+    if (end - buf < 2) {
+        MBEDTLS_SSL_DEBUG_MSG(1, ("ACK: too short (%d bytes)", (int)(end - buf)));
+        return MBEDTLS_ERR_SSL_INVALID_RECORD;
+    }
+
+    list_len = MBEDTLS_GET_UINT16_BE(buf, 0);
+    buf += 2;
+
+    if ((size_t)(end - buf) < list_len) {
+        MBEDTLS_SSL_DEBUG_MSG(1, ("ACK: list_len %u > remaining %u",
+                                  (unsigned) list_len,
+                                  (unsigned)(end - buf)));
+        return MBEDTLS_ERR_SSL_INVALID_RECORD;
+    }
+
+    if (list_len % 16 != 0) {
+        MBEDTLS_SSL_DEBUG_MSG(1, ("ACK: list_len %u not a multiple of 16",
+                                  (unsigned) list_len));
+        return MBEDTLS_ERR_SSL_INVALID_RECORD;
+    }
+
+    count = list_len / 16;
+    MBEDTLS_SSL_DEBUG_MSG(2, ("ACK received: %u record numbers", (unsigned) count));
+
+    if (hs == NULL || hs->flight == NULL) {
+        /* No flight in progress — ACK is a no-op (silently discard). */
+        return 0;
+    }
+
+    for (i = 0; i < count; i++) {
+        uint64_t epoch = MBEDTLS_GET_UINT64_BE(buf,  0);
+        uint64_t seq   = MBEDTLS_GET_UINT64_BE(buf,  8);
+        buf += 16;
+
+        MBEDTLS_SSL_DEBUG_MSG(3, ("ACK: epoch=%llu seq=%llu",
+                                  (unsigned long long) epoch,
+                                  (unsigned long long) seq));
+
+        for (item = hs->flight; item != NULL; item = item->next) {
+            uint8_t j;
+            for (j = 0; j < item->sent_record_count; j++) {
+                if (item->sent_records[j] == seq &&
+                    item->sent_record_epoch[j] == (uint8_t)(epoch & 0xFF)) {
+                    MBEDTLS_SSL_DEBUG_MSG(2, ("ACK: marking flight item acked"
+                                              " (epoch=%llu seq=%llu)",
+                                              (unsigned long long) epoch,
+                                              (unsigned long long) seq));
+                    item->acked = 1;
+                }
+            }
+        }
+    }
+
+    /* Check if the full flight has been acked. */
+    all_acked = 1;
+    for (item = hs->flight; item != NULL; item = item->next) {
+        if (!item->acked) {
+            all_acked = 0;
+            break;
+        }
+    }
+
+    if (all_acked) {
+        MBEDTLS_SSL_DEBUG_MSG(2, ("ACK: full flight acked; cancelling retransmit timer"));
+        mbedtls_ssl_set_timer(ssl, 0);
+        hs->retransmit_state = MBEDTLS_SSL_RETRANS_FINISHED;
+    }
+
+    return 0;
+}
+
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
+
 int mbedtls_ssl_handle_message_type(mbedtls_ssl_context *ssl)
 {
     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
@@ -5510,6 +5781,23 @@ int mbedtls_ssl_handle_message_type(mbedtls_ssl_context *ssl)
         /* Silently ignore: fetch new message */
         return MBEDTLS_ERR_SSL_NON_FATAL;
     }
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+        ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+        ssl->in_msgtype == MBEDTLS_SSL_MSG_ACK) {
+        /* Process incoming ACK message (RFC 9147 §7). */
+        ret = ssl_dtls13_process_ack(ssl,
+                                     ssl->in_msg,
+                                     ssl->in_msg + ssl->in_msglen);
+        if (ret != 0) {
+            MBEDTLS_SSL_DEBUG_RET(1, "ssl_dtls13_process_ack", ret);
+            /* Non-fatal: a malformed ACK should not kill the connection. */
+            return MBEDTLS_ERR_SSL_NON_FATAL;
+        }
+        return MBEDTLS_ERR_SSL_NON_FATAL; /* consume and continue */
+    }
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
     if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {

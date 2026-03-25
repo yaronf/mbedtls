@@ -3113,6 +3113,14 @@ static int ssl_tls13_process_client_finished(mbedtls_ssl_context *ssl)
         return ret;
     }
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+    /* Client Finished verified — peer address is now validated.
+     * Lift the amplification limit (RFC 9147 §4.9.1). */
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+        ssl->dtls13_peer_verified = 1;
+    }
+#endif
+
     ret = mbedtls_ssl_tls13_compute_resumption_master_secret(ssl);
     if (ret != 0) {
         MBEDTLS_SSL_DEBUG_RET(

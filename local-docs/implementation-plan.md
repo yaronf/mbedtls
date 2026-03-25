@@ -401,14 +401,27 @@ have been drilled down in `local-docs/design-drilldown.md`:
 *Design detail: see `design-drilldown.md` §3 (ACK + retransmit).*
 
 - [ ] 1. Implement HRR+cookie path (stateless server cookie via HMAC).
-- [ ] 2. Enforce amplification limit: server MUST NOT send more than 3x bytes received
+- [~] 2. Enforce amplification limit: server MUST NOT send more than 3x bytes received
          before address is validated (cookie exchange or completed handshake).
-- [ ] 3. Implement ACK message parsing and serialization.
-         See drilldown §3: `ACK { RecordNumber record_numbers<0..2^16-1> }`;
-         `RecordNumber = { uint64 epoch; uint64 seq }`.
-- [ ] 4. Add ACK sending for the final client flight (required by spec).
-         See drilldown §3: set `dtls13_ack_pending` flag; ACK injected at top of
-         `mbedtls_ssl_read_record()` from `dtls13_received_records[]`.
+         Infrastructure complete: `dtls13_bytes_from_peer`, `dtls13_bytes_sent`, and
+         `dtls13_peer_verified` added to `mbedtls_ssl_context`; bytes tracked in
+         `mbedtls_ssl_fetch_input()` and `mbedtls_ssl_write_record()`; `peer_verified`
+         set after client Finished verified; proximity logged at debug level 3.
+         Active enforcement deferred to Phase 3b.1 (cookie): without HRR+cookie the
+         server's initial flight (including cert) typically exceeds 3× a ClientHello,
+         so hard-blocking would break non-cookie handshakes.
+- [x] 3. Implement ACK message parsing and serialization.
+         `ssl_dtls13_parse_ack()` and `ssl_dtls13_write_ack()` in `ssl_msg.c`.
+         `MBEDTLS_SSL_MSG_ACK = 26` added to `ssl.h`; accepted by
+         `ssl_check_record_type()`; dispatched in `mbedtls_ssl_handle_message_type()`.
+         `ssl_dtls13_write_ack()` serializes `dtls13_received_records[]` from
+         `mbedtls_ssl_handshake_params`. Per-record received-record tracking
+         added in `ssl_prepare_record_content()` for encrypted epochs (≥ 2).
+- [x] 4. Add ACK sending for the final client flight (required by spec).
+         `dtls13_ack_pending` flag set in `ssl_tls13_process_server_finished()`
+         (client side, DTLS transport) after server Finished verified.
+         ACK injected at the top of `mbedtls_ssl_read_record()` when the flag
+         is set; flag cleared after successful send.
 - [ ] 5. Extend retransmit state machine: selective retransmission when ACK received.
          See drilldown §3: new `ssl_dtls13_process_ack()` marks `flight_item->acked`;
          `mbedtls_ssl_flight_transmit()` skips acked items. New fields `sent_records[]`

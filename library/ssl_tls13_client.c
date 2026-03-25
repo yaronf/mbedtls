@@ -2631,6 +2631,15 @@ static int ssl_tls13_process_server_finished(mbedtls_ssl_context *ssl)
         return ret;
     }
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+    /* RFC 9147 §7.2.1: the client MUST send an ACK for the server's final
+     * flight once the server Finished has been verified.  Set the pending
+     * flag; the ACK will be emitted at the top of the next read_record(). */
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+        ssl->dtls13_ack_pending = 1;
+    }
+#endif /* MBEDTLS_SSL_PROTO_DTLS */
+
 #if defined(MBEDTLS_SSL_EARLY_DATA)
     if (ssl->early_data_state == MBEDTLS_SSL_EARLY_DATA_STATE_ACCEPTED) {
         ssl->early_data_state = MBEDTLS_SSL_EARLY_DATA_STATE_SERVER_FINISHED_RECEIVED;
