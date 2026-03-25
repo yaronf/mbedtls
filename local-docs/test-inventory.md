@@ -142,6 +142,13 @@ See `local-docs/reference-implementations.md` for setup instructions.
 
 ## Coverage gaps / known missing tests
 
+- **HRR+cookie: client abandons after HRR** (Phase 3b.1): server sends HRR+cookie,
+  client goes silent (no second ClientHello). Server must time out, free all
+  handshake state, and not leak memory or leave the port in a broken state.
+  Hard to test deterministically without a proxy or synthetic client; requires
+  either `udp_proxy` with a drop rule after HRR, or a small purpose-built
+  non-cooperative client binary. Needs explicit test; currently no coverage.
+
 - **Transcript hash correctness**: no unit test verifying that DTLS framing fields are
   stripped before hashing. Should add a test vector derived from a known BoringSSL or
   wolfSSL transcript.
