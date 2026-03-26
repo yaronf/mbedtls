@@ -464,20 +464,26 @@ have been drilled down in `local-docs/design-drilldown.md`:
          (drop=5 delay=5 duplicate=5 via udp_proxy).
 - [ ] 6. Interop: mbedtls client ↔ wolfSSL server, and wolfSSL client ↔ mbedtls server.
          See `reference-implementations.md`.
-- [~] 7. Proxy test parity: port all immediately-portable DTLS 1.2 proxy tests to DTLS 1.3.
+- [x] 7. Proxy test parity: port all immediately-portable DTLS 1.2 proxy tests to DTLS 1.3.
          Full analysis in `local-docs/proxy-test-parity.md`.
-         Done (7 tests passing):
+         Done (8 tests passing):
            duplicate every packet; duplicate + anti-replay off;
            multiple records in same datagram; same + duplicate;
+           inject invalid AD record (default badmac_limit);
            3d basic handshake; 3d client auth; 3d nbio.
-         Deferred — bad_ad: proxy corrupts handshake records; DTLS 1.3 fatals on
-           bad-MAC at SERVER_FINISHED; needs investigation or proxy option.
-         Deferred — fragmentation+3d: DTLS 1.3 write path does not yet fragment
-           outgoing handshake messages exceeding MTU (server Certificate hits
-           INTERNAL_ERROR at mtu=512). Needs its own implementation phase.
-         Deferred to Phase 4: 3d+PSK, 3d+ticket, 3d+resumption variants.
-         Deferred to Phase 3b.6: 3d+openssl/gnutls interop.
+         Fix in ssl_msg.c: bad-MAC at SERVER_FINISHED/CLIENT_FINISHED is now
+           discarded (not fatal) in DTLS 1.3 — server retransmits on timeout;
+           the DTLS 1.2 fatal rationale (wrong PSK / MITM) does not apply.
+         Remaining deferred: badmac_limit=2 (server hits limit during handshake
+           with bad_ad=1; needs post-handshake injection); fragmentation+3d
+           (Phase 3b.8); 3d+PSK/ticket/resumption (Phase 4); interop (Phase 3b.6).
          Not applicable: CCS tests, renegotiation tests, CKE tests.
+- [ ] 8. Outgoing handshake fragmentation for DTLS 1.3.
+         The DTLS 1.3 write path does not fragment large handshake messages when
+         they exceed the MTU.  Server Certificate hits INTERNAL_ERROR at mtu=512.
+         Blocks "DTLS 1.3: fragmenting — proxy MTU + 3d" (and nbio variant).
+         Implementation: apply the DTLS 1.2 fragmentation logic from
+         mbedtls_ssl_flight_transmit to the DTLS 1.3 outgoing write path.
 
 ### Phase 4: Session Resumption and PSK
 *Goal: PSK and resumption handshakes work, including 0-RTT.*

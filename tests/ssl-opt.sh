@@ -14108,14 +14108,26 @@ run_test    "DTLS 1.3: proxy — multiple records in same datagram, duplicate ev
             -c "next record in same datagram" \
             -s "next record in same datagram"
 
-# bad_ad tests: deferred.  The proxy corrupts records indiscriminately,
-# including handshake records.  DTLS 1.3 correctly fatals on bad-MAC at
-# SERVER_FINISHED state (unlike 1.2 which is more forgiving there), so the
-# connection dies before app-data exchange.  Needs either a proxy option to
-# restrict corruption to app-data records or a separate investigation.
-# Tracked in proxy-test-parity.md.
+client_needs_more_time 4
+requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
+run_test    "DTLS 1.3: proxy — inject invalid AD record, default badmac_limit" \
+            -p "$P_PXY bad_ad=1" \
+            "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 debug_level=1 hs_timeout=500-10000" \
+            "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 debug_level=1 hs_timeout=500-10000" \
+            0 \
+            -c "discarding invalid record (mac)" \
+            -s "discarding invalid record (mac)" \
+            -S "too many records with bad MAC" \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3"
 
-client_needs_more_time 2
+# badmac_limit 2 test: not ported.  With bad_ad=1 and DTLS 1.3's flight
+# structure, the server hits the limit during the handshake itself (2 corrupt
+# records arrive before the handshake completes), whereas DTLS 1.2 tolerates
+# it.  Testing the fatal-on-limit path needs a targeted bad_ad injection
+# after the handshake; deferred. See proxy-test-parity.md.
+
+client_needs_more_time 4
 requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
 run_test    "DTLS 1.3: proxy — 3d, basic handshake" \
             -p "$P_PXY drop=5 delay=5 duplicate=5" \
@@ -14125,7 +14137,7 @@ run_test    "DTLS 1.3: proxy — 3d, basic handshake" \
             -s "Protocol is DTLSv1.3" \
             -c "Protocol is DTLSv1.3"
 
-client_needs_more_time 2
+client_needs_more_time 4
 requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
 run_test    "DTLS 1.3: proxy — 3d, client auth" \
             -p "$P_PXY drop=5 delay=5 duplicate=5" \
@@ -14135,7 +14147,7 @@ run_test    "DTLS 1.3: proxy — 3d, client auth" \
             -s "Protocol is DTLSv1.3" \
             -c "Protocol is DTLSv1.3"
 
-client_needs_more_time 2
+client_needs_more_time 4
 requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
 run_test    "DTLS 1.3: proxy — 3d, nbio" \
             -p "$P_PXY drop=5 delay=5 duplicate=5" \

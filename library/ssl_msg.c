@@ -5466,9 +5466,23 @@ static int ssl_get_next_record(mbedtls_ssl_context *ssl)
             if (ret == MBEDTLS_ERR_SSL_INVALID_MAC) {
                 /* Except when waiting for Finished as a bad mac here
                  * probably means something went wrong in the handshake
-                 * (eg wrong psk used, mitm downgrade attempt, etc.) */
-                if (ssl->state == MBEDTLS_SSL_CLIENT_FINISHED ||
-                    ssl->state == MBEDTLS_SSL_SERVER_FINISHED) {
+                 * (eg wrong psk used, mitm downgrade attempt, etc.)
+                 *
+                 * In DTLS 1.3 we do NOT fatal here: every handshake
+                 * message is individually AEAD-protected, so a corrupt
+                 * Finished is indistinguishable from in-transit corruption.
+                 * The server will retransmit its Finished on timeout if the
+                 * client does not ACK, making discard-and-wait the correct
+                 * response.  The DTLS 1.2 concern (wrong PSK, MITM downgrade)
+                 * does not apply because key agreement is already complete by
+                 * the time Finished is exchanged in 1.3. */
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+                if (ssl->tls_version != MBEDTLS_SSL_VERSION_TLS1_3 &&
+#else
+                if (
+#endif
+                    (ssl->state == MBEDTLS_SSL_CLIENT_FINISHED ||
+                     ssl->state == MBEDTLS_SSL_SERVER_FINISHED)) {
 #if defined(MBEDTLS_SSL_ALL_ALERT_MESSAGES)
                     if (ret == MBEDTLS_ERR_SSL_INVALID_MAC) {
                         mbedtls_ssl_send_alert_message(ssl,

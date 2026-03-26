@@ -1,6 +1,6 @@
 # DTLS 1.3 Test Inventory
 
-**Last updated:** 2026-03-26 (Phase 3b.7 proxy test parity — 7 new tests passing)
+**Last updated:** 2026-03-26 (Phase 3b.7 proxy test parity — 8 new tests; bad-MAC-at-Finished fix)
 **Branch:** `dtls13`
 
 Tests are grouped by type.  Status: `pass` = currently passing, `fail` = currently failing (expected), `todo` = not yet written.
@@ -108,6 +108,7 @@ These use `ssl_client2` / `ssl_server2` over loopback UDP.
 | `DTLS 1.3: proxy — 3d, basic handshake`                                      | pass | —                                                       |
 | `DTLS 1.3: proxy — 3d, client auth`                                          | pass | —                                                       |
 | `DTLS 1.3: proxy — 3d, nbio`                                                 | pass | —                                                       |
+| `DTLS 1.3: proxy — inject invalid AD record, default badmac_limit`           | pass | —                                                       |
 
 
 ### Planned — to be added as phases complete
@@ -158,11 +159,10 @@ See `local-docs/reference-implementations.md` for setup instructions.
 - **Transcript hash correctness**: no unit test verifying that DTLS framing fields are
   stripped before hashing. Should add a test vector derived from a known BoringSSL or
   wolfSSL transcript.
-- **bad_ad proxy tests** (Phase 3b.7 deferred): `bad_ad=1` proxy option corrupts records
-  indiscriminately including handshake records. DTLS 1.3 correctly fatals on bad-MAC at
-  `SERVER_FINISHED` state; the connection dies before app-data exchange. Needs either a
-  proxy option to restrict corruption to app-data records, or investigation of whether
-  the state guard should be relaxed for 1.3. See `proxy-test-parity.md`.
+- **bad_ad badmac_limit=2 test** (deferred): with `bad_ad=1` and DTLS 1.3's flight
+  structure, the server hits `badmac_limit=2` during the handshake itself (client's
+  encrypted messages get corrupted by the proxy). Testing the fatal-on-limit path needs
+  post-handshake bad_ad injection; deferred. The default-limit variant passes.
 - **Handshake fragmentation for large messages** (future phase): the DTLS 1.3 write path
   does not fragment outgoing handshake messages that exceed the MTU. Server Certificate
   hits `INTERNAL_ERROR` with `mtu=512`. Blocks `DTLS 1.3: fragmenting — proxy MTU + 3d`
