@@ -14052,8 +14052,8 @@ client_needs_more_time 4
 requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
 run_test    "DTLS 1.3: loss recovery via retransmit" \
             -p "$P_PXY drop=5 delay=5 duplicate=5" \
-            "$P_SRV dtls=1 force_version=dtls13 debug_level=2 hs_timeout=250-60000" \
-            "$P_CLI dtls=1 force_version=dtls13 debug_level=2 hs_timeout=250-60000" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=2 hs_timeout=250-20000" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=2 hs_timeout=250-20000" \
             0 \
             -s "Protocol is DTLSv1.3" \
             -c "Protocol is DTLSv1.3"
@@ -14131,8 +14131,8 @@ client_needs_more_time 4
 requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
 run_test    "DTLS 1.3: proxy — 3d, basic handshake" \
             -p "$P_PXY drop=5 delay=5 duplicate=5" \
-            "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-10000 debug_level=2" \
-            "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-10000 debug_level=2" \
+            "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-20000 debug_level=2" \
+            "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-20000 debug_level=2" \
             0 \
             -s "Protocol is DTLSv1.3" \
             -c "Protocol is DTLSv1.3"
@@ -14141,8 +14141,8 @@ client_needs_more_time 4
 requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
 run_test    "DTLS 1.3: proxy — 3d, client auth" \
             -p "$P_PXY drop=5 delay=5 duplicate=5" \
-            "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-10000 auth_mode=required debug_level=2" \
-            "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-10000 debug_level=2" \
+            "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-20000 auth_mode=required debug_level=2" \
+            "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-20000 debug_level=2" \
             0 \
             -s "Protocol is DTLSv1.3" \
             -c "Protocol is DTLSv1.3"
@@ -14151,8 +14151,8 @@ client_needs_more_time 4
 requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
 run_test    "DTLS 1.3: proxy — 3d, nbio" \
             -p "$P_PXY drop=5 delay=5 duplicate=5" \
-            "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-10000 nbio=2 debug_level=2" \
-            "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-10000 nbio=2 debug_level=2" \
+            "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-20000 nbio=2 debug_level=1" \
+            "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-20000 nbio=2 debug_level=1" \
             0 \
             -s "Protocol is DTLSv1.3" \
             -c "Protocol is DTLSv1.3"

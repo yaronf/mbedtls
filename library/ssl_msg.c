@@ -2436,6 +2436,24 @@ int mbedtls_ssl_flight_transmit(mbedtls_ssl_context *ssl)
 
         /* Actually send the message out */
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+        /* DTLS 1.3: plaintext epoch-0 flight items (ServerHello) must be
+         * written with transform_out == NULL even though the current outbound
+         * epoch may be 2+.  Save and restore around the write. */
+        mbedtls_ssl_transform *dtls13_saved_transform = NULL;
+        unsigned char dtls13_saved_ctr[8];
+        if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+            ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+            cur->type == MBEDTLS_SSL_MSG_HANDSHAKE &&
+            cur->len >= 1 &&
+            cur->p[0] == MBEDTLS_SSL_HS_SERVER_HELLO &&
+            ssl->transform_out != NULL) {
+            dtls13_saved_transform = ssl->transform_out;
+            memcpy(dtls13_saved_ctr, ssl->cur_out_ctr, 8);
+            ssl->transform_out = NULL;
+            memset(ssl->cur_out_ctr, 0, 8); /* epoch 0, seq 0 (client hasn't seen it) */
+            mbedtls_ssl_update_out_pointers(ssl, NULL);
+        }
+
         /* DTLS 1.3: record the outbound epoch+seq before the write so we can
          * match incoming ACKs to this flight item.  cur_out_ctr[0..1] is the
          * epoch and cur_out_ctr[2..7] is the 48-bit sequence number; the
@@ -2466,6 +2484,14 @@ int mbedtls_ssl_flight_transmit(mbedtls_ssl_context *ssl)
             MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_write_record", ret);
             return ret;
         }
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+        /* Restore epoch-2 transform after a plaintext ServerHello retransmit. */
+        if (dtls13_saved_transform != NULL) {
+            ssl->transform_out = dtls13_saved_transform;
+            memcpy(ssl->cur_out_ctr, dtls13_saved_ctr, 8);
+            mbedtls_ssl_update_out_pointers(ssl, ssl->transform_out);
+        }
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
     }
 
     if ((ret = mbedtls_ssl_flush_output(ssl)) != 0) {
@@ -2744,16 +2770,18 @@ int mbedtls_ssl_write_handshake_msg_ext(mbedtls_ssl_context *ssl,
         if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 ||
             ssl->conf->max_tls_version == MBEDTLS_SSL_VERSION_TLS1_3) {
             /* DTLS 1.3 path: send immediately (below), but also save a copy
-             * in the flight list for retransmit on timeout.
+             * in the flight list for timer-driven retransmit on timeout.
              *
-             * Only epoch-2 (handshake) messages go into the flight: they are
-             * encrypted with the current transform_out, which is stable for
-             * the duration of the flight and can be reused on retransmit.
-             * Epoch-0 (plaintext) messages like ServerHello and ClientHello
-             * are excluded — they must NOT be re-encrypted on retransmit, and
-             * their re-send is handled by re-running the write path. */
-            if (ssl->transform_out != NULL &&
-                hs_type != MBEDTLS_SSL_HS_CLIENT_HELLO &&
+             * Epoch-2+ (encrypted) messages, epoch-0 ClientHello, and epoch-0
+             * ServerHello go into the flight for retransmit.  Encrypted
+             * messages are re-sent with the same ciphertext (transform_out is
+             * stable for the duration of the flight).  ClientHello and
+             * ServerHello are plaintext (transform_out == NULL at send time and
+             * also at retransmit time); flight_transmit re-sends them via
+             * write_record using the current (NULL) transform. */
+            if ((ssl->transform_out != NULL ||
+                 hs_type == MBEDTLS_SSL_HS_CLIENT_HELLO ||
+                 hs_type == MBEDTLS_SSL_HS_SERVER_HELLO) &&
                 ssl->handshake->dtls13_frag_off == 0) {
                 /* Skip the flight append on nbio retries — the message was
                  * already appended on the first attempt (dtls13_frag_off > 0
@@ -2783,10 +2811,9 @@ int mbedtls_ssl_write_handshake_msg_ext(mbedtls_ssl_context *ssl,
     {
 #if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3) && \
     defined(MBEDTLS_SSL_CLI_C)
-        /* DTLS 1.3 path sends immediately.  Save ClientHello separately for
-         * Option B re-hash if the server picks DTLS 1.2: we cannot use the
-         * flight for this because ClientHello is excluded from the DTLS 1.3
-         * flight above. */
+        /* DTLS 1.3: also save ClientHello in dtls13_cli_hello for the
+         * DTLS 1.2 downgrade re-hash path (Option B transcript).  The flight
+         * copy handles retransmit; this copy is for re-hashing only. */
         if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
             ssl->out_msgtype == MBEDTLS_SSL_MSG_HANDSHAKE &&
             hs_type == MBEDTLS_SSL_HS_CLIENT_HELLO &&
@@ -4525,6 +4552,20 @@ static int ssl_parse_record_header(mbedtls_ssl_context const *ssl,
                                           (unsigned) rec_epoch));
                 /* Fall through — epoch check passes; decryption path will
                  * use the pooled transform. */
+            } else if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+                       rec->type == MBEDTLS_SSL_MSG_ACK &&
+                       rec_epoch < ssl->in_epoch) {
+                /* RFC 9147 §7.1: ACK records are always plaintext and may
+                 * arrive from an earlier epoch (e.g. a client sends an empty
+                 * ACK at epoch 0 while the server has advanced to epoch 2).
+                 * Allow these through so they can trigger an early retransmit.
+                 * No decryption is needed — ACK records carry no transform. */
+                MBEDTLS_SSL_DEBUG_MSG(2, ("DTLS 1.3: ACK from old epoch %u "
+                                          "(current in_epoch=%u) — allowed",
+                                          (unsigned) rec_epoch,
+                                          (unsigned) ssl->in_epoch));
+                /* Fall through — the plaintext ACK will be processed by
+                 * mbedtls_ssl_handle_message_type(). */
             } else
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
             {
@@ -4620,11 +4661,19 @@ static int ssl_prepare_record_content(mbedtls_ssl_context *ssl,
      * In TLS 1.3, always treat ChangeCipherSpec records
      * as unencrypted. The only thing we do with them is
      * check the length and content and ignore them.
+     *
+     * Also treat ACK records from previous epochs as plaintext: a peer that
+     * has not yet negotiated keys sends its ACKs at epoch 0 with no
+     * encryption.  The epoch check in ssl_parse_record_header() already
+     * allowed the record through; skip decryption here.
      */
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
     if (transform_in != NULL &&
         transform_in->tls_version == MBEDTLS_SSL_VERSION_TLS1_3) {
         if (rec->type == MBEDTLS_SSL_MSG_CHANGE_CIPHER_SPEC) {
+            done = 1;
+        } else if (rec->type == MBEDTLS_SSL_MSG_ACK &&
+                   MBEDTLS_GET_UINT16_BE(rec->ctr, 0) < ssl->in_epoch) {
             done = 1;
         }
     }
@@ -4965,6 +5014,19 @@ int mbedtls_ssl_read_record(mbedtls_ssl_context *ssl,
                 if (dtls_have_buffered == 0) {
                     ret = ssl_get_next_record(ssl);
                     if (ret == MBEDTLS_ERR_SSL_CONTINUE_PROCESSING) {
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+                        /* Send any ACK that was scheduled while processing
+                         * the discarded record (e.g. empty ACK on future-epoch
+                         * record) before looping to fetch the next one. */
+                        if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+                            ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+                            ssl->dtls13_ack_pending) {
+                            int ack_ret = ssl_dtls13_write_ack(ssl);
+                            if (ack_ret != 0) {
+                                MBEDTLS_SSL_DEBUG_RET(1, "ssl_dtls13_write_ack", ack_ret);
+                            }
+                        }
+#endif
                         continue;
                     }
 
@@ -5675,6 +5737,25 @@ static int ssl_get_next_record(mbedtls_ssl_context *ssl)
                                           rec.ctr[2], rec.ctr[3], rec.ctr[4],
                                           rec.ctr[5], rec.ctr[6], rec.ctr[7],
                                           (unsigned) rec.data_len));
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+                /* RFC 9147 §7.1: when a DTLS 1.3 client receives records from
+                 * a future epoch during the handshake (e.g. encrypted server
+                 * flight records arriving before ServerHello), it SHOULD send
+                 * an empty ACK.  This signals to the server that the client is
+                 * alive and has seen part of its flight, prompting an early
+                 * retransmit rather than waiting for the full retransmit timer.
+                 * The ACK cannot list record numbers (we can't deprotect the
+                 * records), but an empty ACK is explicitly permitted by the
+                 * spec for exactly this case. */
+                if (ssl->handshake != NULL &&
+                    ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+                    MBEDTLS_GET_UINT16_BE(rec.ctr, 0) > ssl->in_epoch) {
+                    ssl->dtls13_ack_pending = 1;
+                    MBEDTLS_SSL_DEBUG_MSG(2, ("DTLS 1.3: future-epoch record "
+                                              "discarded — scheduling empty ACK"));
+                }
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
             } else {
                 /* Skip invalid record and the rest of the datagram */
                 ssl->next_record_offset = 0;
@@ -5840,6 +5921,17 @@ static int ssl_dtls13_write_ack(mbedtls_ssl_context *ssl)
         return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
     }
 
+    /* If there is already pending output from a previous operation (e.g. a
+     * partially-sent flight retransmit), we cannot safely encode a new record
+     * into the output buffer — doing so would corrupt the pending data.
+     * Defer the ACK; it will be retried on the next call once out_left == 0. */
+    if (ssl->out_left > 0) {
+        MBEDTLS_SSL_DEBUG_MSG(2, ("DTLS 1.3: ACK deferred — output buffer busy"
+                                  " (out_left=%" MBEDTLS_PRINTF_SIZET ")",
+                                  ssl->out_left));
+        return MBEDTLS_ERR_SSL_WANT_WRITE;
+    }
+
     count = hs->dtls13_received_record_count;
 
     /* 2-byte length field + 16 bytes per RecordNumber */
@@ -5861,8 +5953,16 @@ static int ssl_dtls13_write_ack(mbedtls_ssl_context *ssl)
     MBEDTLS_SSL_DEBUG_MSG(2, ("=> write ACK (%u record numbers)", (unsigned) count));
 
     ret = mbedtls_ssl_write_record(ssl, SSL_FORCE_FLUSH);
+    if (ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+        /* Non-blocking I/O: the record was encoded into out_left but the
+         * underlying send returned WANT_WRITE on the first attempt.  Retry
+         * the flush immediately — some non-blocking implementations (e.g. the
+         * nbio=2 test-harness delayed_send) succeed on the second call. */
+        MBEDTLS_SSL_DEBUG_MSG(2, ("DTLS 1.3: ACK flush retrying after WANT_WRITE"));
+        ret = mbedtls_ssl_flush_output(ssl);
+    }
     if (ret != 0) {
-        MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_write_record (ACK)", ret);
+        MBEDTLS_SSL_DEBUG_RET(1, "ssl_dtls13_write_ack", ret);
         return ret;
     }
 

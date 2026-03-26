@@ -2889,6 +2889,24 @@ static int ssl_tls13_write_client_finished(mbedtls_ssl_context *ssl)
         return ret;
     }
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+    /* DTLS 1.3: arm the retransmit timer so the client flight (Certificate +
+     * CertificateVerify + Finished, or just Finished for no-client-auth) is
+     * retransmitted if the server's ACK or next message does not arrive before
+     * the timeout.  The flight was stored in handshake->flight by
+     * write_handshake_msg_ext.
+     *
+     * We cannot use mbedtls_ssl_send_flight_completed() here because at this
+     * point in_msg[0] is the server's Finished, which would cause it to set
+     * RETRANS_FINISHED (suppressing retransmit) instead of RETRANS_WAITING.
+     * Arm the timer and set state directly. */
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+        ssl->handshake->retransmit_timeout = ssl->conf->hs_timeout_min;
+        mbedtls_ssl_set_timer(ssl, ssl->handshake->retransmit_timeout);
+        ssl->handshake->retransmit_state = MBEDTLS_SSL_RETRANS_WAITING;
+    }
+#endif /* MBEDTLS_SSL_PROTO_DTLS */
+
     mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_FLUSH_BUFFERS);
     return 0;
 }

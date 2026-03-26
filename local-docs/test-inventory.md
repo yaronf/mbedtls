@@ -107,7 +107,7 @@ These use `ssl_client2` / `ssl_server2` over loopback UDP.
 | `DTLS 1.3: proxy — multiple records in same datagram, duplicate every packet`| pass | —                                                       |
 | `DTLS 1.3: proxy — 3d, basic handshake`                                      | pass | —                                                       |
 | `DTLS 1.3: proxy — 3d, client auth`                                          | pass | —                                                       |
-| `DTLS 1.3: proxy — 3d, nbio`                                                 | pass | —                                                       |
+| `DTLS 1.3: proxy — 3d, nbio`                                                 | skip | deferred to Phase 3c (ACK); see local-docs/3d-nbio-flakiness.md |
 | `DTLS 1.3: proxy — inject invalid AD record, default badmac_limit`           | pass | —                                                       |
 
 

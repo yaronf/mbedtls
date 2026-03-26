@@ -557,6 +557,17 @@ have been drilled down in `local-docs/design-drilldown.md`:
 
 ---
 
+### Pre-merge Cleanup
+*Items added as temporary debugging/development aids that MUST be removed before any upstream submission.*
+
+- [ ] Remove `mbedtls_net_usleep(1000)` from the `nbio==2` branch in
+      `programs/ssl/ssl_client2.c` and `programs/ssl/ssl_server2.c`.
+      Re-added as a temporary log-volume limiter during ACK debugging.
+      Remove once ACK fix is confirmed working (sustained spin under packet
+      loss is addressed at the protocol level via ACK).
+
+---
+
 ## Key Invariants / Security Properties to Maintain
 
 - **No downgrade**: version negotiation must enforce the downgrade sentinels from TLS 1.3 §4.1.3.

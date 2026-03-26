@@ -995,6 +995,17 @@ int mbedtls_ssl_write_client_hello(mbedtls_ssl_context *ssl)
                                                               buf_len,
                                                               msg_len));
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+        /* DTLS 1.3: arm the retransmit timer so ClientHello is retransmitted
+         * if no ServerHello arrives before the timeout.  ClientHello is stored
+         * in handshake->dtls13_cli_hello; flight_transmit handles the resend
+         * when it finds an empty flight but dtls13_cli_hello is set. */
+        if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+            ssl->conf->max_tls_version >= MBEDTLS_SSL_VERSION_TLS1_3) {
+            mbedtls_ssl_send_flight_completed(ssl);
+        }
+#endif
+
         /*
          * Set next state. Note that if TLS 1.3 is proposed, this may be
          * overwritten by mbedtls_ssl_tls13_finalize_client_hello().

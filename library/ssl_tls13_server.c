@@ -3042,14 +3042,16 @@ static int ssl_tls13_write_server_finished(mbedtls_ssl_context *ssl)
     }
 
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
-    /* DTLS 1.3: the server flight (EE + Cert + CertVerify + Finished) is now
-     * fully sent.  We do NOT call send_flight_completed() here because the
-     * DTLS 1.3 server does not use the DTLS 1.2 timer-driven retransmit loop
-     * for the server flight.  Instead, on client timeout the client resends
-     * its ClientHello/Finished, which the server handles and then resends its
-     * flight from the incoming-message handler.
-     * TODO: arm explicit retransmit timer for DTLS 1.3 server flight. */
-    (void) 0; /* DTLS 1.3: flight stored in handshake->flight for future retransmit */
+    /* DTLS 1.3: arm the retransmit timer so the server flight (EE + Cert +
+     * CertVerify + Finished) is retransmitted if the client's Finished does
+     * not arrive before the timeout.  The flight was stored in
+     * handshake->flight by write_handshake_msg_ext; flight_transmit will
+     * replay it with fresh record sequence numbers on each timeout.
+     * The timer is cancelled in ssl_tls13_process_client_finished() via
+     * mbedtls_ssl_recv_flight_completed() once the client Finished arrives. */
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+        mbedtls_ssl_send_flight_completed(ssl);
+    }
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
 
 #if defined(MBEDTLS_SSL_EARLY_DATA)
