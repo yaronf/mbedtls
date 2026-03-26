@@ -2271,22 +2271,28 @@ int mbedtls_ssl_flight_transmit(mbedtls_ssl_context *ssl)
     if (ssl->handshake->retransmit_state != MBEDTLS_SSL_RETRANS_SENDING) {
         MBEDTLS_SSL_DEBUG_MSG(2, ("initialise flight transmission"));
 
-#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
-        /* DTLS 1.3 bypasses the flight mechanism; nothing to retransmit here.
-         * Phase 3b will implement proper DTLS 1.3 reliability. */
         if (ssl->handshake->flight == NULL) {
-            MBEDTLS_SSL_DEBUG_MSG(2, ("no flight to retransmit (DTLS 1.3)"));
+            MBEDTLS_SSL_DEBUG_MSG(2, ("no flight to retransmit"));
             ssl->handshake->retransmit_state = MBEDTLS_SSL_RETRANS_WAITING;
             ret = 0;
             goto cleanup;
         }
-#endif
 
         ssl->handshake->cur_msg = ssl->handshake->flight;
         ssl->handshake->cur_msg_p = ssl->handshake->flight->p + 12;
-        ret = ssl_swap_epochs(ssl);
-        if (ret != 0) {
-            return ret;
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+        /* DTLS 1.3: the correct epoch/transform is already active; no epoch
+         * swap needed.  The DTLS 1.2 epoch swap (plaintext ↔ encrypted) does
+         * not apply to DTLS 1.3 which uses the epoch pool instead. */
+        if (!(ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+              ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM))
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
+        {
+            ret = ssl_swap_epochs(ssl);
+            if (ret != 0) {
+                return ret;
+            }
         }
 
         ssl->handshake->retransmit_state = MBEDTLS_SSL_RETRANS_SENDING;
@@ -2320,9 +2326,13 @@ int mbedtls_ssl_flight_transmit(mbedtls_ssl_context *ssl)
         int const force_flush = ssl->disable_datagram_packing == 1 ?
                                 SSL_FORCE_FLUSH : SSL_DONT_FORCE_FLUSH;
 
-        /* Swap epochs before sending Finished: we can't do it after
-         * sending ChangeCipherSpec, in case write returns WANT_READ.
-         * Must be done before copying, may change out_msg pointer */
+        /* DTLS 1.2: swap epochs before sending Finished (plain → encrypted).
+         * Must be done before copying, may change out_msg pointer.
+         * Skip for DTLS 1.3: the epoch pool manages epochs, no swap needed. */
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+        if (!(ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+              ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM))
+#endif
         if (is_finished && ssl->handshake->cur_msg_p == (cur->p + 12)) {
             MBEDTLS_SSL_DEBUG_MSG(2, ("swap epochs to send finished message"));
             ret = ssl_swap_epochs(ssl);
@@ -2361,6 +2371,10 @@ int mbedtls_ssl_flight_transmit(mbedtls_ssl_context *ssl)
             size_t cur_hs_frag_len, max_hs_frag_len;
 
             if ((max_frag_len < 12) || (max_frag_len == 12 && hs_len != 0)) {
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+                if (!(ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+                      ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM))
+#endif
                 if (is_finished) {
                     ret = ssl_swap_epochs(ssl);
                     if (ret != 0) {
@@ -2442,7 +2456,8 @@ int mbedtls_ssl_flight_transmit(mbedtls_ssl_context *ssl)
             if (cur->sent_record_count < MBEDTLS_SSL_DTLS13_MAX_RECORDS_PER_FLIGHT_ITEM) {
                 cur->sent_record_count++;
             }
-            MBEDTLS_SSL_DEBUG_MSG(3, ("DTLS 1.3: flight item sent epoch=%u seq=%llu",
+            MBEDTLS_SSL_DEBUG_MSG(2, ("DTLS 1.3: flight retransmit type=%u epoch=%u seq=%llu",
+                                      (unsigned) cur->type,
                                       (unsigned) cur->sent_record_epoch[idx],
                                       (unsigned long long) cur->sent_records[idx]));
         }
@@ -2648,8 +2663,26 @@ int mbedtls_ssl_write_handshake_msg_ext(mbedtls_ssl_context *ssl,
 
             /* Write message_seq and update it, except for HelloRequest */
             if (hs_type != MBEDTLS_SSL_HS_HELLO_REQUEST) {
-                MBEDTLS_PUT_UINT16_BE(ssl->handshake->out_msg_seq, ssl->out_msg, 4);
-                ++(ssl->handshake->out_msg_seq);
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+                /* DTLS 1.3 nbio: if this is a retry of a partially-sent
+                 * fragmented message, re-stamp the same seq without
+                 * incrementing out_msg_seq again. */
+                if ((ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 ||
+                     ssl->conf->max_tls_version == MBEDTLS_SSL_VERSION_TLS1_3) &&
+                    ssl->handshake->dtls13_frag_off > 0) {
+                    MBEDTLS_PUT_UINT16_BE(ssl->handshake->dtls13_pending_seq,
+                                         ssl->out_msg, 4);
+                } else
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
+                {
+                    MBEDTLS_PUT_UINT16_BE(ssl->handshake->out_msg_seq, ssl->out_msg, 4);
+                    ++(ssl->handshake->out_msg_seq);
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+                    /* Save the seq we just stamped so retries can re-use it. */
+                    ssl->handshake->dtls13_pending_seq =
+                        ssl->handshake->out_msg_seq - 1;
+#endif
+                }
             } else {
                 ssl->out_msg[4] = 0;
                 ssl->out_msg[5] = 0;
@@ -2662,8 +2695,16 @@ int mbedtls_ssl_write_handshake_msg_ext(mbedtls_ssl_context *ssl,
         }
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
 
-        /* Update running hashes of handshake messages seen */
-        if (hs_type != MBEDTLS_SSL_HS_HELLO_REQUEST && update_checksum != 0) {
+        /* Update running hashes of handshake messages seen.
+         * Skip on nbio retries (dtls13_frag_off > 0): the hash was already
+         * updated on the first attempt and must not be added again. */
+        if (hs_type != MBEDTLS_SSL_HS_HELLO_REQUEST && update_checksum != 0
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+            && !(ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+                 ssl->handshake != NULL &&
+                 ssl->handshake->dtls13_frag_off > 0)
+#endif
+            ) {
 #if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
             /* DTLS 1.3: RFC 9147 §5.2 — transcript hash uses TLS-style 4-byte
              * header only, not the 8 extra DTLS framing bytes.  ssl->out_msg
@@ -2694,34 +2735,58 @@ int mbedtls_ssl_write_handshake_msg_ext(mbedtls_ssl_context *ssl,
         }
     }
 
-    /* Either send now, or just save to be sent (and resent) later */
+    /* Either save to the retransmit flight (DTLS), or send now (TLS / DTLS 1.3). */
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
     if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
         !(ssl->out_msgtype == MBEDTLS_SSL_MSG_HANDSHAKE &&
-          hs_type          == MBEDTLS_SSL_HS_HELLO_REQUEST)
+          hs_type          == MBEDTLS_SSL_HS_HELLO_REQUEST)) {
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
-        /* DTLS 1.3: bypass the DTLS 1.2 flight/retransmit machinery; send
-         * immediately.  Phase 3b will add proper DTLS 1.3 reliability.
-         * Check both tls_version (set after ServerHello) and conf->max_tls_version
-         * (covers pre-negotiation messages like ClientHello). */
-        && ssl->tls_version != MBEDTLS_SSL_VERSION_TLS1_3
-        && ssl->conf->max_tls_version != MBEDTLS_SSL_VERSION_TLS1_3
-#endif
-        ) {
-        if ((ret = ssl_flight_append(ssl)) != 0) {
-            MBEDTLS_SSL_DEBUG_RET(1, "ssl_flight_append", ret);
-            return ret;
+        if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 ||
+            ssl->conf->max_tls_version == MBEDTLS_SSL_VERSION_TLS1_3) {
+            /* DTLS 1.3 path: send immediately (below), but also save a copy
+             * in the flight list for retransmit on timeout.
+             *
+             * Only epoch-2 (handshake) messages go into the flight: they are
+             * encrypted with the current transform_out, which is stable for
+             * the duration of the flight and can be reused on retransmit.
+             * Epoch-0 (plaintext) messages like ServerHello and ClientHello
+             * are excluded — they must NOT be re-encrypted on retransmit, and
+             * their re-send is handled by re-running the write path. */
+            if (ssl->transform_out != NULL &&
+                hs_type != MBEDTLS_SSL_HS_CLIENT_HELLO &&
+                ssl->handshake->dtls13_frag_off == 0) {
+                /* Skip the flight append on nbio retries — the message was
+                 * already appended on the first attempt (dtls13_frag_off > 0
+                 * means we are resuming a partially-sent fragmented message). */
+                MBEDTLS_SSL_DEBUG_MSG(3, ("DTLS 1.3: appending hs msg type %u "
+                                          "to retransmit flight",
+                                          (unsigned) hs_type));
+                if ((ret = ssl_flight_append(ssl)) != 0) {
+                    MBEDTLS_SSL_DEBUG_RET(1, "ssl_flight_append (DTLS 1.3)", ret);
+                    return ret;
+                }
+            }
+            /* Fall through to send path below. */
+        } else
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
+        {
+            /* DTLS 1.2: save to flight; will be sent via flight_transmit. */
+            if ((ret = ssl_flight_append(ssl)) != 0) {
+                MBEDTLS_SSL_DEBUG_RET(1, "ssl_flight_append", ret);
+                return ret;
+            }
+            goto write_msg_done;
         }
-    } else
-#endif
+    }
+#endif /* MBEDTLS_SSL_PROTO_DTLS */
+
     {
 #if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3) && \
     defined(MBEDTLS_SSL_CLI_C)
-        /* DTLS 1.3 path bypasses the flight/retransmit machinery, but we save
-         * the ClientHello (with 12-byte DTLS header) for Option B: if the server
-         * picks DTLS 1.2, the client needs to re-hash ClientHello with the 12-byte
-         * header.  Store it in dtls13_cli_hello rather than the flight to avoid
-         * triggering the DTLS 1.2 retransmit path. */
+        /* DTLS 1.3 path sends immediately.  Save ClientHello separately for
+         * Option B re-hash if the server picks DTLS 1.2: we cannot use the
+         * flight for this because ClientHello is excluded from the DTLS 1.3
+         * flight above. */
         if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
             ssl->out_msgtype == MBEDTLS_SSL_MSG_HANDSHAKE &&
             hs_type == MBEDTLS_SSL_HS_CLIENT_HELLO &&
@@ -2738,12 +2803,176 @@ int mbedtls_ssl_write_handshake_msg_ext(mbedtls_ssl_context *ssl,
             ssl->handshake->dtls13_cli_hello_len = ssl->out_msglen;
         }
 #endif
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+        /* DTLS 1.3: fragment large handshake messages inline.
+         *
+         * The DTLS 1.2 path fragments during retransmit (ssl_flight_transmit).
+         * DTLS 1.3 bypasses the flight mechanism, so we must split here.
+         *
+         * out_msg layout after write_handshake_msg_ext:
+         *   [0]     msg type
+         *   [1..3]  total body length (3 bytes)
+         *   [4..5]  message_seq
+         *   [6..8]  fragment_offset  (already = 0)
+         *   [9..11] fragment_length  (already = hs_len)
+         *   [12..]  body
+         *
+         * We keep out_msg[0..5] (type + total-len + seq) fixed across all
+         * fragments and vary frag_offset / frag_len / out_msglen per record.
+         */
+        if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+            ssl->out_msgtype == MBEDTLS_SSL_MSG_HANDSHAKE) {
+            const size_t hs_body_len = ssl->out_msglen - 12; /* body after 12-byte DTLS hdr */
+
+            ret = ssl_get_remaining_payload_in_datagram(ssl);
+            if (ret < 0) {
+                return ret;
+            }
+
+            if (ssl->out_msglen > (size_t) ret ||
+                ssl->handshake->dtls13_frag_off > 0) {
+                /* Message exceeds remaining datagram space — fragment it.
+                 * Also re-enter here on nbio retries (dtls13_frag_off > 0).
+                 *
+                 * Encryption operates in-place on out_msg, so we must save
+                 * the full body before the first write_record call clobbers it.
+                 *
+                 * nbio resume: dtls13_frag_off tracks the next fragment to
+                 * send.  When write_record returns WANT_WRITE, the encrypted
+                 * fragment is queued in out_buf but not yet sent to the
+                 * network; frag_off is advanced past it so that on re-entry
+                 * flush_output drains that datagram first and then we
+                 * continue building subsequent fragments.  This mirrors the
+                 * "advance cur_msg_p before write" pattern in
+                 * ssl_flight_transmit().
+                 */
+                unsigned char *body_copy = mbedtls_calloc(1, hs_body_len);
+                /* Resume from where we left off on nbio retries. */
+                size_t frag_off = ssl->handshake->dtls13_frag_off;
+                size_t max_payload;
+                /* Save the fixed header bytes (type, total-len, seq). */
+                unsigned char hdr_fixed[6];
+                /* Save original msgtype: TLS 1.3 encrypt_buf sets out_msgtype
+                 * to APPLICATION_DATA after the first fragment, which would
+                 * cause subsequent fragments to carry the wrong inner content
+                 * type.  Restore it at the start of each iteration. */
+                const unsigned char saved_msgtype = ssl->out_msgtype;
+
+                if (body_copy == NULL) {
+                    return MBEDTLS_ERR_SSL_ALLOC_FAILED;
+                }
+                memcpy(body_copy, ssl->out_msg + 12, hs_body_len);
+                memcpy(hdr_fixed, ssl->out_msg, 6);
+
+                while (frag_off < hs_body_len) {
+                    size_t frag_len;
+
+                    /* Restore the original message type: TLS 1.3 encrypt_buf
+                     * overwrites out_msgtype with APPLICATION_DATA after each
+                     * encryption (outer type), but the inner content type for
+                     * each fragment must still be the original HANDSHAKE type. */
+                    ssl->out_msgtype = saved_msgtype;
+
+                    /* Flush any datagram queued by the previous iteration
+                     * (or a previous nbio-blocked attempt).  With dgram_packing=0
+                     * write_record calls flush_output internally, so this is
+                     * usually a no-op unless a prior flush was interrupted. */
+                    if ((ret = mbedtls_ssl_flush_output(ssl)) != 0) {
+                        ssl->handshake->dtls13_frag_off = frag_off;
+                        mbedtls_free(body_copy);
+                        return ret;
+                    }
+
+                    ret = ssl_get_remaining_payload_in_datagram(ssl);
+                    if (ret < 0) {
+                        ssl->handshake->dtls13_frag_off = frag_off;
+                        mbedtls_free(body_copy);
+                        return ret;
+                    }
+                    max_payload = (size_t) ret;
+
+                    if (max_payload <= 12) {
+                        mbedtls_free(body_copy);
+                        ssl->handshake->dtls13_frag_off = 0;
+                        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+                    }
+
+                    frag_len = hs_body_len - frag_off;
+                    if (frag_len > max_payload - 12) {
+                        frag_len = max_payload - 12;
+                    }
+
+                    /* Rebuild the DTLS header for this fragment. */
+                    memcpy(ssl->out_msg, hdr_fixed, 6);
+                    ssl->out_msg[6] = MBEDTLS_BYTE_2(frag_off);
+                    ssl->out_msg[7] = MBEDTLS_BYTE_1(frag_off);
+                    ssl->out_msg[8] = MBEDTLS_BYTE_0(frag_off);
+                    ssl->out_msg[9]  = MBEDTLS_BYTE_2(frag_len);
+                    ssl->out_msg[10] = MBEDTLS_BYTE_1(frag_len);
+                    ssl->out_msg[11] = MBEDTLS_BYTE_0(frag_len);
+                    memcpy(ssl->out_msg + 12, body_copy + frag_off, frag_len);
+                    ssl->out_msglen = 12 + frag_len;
+
+                    MBEDTLS_SSL_DEBUG_MSG(2, ("DTLS 1.3: fragmenting hs msg type %u "
+                                              "frag_off=%" MBEDTLS_PRINTF_SIZET
+                                              " frag_len=%" MBEDTLS_PRINTF_SIZET
+                                              " total=%" MBEDTLS_PRINTF_SIZET
+                                              " ctr=%02x%02x%02x%02x%02x%02x",
+                                              (unsigned) ssl->out_msg[0],
+                                              frag_off, frag_len, hs_body_len,
+                                              ssl->cur_out_ctr[2], ssl->cur_out_ctr[3],
+                                              ssl->cur_out_ctr[4], ssl->cur_out_ctr[5],
+                                              ssl->cur_out_ctr[6], ssl->cur_out_ctr[7]));
+
+                    /* Advance frag_off before the write so that if WANT_WRITE
+                     * is returned the resume offset already points past this
+                     * fragment.  On re-entry flush_output will drain it, then
+                     * we build and send the fragment at the new frag_off. */
+                    frag_off += frag_len;
+
+                    if ((ret = mbedtls_ssl_write_record(ssl, SSL_DONT_FORCE_FLUSH)) != 0) {
+                        MBEDTLS_SSL_DEBUG_RET(1, "ssl_write_record (fragment)", ret);
+                        /* Fragment is queued in out_buf; save advanced offset
+                         * so the next call flushes it then continues. */
+                        ssl->handshake->dtls13_frag_off = frag_off;
+                        mbedtls_free(body_copy);
+                        return ret;
+                    }
+                }
+
+                mbedtls_free(body_copy);
+
+                ssl->out_msglen = 12 + hs_body_len;
+
+                /* Use a sentinel to indicate "all fragments queued, pending
+                 * final flush" so that a WANT_WRITE from flush_output is
+                 * handled correctly on re-entry: the fragment loop is skipped
+                 * (frag_off == hs_body_len) and we go straight to flush. */
+                ssl->handshake->dtls13_frag_off = hs_body_len;
+
+                if ((ret = mbedtls_ssl_flush_output(ssl)) != 0) {
+                    return ret;
+                }
+
+                /* All done — clear the resume state. */
+                ssl->handshake->dtls13_frag_off = 0;
+
+                MBEDTLS_SSL_DEBUG_MSG(2, ("<= write handshake message (fragmented)"));
+                return 0;
+            }
+        }
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
+
         if ((ret = mbedtls_ssl_write_record(ssl, force_flush)) != 0) {
             MBEDTLS_SSL_DEBUG_RET(1, "ssl_write_record", ret);
             return ret;
         }
     }
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+write_msg_done:
+#endif
     MBEDTLS_SSL_DEBUG_MSG(2, ("<= write handshake message"));
 
     return 0;
@@ -3101,6 +3330,18 @@ int mbedtls_ssl_prepare_handshake_record(mbedtls_ssl_context *ssl)
             return MBEDTLS_ERR_SSL_INVALID_RECORD;
         }
 
+        /* Log all handshake records once client flight starts (in_msg_seq>=1) */
+        if (ssl->handshake && ssl->handshake->in_msg_seq >= 1 &&
+            mbedtls_ssl_is_handshake_over(ssl) == 0) {
+            MBEDTLS_SSL_DEBUG_MSG(1, ("DBG prepare_hs_record: hs_type=%u recv_seq=%u "
+                                      "in_msg_seq=%u frag_off=%u frag_len=%u total_len=%u is_frag=%d",
+                                      (unsigned)ssl->in_msg[0], recv_msg_seq,
+                                      ssl->handshake->in_msg_seq,
+                                      (unsigned)MBEDTLS_GET_UINT24_BE(ssl->in_msg, 6),
+                                      (unsigned)MBEDTLS_GET_UINT24_BE(ssl->in_msg, 9),
+                                      (unsigned)MBEDTLS_GET_UINT24_BE(ssl->in_msg, 1),
+                                      ssl_hs_is_proper_fragment(ssl)));
+        }
         if (ssl->handshake != NULL &&
             ((mbedtls_ssl_is_handshake_over(ssl) == 0 &&
               recv_msg_seq != ssl->handshake->in_msg_seq) ||
@@ -4255,6 +4496,8 @@ static int ssl_parse_record_header(mbedtls_ssl_context const *ssl,
          * (The case of same-port Client reconnects must be considered in
          *  the caller). */
         if (rec_epoch != ssl->in_epoch) {
+            MBEDTLS_SSL_DEBUG_MSG(1, ("DBG epoch_MISMATCH: rec_epoch=%u in_epoch=%u",
+                                      (unsigned)rec_epoch, (unsigned)ssl->in_epoch));
             MBEDTLS_SSL_DEBUG_MSG(1, ("record from another epoch: "
                                       "expected %u, received %lu",
                                       ssl->in_epoch, (unsigned long) rec_epoch));
@@ -4293,7 +4536,13 @@ static int ssl_parse_record_header(mbedtls_ssl_context const *ssl,
          * sequence number has been seen before. */
         else if (mbedtls_ssl_dtls_record_replay_check((mbedtls_ssl_context *) ssl,
                                                       &rec->ctr[0]) != 0) {
-            MBEDTLS_SSL_DEBUG_MSG(1, ("replayed record"));
+            MBEDTLS_SSL_DEBUG_MSG(1, ("replayed record: type=%u epoch=%u "
+                                      "seq=%02x%02x%02x%02x%02x%02x len=%u",
+                                      (unsigned) rec->type,
+                                      (unsigned) MBEDTLS_GET_UINT16_BE(rec->ctr, 0),
+                                      rec->ctr[2], rec->ctr[3], rec->ctr[4],
+                                      rec->ctr[5], rec->ctr[6], rec->ctr[7],
+                                      (unsigned) rec->data_len));
             return MBEDTLS_ERR_SSL_UNEXPECTED_RECORD;
         }
 #endif
@@ -4936,7 +5185,12 @@ static int ssl_buffer_message(mbedtls_ssl_context *ssl)
 
             /* We should never receive an old handshake
              * message - double-check nonetheless. */
+            MBEDTLS_SSL_DEBUG_MSG(1, ("DBG ssl_buffer_message: hs_type=%u recv_seq=%u in_msg_seq=%u",
+                                      (unsigned)ssl->in_msg[0], recv_msg_seq,
+                                      ssl->handshake->in_msg_seq));
             if (recv_msg_seq < ssl->handshake->in_msg_seq) {
+                MBEDTLS_SSL_DEBUG_MSG(1, ("DBG ssl_buffer_message: OLD seq %u < %u -- INTERNAL_ERROR",
+                                          recv_msg_seq, ssl->handshake->in_msg_seq));
                 MBEDTLS_SSL_DEBUG_MSG(1, ("should never happen"));
                 return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
             }
@@ -5414,7 +5668,13 @@ static int ssl_get_next_record(mbedtls_ssl_context *ssl)
                 ssl->next_record_offset = rec.buf_len;
 
                 MBEDTLS_SSL_DEBUG_MSG(1, ("discarding unexpected record "
-                                          "(header)"));
+                                          "(header): type=%u epoch=%u "
+                                          "seq=%02x%02x%02x%02x%02x%02x len=%u",
+                                          (unsigned) rec.type,
+                                          (unsigned) MBEDTLS_GET_UINT16_BE(rec.ctr, 0),
+                                          rec.ctr[2], rec.ctr[3], rec.ctr[4],
+                                          rec.ctr[5], rec.ctr[6], rec.ctr[7],
+                                          (unsigned) rec.data_len));
             } else {
                 /* Skip invalid record and the rest of the datagram */
                 ssl->next_record_offset = 0;
@@ -7071,6 +7331,33 @@ static void ssl_buffering_free_slot(mbedtls_ssl_context *ssl,
         memset(hs_buf, 0, sizeof(mbedtls_ssl_hs_buffer));
     }
 }
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+/* Called from ssl_tls13_generic.c after consuming a DTLS 1.3 handshake
+ * message that was reassembled in the DTLS fragment buffer.  Frees slot 0
+ * and shifts remaining slots down so the next expected message will be at
+ * slot 0.  Must be called AFTER in_msg_seq is incremented. */
+void mbedtls_ssl_dtls_advance_buffering(mbedtls_ssl_context *ssl)
+{
+    mbedtls_ssl_handshake_params * const hs = ssl->handshake;
+    unsigned offset;
+    mbedtls_ssl_hs_buffer *hs_buf;
+
+    if (hs == NULL ||
+        ssl->conf->transport != MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+        return;
+    }
+
+    /* Free the slot that was just consumed (slot 0) and shift all others. */
+    ssl_buffering_free_slot(ssl, 0);
+    for (offset = 0, hs_buf = &hs->buffering.hs[0];
+         offset + 1 < MBEDTLS_SSL_MAX_BUFFERED_HS;
+         offset++, hs_buf++) {
+        *hs_buf = *(hs_buf + 1);
+    }
+    memset(hs_buf, 0, sizeof(mbedtls_ssl_hs_buffer));
+}
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
 

@@ -940,6 +940,15 @@ struct mbedtls_ssl_handshake_params {
     unsigned char *dtls13_cli_hello;
     size_t         dtls13_cli_hello_len;
 #endif /* MBEDTLS_SSL_CLI_C */
+
+    /** Fragment offset for an in-progress DTLS 1.3 fragmented send.
+     *  Non-zero when write_handshake_msg_ext returned WANT_WRITE mid-loop.
+     *  On retry the loop resumes from this offset and the seq/flight-append
+     *  steps are skipped to avoid double-incrementing out_msg_seq. */
+    size_t   dtls13_frag_off;
+    /** message_seq value stamped into the header on the first attempt of
+     *  the current fragmented send; re-stamped on nbio retries. */
+    uint16_t dtls13_pending_seq;
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
 
@@ -1826,6 +1835,11 @@ static inline size_t mbedtls_ssl_hs_hdr_len(const mbedtls_ssl_context *ssl)
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
 void mbedtls_ssl_send_flight_completed(mbedtls_ssl_context *ssl);
 void mbedtls_ssl_recv_flight_completed(mbedtls_ssl_context *ssl);
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+/* Free DTLS reassembly buffer slot 0 and shift remaining slots after
+ * consuming a reassembled DTLS 1.3 handshake message. */
+void mbedtls_ssl_dtls_advance_buffering(mbedtls_ssl_context *ssl);
+#endif
 MBEDTLS_CHECK_RETURN_CRITICAL
 int mbedtls_ssl_resend(mbedtls_ssl_context *ssl);
 MBEDTLS_CHECK_RETURN_CRITICAL

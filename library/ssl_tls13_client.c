@@ -2811,9 +2811,20 @@ static int ssl_tls13_write_client_certificate(mbedtls_ssl_context *ssl)
 {
     int non_empty_certificate_msg = 0;
 
-    MBEDTLS_SSL_DEBUG_MSG(1,
-                          ("Switch to handshake traffic keys for outbound traffic"));
-    mbedtls_ssl_set_outbound_transform(ssl, ssl->handshake->transform_handshake);
+    /* Only switch the outbound transform on the first attempt.  On DTLS 1.3
+     * nbio retries dtls13_frag_off is non-zero, and set_outbound_transform
+     * would reset cur_out_ctr to zero — causing all retry fragments to be
+     * encrypted with sequence number 0 (triggering anti-replay rejection on
+     * the peer). */
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+    if (ssl->conf->transport != MBEDTLS_SSL_TRANSPORT_DATAGRAM ||
+        ssl->handshake->dtls13_frag_off == 0)
+#endif
+    {
+        MBEDTLS_SSL_DEBUG_MSG(1,
+                              ("Switch to handshake traffic keys for outbound traffic"));
+        mbedtls_ssl_set_outbound_transform(ssl, ssl->handshake->transform_handshake);
+    }
 
 #if defined(MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL_ENABLED)
     if (ssl->handshake->client_auth) {

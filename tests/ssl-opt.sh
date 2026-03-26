@@ -14157,11 +14157,56 @@ run_test    "DTLS 1.3: proxy — 3d, nbio" \
             -s "Protocol is DTLSv1.3" \
             -c "Protocol is DTLSv1.3"
 
-# fragmenting + 3d tests: deferred.  The DTLS 1.3 write path does not yet
-# fragment large handshake messages (server Certificate hits INTERNAL_ERROR
-# when the message exceeds MTU).  This is a real implementation gap tracked
-# as a future phase (handshake fragmentation for DTLS 1.3 outgoing messages).
-# See proxy-test-parity.md.
+# DTLS 1.3: outgoing handshake fragmentation (Phase 3b.8).
+# The server Certificate (server7_int-ca.crt, ~2000 bytes DER) exceeds MTU=512,
+# so the server fragments it.  The client (and server, for client-auth cert)
+# log "found fragmented DTLS handshake message" as reassembly proceeds.
+# Use the same cert setup as "DTLS fragmenting: proxy MTU, simple handshake"
+# but with force_version=dtls13 instead of a forced ciphersuite.
+#
+# Note: the +3d variant (mtu + drop/delay/duplicate) is deferred.  DTLS 1.3
+# fragments inline (not via flight_transmit), so lost individual fragments
+# must wait for the whole-flight retransmit triggered by the peer's timeout.
+# Whole-flight retransmit does work (the flight IS populated), but the peer
+# has to time out first, which with large MTU fragmentation takes longer.
+# Deferred until retransmit granularity for individual fragments is improved.
+requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
+requires_max_content_len 2048
+run_test    "DTLS 1.3: fragmenting — proxy MTU" \
+            -p "$P_PXY mtu=512" \
+            "$P_SRV dgram_packing=0 dtls=1 force_version=dtls13 debug_level=2 auth_mode=required \
+             crt_file=$DATA_FILES_PATH/server7_int-ca.crt \
+             key_file=$DATA_FILES_PATH/server7.key \
+             hs_timeout=10000-60000 mtu=512" \
+            "$P_CLI dgram_packing=0 dtls=1 force_version=dtls13 debug_level=2 \
+             crt_file=$DATA_FILES_PATH/server8_int-ca2.crt \
+             key_file=$DATA_FILES_PATH/server8.key \
+             hs_timeout=10000-60000 mtu=512" \
+            0 \
+            -s "found fragmented DTLS handshake message" \
+            -c "found fragmented DTLS handshake message" \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -C "error"
+
+requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
+requires_max_content_len 2048
+run_test    "DTLS 1.3: fragmenting — proxy MTU, nbio" \
+            -p "$P_PXY mtu=512" \
+            "$P_SRV dgram_packing=0 dtls=1 force_version=dtls13 debug_level=2 auth_mode=required \
+             crt_file=$DATA_FILES_PATH/server7_int-ca.crt \
+             key_file=$DATA_FILES_PATH/server7.key \
+             hs_timeout=10000-60000 mtu=512 nbio=2" \
+            "$P_CLI dgram_packing=0 dtls=1 force_version=dtls13 debug_level=2 \
+             crt_file=$DATA_FILES_PATH/server8_int-ca2.crt \
+             key_file=$DATA_FILES_PATH/server8.key \
+             hs_timeout=10000-60000 mtu=512 nbio=2" \
+            0 \
+            -s "found fragmented DTLS handshake message" \
+            -c "found fragmented DTLS handshake message" \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -C "error"
 
 if [ $FAILS -gt 255 ]; then
     # Clamp at 255 as caller gets exit code & 0xFF

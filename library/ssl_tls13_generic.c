@@ -79,11 +79,20 @@ int mbedtls_ssl_tls13_fetch_handshake_msg(mbedtls_ssl_context *ssl,
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
     /* DTLS 1.3: advance in_msg_seq so the next message is accepted.
      * For TLS 1.3 over TCP this field is unused; for DTLS it is checked
-     * by ssl_consume_current_message / ssl_handle_message_type. */
+     * by mbedtls_ssl_prepare_handshake_record(). */
     if (ret == 0 &&
         ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
         ssl->handshake != NULL) {
+        MBEDTLS_SSL_DEBUG_MSG(1, ("DBG fetch_hs_msg: hs_type=%u consumed, in_msg_seq %u->%u",
+                                  (unsigned)hs_type, ssl->handshake->in_msg_seq,
+                                  ssl->handshake->in_msg_seq + 1));
         ssl->handshake->in_msg_seq++;
+        /* If the message was loaded from the DTLS reassembly buffer (i.e.
+         * slot 0 was valid), free that slot and shift remaining slots so
+         * the next expected message is at slot 0.  For messages that arrived
+         * directly from the network the buffer is empty and the call is a
+         * no-op. */
+        mbedtls_ssl_dtls_advance_buffering(ssl);
     }
 #endif
 
@@ -826,8 +835,17 @@ int mbedtls_ssl_tls13_write_certificate(mbedtls_ssl_context *ssl)
                                                           buf + buf_len,
                                                           &msg_len));
 
-    MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_add_hs_msg_to_checksum(
-                             ssl, MBEDTLS_SSL_HS_CERTIFICATE, buf, msg_len));
+    /* On DTLS 1.3 nbio retries, dtls13_frag_off is set to a non-zero sentinel
+     * after all fragments are queued; skip checksum on those retries to avoid
+     * hashing the certificate body more than once into the transcript. */
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+    if (ssl->conf->transport != MBEDTLS_SSL_TRANSPORT_DATAGRAM ||
+        ssl->handshake->dtls13_frag_off == 0)
+#endif
+    {
+        MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_add_hs_msg_to_checksum(
+                                 ssl, MBEDTLS_SSL_HS_CERTIFICATE, buf, msg_len));
+    }
 
     MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_finish_handshake_msg(
                              ssl, buf_len, msg_len));
@@ -1025,9 +1043,15 @@ int mbedtls_ssl_tls13_write_certificate_verify(mbedtls_ssl_context *ssl)
     MBEDTLS_SSL_PROC_CHK(ssl_tls13_write_certificate_verify_body(
                              ssl, buf, buf + buf_len, &msg_len));
 
-    MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_add_hs_msg_to_checksum(
-                             ssl, MBEDTLS_SSL_HS_CERTIFICATE_VERIFY,
-                             buf, msg_len));
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+    if (ssl->conf->transport != MBEDTLS_SSL_TRANSPORT_DATAGRAM ||
+        ssl->handshake->dtls13_frag_off == 0)
+#endif
+    {
+        MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_add_hs_msg_to_checksum(
+                                 ssl, MBEDTLS_SSL_HS_CERTIFICATE_VERIFY,
+                                 buf, msg_len));
+    }
 
     MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_finish_handshake_msg(
                              ssl, buf_len, msg_len));
@@ -1205,8 +1229,14 @@ int mbedtls_ssl_tls13_write_finished_message(mbedtls_ssl_context *ssl)
     MBEDTLS_SSL_PROC_CHK(ssl_tls13_write_finished_message_body(
                              ssl, buf, buf + buf_len, &msg_len));
 
-    MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_add_hs_msg_to_checksum(ssl,
-                                                            MBEDTLS_SSL_HS_FINISHED, buf, msg_len));
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+    if (ssl->conf->transport != MBEDTLS_SSL_TRANSPORT_DATAGRAM ||
+        ssl->handshake->dtls13_frag_off == 0)
+#endif
+    {
+        MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_add_hs_msg_to_checksum(ssl,
+                                                                 MBEDTLS_SSL_HS_FINISHED, buf, msg_len));
+    }
 
     MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_finish_handshake_msg(
                              ssl, buf_len, msg_len));

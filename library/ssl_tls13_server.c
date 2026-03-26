@@ -2735,10 +2735,19 @@ static int ssl_tls13_write_encrypted_extensions(mbedtls_ssl_context *ssl)
     unsigned char *buf;
     size_t buf_len, msg_len;
 
-    mbedtls_ssl_set_outbound_transform(ssl,
-                                       ssl->handshake->transform_handshake);
-    MBEDTLS_SSL_DEBUG_MSG(
-        3, ("switching to handshake transform for outbound data"));
+    /* Only switch the outbound transform on the first attempt.  On DTLS 1.3
+     * nbio retries dtls13_frag_off is non-zero, and set_outbound_transform
+     * would reset cur_out_ctr — causing duplicate sequence numbers. */
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+    if (ssl->conf->transport != MBEDTLS_SSL_TRANSPORT_DATAGRAM ||
+        ssl->handshake->dtls13_frag_off == 0)
+#endif
+    {
+        mbedtls_ssl_set_outbound_transform(ssl,
+                                           ssl->handshake->transform_handshake);
+        MBEDTLS_SSL_DEBUG_MSG(
+            3, ("switching to handshake transform for outbound data"));
+    }
 
     MBEDTLS_SSL_DEBUG_MSG(2, ("=> write encrypted extensions"));
 
@@ -2749,9 +2758,15 @@ static int ssl_tls13_write_encrypted_extensions(mbedtls_ssl_context *ssl)
     MBEDTLS_SSL_PROC_CHK(ssl_tls13_write_encrypted_extensions_body(
                              ssl, buf, buf + buf_len, &msg_len));
 
-    MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_add_hs_msg_to_checksum(
-                             ssl, MBEDTLS_SSL_HS_ENCRYPTED_EXTENSIONS,
-                             buf, msg_len));
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+    if (ssl->conf->transport != MBEDTLS_SSL_TRANSPORT_DATAGRAM ||
+        ssl->handshake->dtls13_frag_off == 0)
+#endif
+    {
+        MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_add_hs_msg_to_checksum(
+                                 ssl, MBEDTLS_SSL_HS_ENCRYPTED_EXTENSIONS,
+                                 buf, msg_len));
+    }
 
     MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_finish_handshake_msg(
                              ssl, buf_len, msg_len));
@@ -2883,9 +2898,15 @@ static int ssl_tls13_write_certificate_request(mbedtls_ssl_context *ssl)
         MBEDTLS_SSL_PROC_CHK(ssl_tls13_write_certificate_request_body(
                                  ssl, buf, buf + buf_len, &msg_len));
 
-        MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_add_hs_msg_to_checksum(
-                                 ssl, MBEDTLS_SSL_HS_CERTIFICATE_REQUEST,
-                                 buf, msg_len));
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+        if (ssl->conf->transport != MBEDTLS_SSL_TRANSPORT_DATAGRAM ||
+            ssl->handshake->dtls13_frag_off == 0)
+#endif
+        {
+            MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_add_hs_msg_to_checksum(
+                                     ssl, MBEDTLS_SSL_HS_CERTIFICATE_REQUEST,
+                                     buf, msg_len));
+        }
 
         MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_finish_handshake_msg(
                                  ssl, buf_len, msg_len));
@@ -3019,6 +3040,17 @@ static int ssl_tls13_write_server_finished(mbedtls_ssl_context *ssl)
             MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE);
         return ret;
     }
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+    /* DTLS 1.3: the server flight (EE + Cert + CertVerify + Finished) is now
+     * fully sent.  We do NOT call send_flight_completed() here because the
+     * DTLS 1.3 server does not use the DTLS 1.2 timer-driven retransmit loop
+     * for the server flight.  Instead, on client timeout the client resends
+     * its ClientHello/Finished, which the server handles and then resends its
+     * flight from the incoming-message handler.
+     * TODO: arm explicit retransmit timer for DTLS 1.3 server flight. */
+    (void) 0; /* DTLS 1.3: flight stored in handshake->flight for future retransmit */
+#endif /* MBEDTLS_SSL_PROTO_DTLS */
 
 #if defined(MBEDTLS_SSL_EARLY_DATA)
     if (ssl->handshake->early_data_accepted) {
@@ -3222,6 +3254,16 @@ static int ssl_tls13_process_client_finished(mbedtls_ssl_context *ssl)
         MBEDTLS_SSL_DEBUG_RET(
             1, "mbedtls_ssl_tls13_compute_resumption_master_secret", ret);
     }
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+    /* DTLS 1.3: client Finished received and verified → the server's outgoing
+     * flight (EE + Cert + CertVerify + Finished) is no longer needed.  Free it
+     * and cancel the retransmit timer. */
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+        MBEDTLS_SSL_DEBUG_MSG(2, ("DTLS 1.3: client finished — freeing server flight"));
+        mbedtls_ssl_recv_flight_completed(ssl);
+    }
+#endif /* MBEDTLS_SSL_PROTO_DTLS */
 
     mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_HANDSHAKE_WRAPUP);
     return 0;
