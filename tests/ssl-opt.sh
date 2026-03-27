@@ -1122,6 +1122,13 @@ if type lsof >/dev/null 2>/dev/null; then
              case ${newline}${SERVER_PIDS}${newline} in
                   *${newline}${2}${newline}*) break;;
               esac
+              # If the process has already exited (e.g. bind failed because the
+              # port is still held by a stale process), don't wait for DOG_DELAY.
+              if ! kill -0 "$2" 2>/dev/null; then
+                  echo "$3 EXITED EARLY (port conflict?)"
+                  echo "$3 EXITED EARLY (port conflict?)" >> $4
+                  break
+              fi
               if [ $(( $(date +%s) - $START_TIME )) -gt $DOG_DELAY ]; then
                   echo "$3 START TIMEOUT"
                   echo "$3 START TIMEOUT" >> $4
@@ -14048,6 +14055,25 @@ run_test    "DTLS 1.3: HRR+cookie exchange (cookie enabled)" \
             -c "received HelloRetryRequest message" \
             -s "cookie verified"
 
+# DTLS 1.3 HRR+cookie exchange under loss/delay/duplicate (Phase 3b.10).
+# Same HRR setup as the non-3d variant (server restricted to secp384r1 forces
+# a key_share mismatch → HRR).  Loss recovery must work across the HRR flight
+# boundary: client may need to retransmit its second ClientHello, and the
+# server may need to retransmit the HRR itself.
+client_needs_more_time 4
+requires_protocol_version dtls13
+requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
+requires_config_enabled MBEDTLS_SSL_DTLS_HELLO_VERIFY
+run_test    "DTLS 1.3: proxy - 3d, HRR+cookie exchange" \
+            -p "$P_PXY drop=8 delay=8 duplicate=8" \
+            "$P_SRV dtls=1 force_version=dtls13 groups=secp384r1 dgram_packing=0 hs_timeout=500-20000 debug_level=2" \
+            "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-20000 debug_level=2" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -c "received HelloRetryRequest message" \
+            -s "cookie verified"
+
 client_needs_more_time 4
 requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
 run_test    "DTLS 1.3: loss recovery via retransmit" \
@@ -14064,7 +14090,7 @@ run_test    "DTLS 1.3: loss recovery via retransmit" \
 
 not_with_valgrind # spurious resend due to timeout
 requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
-run_test    "DTLS 1.3: proxy — duplicate every packet" \
+run_test    "DTLS 1.3: proxy - duplicate every packet" \
             -p "$P_PXY duplicate=1" \
             "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 debug_level=2 hs_timeout=10000-20000" \
             "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 debug_level=2 hs_timeout=10000-20000" \
@@ -14080,7 +14106,7 @@ run_test    "DTLS 1.3: proxy — duplicate every packet" \
 # for same-epoch anti-replay hits).  anti_replay=0 disables same-epoch
 # checking; out-of-epoch duplicates are still logged.
 requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
-run_test    "DTLS 1.3: proxy — duplicate every packet, anti-replay off" \
+run_test    "DTLS 1.3: proxy - duplicate every packet, anti-replay off" \
             -p "$P_PXY duplicate=1" \
             "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 debug_level=2 anti_replay=0" \
             "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 debug_level=2" \
@@ -14091,7 +14117,7 @@ run_test    "DTLS 1.3: proxy — duplicate every packet, anti-replay off" \
             -c "Protocol is DTLSv1.3"
 
 requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
-run_test    "DTLS 1.3: proxy — multiple records in same datagram" \
+run_test    "DTLS 1.3: proxy - multiple records in same datagram" \
             -p "$P_PXY pack=50" \
             "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 debug_level=2" \
             "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 debug_level=2" \
@@ -14100,7 +14126,7 @@ run_test    "DTLS 1.3: proxy — multiple records in same datagram" \
             -s "next record in same datagram"
 
 requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
-run_test    "DTLS 1.3: proxy — multiple records in same datagram, duplicate every packet" \
+run_test    "DTLS 1.3: proxy - multiple records in same datagram, duplicate every packet" \
             -p "$P_PXY pack=50 duplicate=1" \
             "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 debug_level=2" \
             "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 debug_level=2" \
@@ -14110,7 +14136,7 @@ run_test    "DTLS 1.3: proxy — multiple records in same datagram, duplicate ev
 
 client_needs_more_time 4
 requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
-run_test    "DTLS 1.3: proxy — inject invalid AD record, default badmac_limit" \
+run_test    "DTLS 1.3: proxy - inject invalid AD record, default badmac_limit" \
             -p "$P_PXY bad_ad=1" \
             "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 debug_level=1 hs_timeout=500-10000" \
             "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 debug_level=1 hs_timeout=500-10000" \
@@ -14129,7 +14155,7 @@ run_test    "DTLS 1.3: proxy — inject invalid AD record, default badmac_limit"
 
 client_needs_more_time 4
 requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
-run_test    "DTLS 1.3: proxy — 3d, basic handshake" \
+run_test    "DTLS 1.3: proxy - 3d, basic handshake" \
             -p "$P_PXY drop=5 delay=5 duplicate=5" \
             "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-20000 debug_level=2" \
             "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-20000 debug_level=2" \
@@ -14139,7 +14165,7 @@ run_test    "DTLS 1.3: proxy — 3d, basic handshake" \
 
 client_needs_more_time 4
 requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
-run_test    "DTLS 1.3: proxy — 3d, client auth" \
+run_test    "DTLS 1.3: proxy - 3d, client auth" \
             -p "$P_PXY drop=5 delay=5 duplicate=5" \
             "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-20000 auth_mode=required debug_level=2" \
             "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-20000 debug_level=2" \
@@ -14149,7 +14175,7 @@ run_test    "DTLS 1.3: proxy — 3d, client auth" \
 
 client_needs_more_time 4
 requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
-run_test    "DTLS 1.3: proxy — 3d, nbio" \
+run_test    "DTLS 1.3: proxy - 3d, nbio" \
             -p "$P_PXY drop=5 delay=5 duplicate=5" \
             "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-20000 nbio=2 debug_level=1" \
             "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-20000 nbio=2 debug_level=1" \

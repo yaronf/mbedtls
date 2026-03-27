@@ -495,6 +495,16 @@ have been drilled down in `local-docs/design-drilldown.md`:
          WANT_WRITE.  Server-side: allow ACK records from old epochs through the
          epoch check (ssl_parse_record_header) and skip decryption
          (ssl_prepare_record_content) since they are always plaintext.
+- [x] 10. HRR+cookie 3d test.
+         The DTLS 1.2 parity analysis identified DTLS 1.2 reordering tests
+         (`delay_srv=Certificate`, etc.) as candidates, but these don't port:
+         the proxy identifies message types by reading plaintext handshake headers,
+         which are not visible in DTLS 1.3 encrypted records. The 3d tests
+         (drop/delay/duplicate) already cover the buffering/reordering paths
+         non-deterministically, so deterministic reordering tests add little value.
+         The one genuine gap: loss recovery across the HRR flight boundary.
+         Add `DTLS 1.3: proxy — 3d, HRR+cookie exchange` using
+         `drop=5 delay=5 duplicate=5` with cookie enabled on the server.
 
 ### Phase 4: Session Resumption and PSK
 *Goal: PSK and resumption handshakes work, including 0-RTT.*
@@ -558,13 +568,25 @@ have been drilled down in `local-docs/design-drilldown.md`:
          - Fragment reassembly correctness with out-of-order and overlapping fragments.
          - Explicit record length validation within datagram bounds.
          - Amplification limit enforced from the first ClientHello.
-- [ ] 6. Fuzz testing: record parser (unified header, epoch reconstruction, fragment
+- [ ] 6. Post-handshake idle timeout test.
+         mbedtls exposes liveness detection via the timer callback pair
+         (`mbedtls_ssl_set_timer_cb`): after the handshake, the application arms
+         a timer and `mbedtls_ssl_read` returns `MBEDTLS_ERR_SSL_TIMEOUT` when it
+         fires.  mbedtls itself sets no post-handshake timer; the policy is entirely
+         application-driven.
+         Test: complete a DTLS 1.3 handshake; application sets a short idle timer;
+         peer goes silent; verify `mbedtls_ssl_read` returns `MBEDTLS_ERR_SSL_TIMEOUT`
+         within the expected window without crashing or leaking state.
+         Note: RFC 6520 heartbeat is in a grey zone for TLS/DTLS 1.3 (not mentioned
+         in RFC 9147, no update to 6520 covering 1.3). Application-layer keepalive
+         via the timer mechanism is the standards-track approach.
+- [ ] 7. Fuzz testing: record parser (unified header, epoch reconstruction, fragment
          reassembly), ACK parser.
-- [ ] 7. Security review: cookie generation entropy, sn_key derivation ordering, epoch
+- [ ] 8. Security review: cookie generation entropy, sn_key derivation ordering, epoch
          wrap, failed AEAD counter enforcement, downgrade sentinel checks.
-- [ ] 8. Full interop suite against wolfSSL covering all implemented features.
+- [ ] 9. Full interop suite against wolfSSL covering all implemented features.
          See `reference-implementations.md`.
-- [ ] 9. Add OpenSSL interop when PR #26629 merges. See `reference-implementations.md`.
+- [ ] 10. Add OpenSSL interop when PR #26629 merges. See `reference-implementations.md`.
 
 ---
 

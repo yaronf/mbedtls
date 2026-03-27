@@ -118,7 +118,7 @@ are low-priority and skipped for now.
 
 | Tests | Blocking phase |
 |---|---|
-| Reordering via `delay_srv=EncryptedExtensions`, `delay_srv=Certificate` | 3b.7 (new sub-phase, message-specific reordering for 1.3) |
+| Reordering via `delay_srv=EncryptedExtensions`, `delay_srv=Certificate` | **not portable** — proxy identifies messages by reading plaintext handshake headers; DTLS 1.3 records are encrypted. The 3d tests cover the same paths non-deterministically. |
 | 3d + PSK handshake | Phase 4 |
 | 3d + session ticket (FS, ticket; max handshake; nbio) | Phase 4 |
 | 3d + resumption (+nbio) | Phase 4 |

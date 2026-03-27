@@ -101,14 +101,15 @@ These use `ssl_client2` / `ssl_server2` over loopback UDP.
 | `DTLS 1.3 client, DTLS 1.2 server: negotiate down to DTLS 1.2 (with cookie)`| pass | —                                                       |
 | `DTLS 1.3: HRR+cookie exchange (cookie enabled)`                             | pass | —                                                       |
 | `DTLS 1.3: loss recovery via retransmit`                                     | pass | —                                                       |
-| `DTLS 1.3: proxy — duplicate every packet`                                   | pass | —                                                       |
-| `DTLS 1.3: proxy — duplicate every packet, anti-replay off`                  | pass | —                                                       |
-| `DTLS 1.3: proxy — multiple records in same datagram`                        | pass | —                                                       |
-| `DTLS 1.3: proxy — multiple records in same datagram, duplicate every packet`| pass | —                                                       |
-| `DTLS 1.3: proxy — 3d, basic handshake`                                      | pass | —                                                       |
-| `DTLS 1.3: proxy — 3d, client auth`                                          | pass | —                                                       |
-| `DTLS 1.3: proxy — 3d, nbio`                                                 | pass | — (flaky ~20%/run; ACK reduces failures; see 3d-nbio-flakiness.md) |
-| `DTLS 1.3: proxy — inject invalid AD record, default badmac_limit`           | pass | —                                                       |
+| `DTLS 1.3: proxy - duplicate every packet`                                   | pass | —                                                       |
+| `DTLS 1.3: proxy - duplicate every packet, anti-replay off`                  | pass | —                                                       |
+| `DTLS 1.3: proxy - multiple records in same datagram`                        | pass | —                                                       |
+| `DTLS 1.3: proxy - multiple records in same datagram, duplicate every packet`| pass | —                                                       |
+| `DTLS 1.3: proxy - 3d, basic handshake`                                      | pass | —                                                       |
+| `DTLS 1.3: proxy - 3d, client auth`                                          | pass | —                                                       |
+| `DTLS 1.3: proxy - 3d, nbio`                                                 | pass | — (flaky ~20%/run; ACK reduces failures; see 3d-nbio-flakiness.md) |
+| `DTLS 1.3: proxy - 3d, HRR+cookie exchange`                                  | pass | — (flaky ~20%/run; same 3d budget exhaustion; HRR adds third flight) |
+| `DTLS 1.3: proxy - inject invalid AD record, default badmac_limit`           | pass | —                                                       |
 | `DTLS 1.3: fragmenting — proxy MTU`                                          | pass | —                                                       |
 | `DTLS 1.3: fragmenting — proxy MTU, nbio`                                    | pass | —                                                       |
 
