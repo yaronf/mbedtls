@@ -1,0 +1,267 @@
+# DTLS 1.3 test case schema.
+# Every field used in a cases/*.yaml file must be defined here.
+# Fields not in this schema are rejected by generate.py at validation time.
+
+top_level_fields:
+  family:
+    type: string
+    required: true
+    description: >
+      Prefix for all test names in this file. Each case's full name is
+      "{family}, {case.name}".
+
+  requires:
+    type: list
+    required: false
+    description: >
+      Guards that must be satisfied for any test in this file to run.
+      Each entry is a dict with one of:
+        config: SYMBOL    — requires_config_enabled SYMBOL
+        protocol: NAME    — requires_protocol_version NAME (dtls12, dtls13)
+        max_content_len: N — requires_max_content_len N
+        not_valgrind: true — not_with_valgrind
+
+case_fields:
+  name:
+    type: string
+    required: true
+    description: >
+      Short name appended to the family prefix. Must be unique within the file.
+
+  requires:
+    type: list
+    required: false
+    description: >
+      Per-case guards, same format as top-level requires. Merged with file-level
+      requires; both must be satisfied.
+
+  client_time_factor:
+    type: integer
+    min: 1
+    required: false
+    description: >
+      Multiplier passed to client_needs_more_time. Scales the test watchdog
+      deadline on the client side. Does not affect the protocol retransmit budget.
+
+  proxy:
+    type: dict
+    required: false
+    description: >
+      udp_proxy parameters. Omit the proxy block entirely for tests that run
+      without a proxy.
+    fields:
+      drop:
+        type: integer
+        min: 1
+        description: >
+          Drop every Nth datagram (1-indexed, rand() % N == 0 check).
+          drop=5 means each datagram has a 1-in-5 chance of being dropped,
+          subject to the held[] anti-starvation cap (HOLD_MAX=2 per size).
+      delay:
+        type: integer
+        min: 1
+        description: >
+          Delay every Nth datagram by one forward event (hold until the next
+          datagram is forwarded). Mutually exclusive with drop on a per-datagram
+          basis (else-if chain). Subject to the same held[] cap as drop.
+      duplicate:
+        type: integer
+        min: 1
+        description: >
+          Duplicate every Nth forwarded datagram (send it twice).
+          Applied independently after the drop/delay decision.
+      bad_ad:
+        type: boolean
+        description: >
+          Inject one record with a corrupted AEAD authentication tag per run.
+          Used to test badmac_limit handling.
+      pack:
+        type: integer
+        min: 1
+        description: >
+          Pack multiple outgoing records into a single datagram if they arrive
+          within pack ms of each other. Tests multi-record datagram parsing.
+      mtu:
+        type: integer
+        min: 1
+        description: >
+          Clamp forwarded datagrams to this byte size. Fragments larger
+          datagrams at the UDP level, exercising DTLS handshake fragmentation.
+
+  server:
+    type: dict
+    required: false
+    description: Server (ssl_server2) parameters.
+    fields:
+      dgram_packing:
+        type: boolean
+        description: >
+          Enable or disable datagram packing (coalescing multiple DTLS records
+          into one UDP datagram). false = one record per datagram.
+      hs_timeout:
+        type: [integer, integer]
+        description: >
+          Retransmit timer range [min_ms, max_ms]. min_ms is the initial
+          per-flight retransmit timeout; it doubles on each timeout up to max_ms,
+          at which point the sender gives up. Not a wall-clock handshake deadline.
+      auth_mode:
+        type: enum
+        values: [none, optional, required]
+        description: >
+          Client certificate verification mode.
+          required: server rejects clients that don't present a certificate.
+      nbio:
+        type: integer
+        values: [0, 2]
+        description: >
+          Non-blocking I/O mode. 0 = blocking. 2 = simulated non-blocking
+          (first send returns WANT_WRITE, second succeeds).
+      debug_level:
+        type: integer
+        min: 0
+        max: 4
+        description: Verbosity of ssl_server2 debug output.
+      groups:
+        type: string
+        description: >
+          Colon-separated list of key exchange groups offered by the server.
+          Restricting to e.g. secp384r1 when the client prefers x25519 forces
+          a HelloRetryRequest.
+      mtu:
+        type: integer
+        min: 1
+        description: Maximum outgoing datagram size (bytes).
+      exchanges:
+        type: integer
+        min: 1
+        description: Number of application-data exchanges after the handshake.
+      force_version:
+        type: enum
+        values: [dtls12, dtls13]
+        description: >
+          Force a specific DTLS version. Normally both sides use force_version=dtls13.
+          Set force_version=dtls12 on the server to test version negotiation fallback.
+      cookies:
+        type: integer
+        values: [0, 1]
+        description: >
+          Enable (1) or disable (0) DTLS 1.2 HelloVerifyRequest cookies on the server.
+          Only meaningful when force_version=dtls12.
+      min_version:
+        type: enum
+        values: [dtls12, dtls13]
+        description: Minimum DTLS version the server will accept.
+      max_version:
+        type: enum
+        values: [dtls12, dtls13]
+        description: Maximum DTLS version the server will offer.
+      crt_file:
+        type: string
+        description: >
+          Path to server certificate file (relative to DATA_FILES_PATH).
+          Use the bare filename; the runner prepends DATA_FILES_PATH.
+      key_file:
+        type: string
+        description: >
+          Path to server private key file (relative to DATA_FILES_PATH).
+      anti_replay:
+        type: integer
+        values: [0, 1]
+        description: >
+          Enable (1, default) or disable (0) same-epoch anti-replay protection.
+
+  client:
+    type: dict
+    required: false
+    description: Client (ssl_client2) parameters. Same fields as server where applicable.
+    fields:
+      dgram_packing:
+        type: boolean
+      hs_timeout:
+        type: [integer, integer]
+      nbio:
+        type: integer
+        values: [0, 2]
+      debug_level:
+        type: integer
+        min: 0
+        max: 4
+      mtu:
+        type: integer
+        min: 1
+      exchanges:
+        type: integer
+        min: 1
+      force_version:
+        type: enum
+        values: [dtls12, dtls13]
+      min_version:
+        type: enum
+        values: [dtls12, dtls13]
+      max_version:
+        type: enum
+        values: [dtls12, dtls13]
+      crt_file:
+        type: string
+      key_file:
+        type: string
+
+  expect:
+    type: dict
+    required: true
+    description: Expected outcome of the test.
+    fields:
+      exit:
+        type: integer
+        required: true
+        description: Expected client exit code. 0 = success.
+      assert:
+        type: list
+        required: false
+        description: >
+          List of logical assertion names that must match. Each name is
+          resolved to a concrete (flag, string) pair by the runner profile.
+
+assertions:
+  dtls13_negotiated:
+    description: >
+      Both sides completed a DTLS 1.3 handshake. Shorthand for
+      server_dtls13_negotiated + client_dtls13_negotiated.
+  server_dtls13_negotiated:
+    description: Server side confirmed DTLS 1.3 negotiated.
+  client_dtls13_negotiated:
+    description: Client side confirmed DTLS 1.3 negotiated.
+  dtls12_negotiated:
+    description: Both sides negotiated DTLS 1.2 (version fallback test).
+  server_dtls12_negotiated:
+    description: Server side confirmed DTLS 1.2 negotiated.
+  client_dtls12_negotiated:
+    description: Client side confirmed DTLS 1.2 negotiated.
+  client_ack_sent:
+    description: Client sent an ACK message during the handshake.
+  client_hrr_received:
+    description: Client received and processed a HelloRetryRequest.
+  server_cookie_verified:
+    description: Server verified the cookie echoed in the second ClientHello.
+  server_no_resend:
+    description: Server did not retransmit any flight (anti-replay test).
+  client_epoch_record:
+    description: Client received a record from another epoch (duplicate test).
+  server_epoch_record:
+    description: Server received a record from another epoch (duplicate test).
+  client_next_record_same_datagram:
+    description: Client found multiple records packed into one datagram.
+  server_next_record_same_datagram:
+    description: Server found multiple records packed into one datagram.
+  client_bad_mac_discarded:
+    description: Client discarded a record with a bad MAC (bad_ad test).
+  server_bad_mac_discarded:
+    description: Server discarded a record with a bad MAC (bad_ad test).
+  server_no_badmac_limit:
+    description: Server did not hit the bad MAC limit (default limit not exceeded).
+  client_fragmented_hs:
+    description: Client reassembled a fragmented handshake message.
+  server_fragmented_hs:
+    description: Server reassembled a fragmented handshake message.
+  client_no_error:
+    description: Client output contains no "error" string.

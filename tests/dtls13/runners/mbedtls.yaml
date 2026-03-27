@@ -1,0 +1,107 @@
+# mbedtls runner profile for DTLS 1.3 test cases.
+# Maps abstract case fields to ssl_server2 / ssl_client2 / udp_proxy flags.
+# Every field that appears in any cases/*.yaml file must be listed here,
+# either with a mapping or with skip: true.
+
+server_cmd: "$P_SRV dtls=1 force_version=dtls13"
+client_cmd: "$P_CLI dtls=1 force_version=dtls13"
+proxy_cmd:  "$P_PXY"
+
+# Overrides for force_version — when the case sets a non-dtls13 force_version,
+# the runner replaces the default in server_cmd / client_cmd.
+force_version_override: true
+
+param_map:
+  dgram_packing:  "dgram_packing={0 if not value else 1}"
+  hs_timeout:     "hs_timeout={value[0]}-{value[1]}"
+  auth_mode:      "auth_mode={value}"
+  nbio:           "nbio={value}"
+  debug_level:    "debug_level={value}"
+  groups:         "groups={value}"
+  mtu:            "mtu={value}"
+  exchanges:      "exchanges={value}"
+  force_version:  "force_version={value}"
+  cookies:        "cookies={value}"
+  min_version:    "min_version={value}"
+  max_version:    "max_version={value}"
+  crt_file:       "crt_file=$DATA_FILES_PATH/{value}"
+  key_file:       "key_file=$DATA_FILES_PATH/{value}"
+  anti_replay:    "anti_replay={value}"
+
+proxy_param_map:
+  drop:       "drop={value}"
+  delay:      "delay={value}"
+  duplicate:  "duplicate={value}"
+  bad_ad:     "bad_ad={1 if value else 0}"
+  pack:       "pack={value}"
+  mtu:        "mtu={value}"
+
+assertion_map:
+  server_dtls13_negotiated:
+    flag: "-s"
+    string: "Protocol is DTLSv1.3"
+  client_dtls13_negotiated:
+    flag: "-c"
+    string: "Protocol is DTLSv1.3"
+  server_dtls12_negotiated:
+    flag: "-s"
+    string: "Protocol is DTLSv1.2"
+  client_dtls12_negotiated:
+    flag: "-c"
+    string: "Protocol is DTLSv1.2"
+  client_ack_sent:
+    flag: "-c"
+    string: "=> write ACK"
+  client_hrr_received:
+    flag: "-c"
+    string: "received HelloRetryRequest message"
+  server_cookie_verified:
+    flag: "-s"
+    string: "cookie verified"
+  server_no_resend:
+    flag: "-S"
+    string: "resend"
+  client_epoch_record:
+    flag: "-c"
+    string: "record from another epoch"
+  server_epoch_record:
+    flag: "-s"
+    string: "record from another epoch"
+  client_next_record_same_datagram:
+    flag: "-c"
+    string: "next record in same datagram"
+  server_next_record_same_datagram:
+    flag: "-s"
+    string: "next record in same datagram"
+  client_bad_mac_discarded:
+    flag: "-c"
+    string: "discarding invalid record (mac)"
+  server_bad_mac_discarded:
+    flag: "-s"
+    string: "discarding invalid record (mac)"
+  server_no_badmac_limit:
+    flag: "-S"
+    string: "too many records with bad MAC"
+  client_fragmented_hs:
+    flag: "-c"
+    string: "found fragmented DTLS handshake message"
+  server_fragmented_hs:
+    flag: "-s"
+    string: "found fragmented DTLS handshake message"
+  client_no_error:
+    flag: "-C"
+    string: "error"
+  server_read_client_data:
+    flag: "-s"
+    string: "Read from client: 51 bytes read"
+  client_read_server_data:
+    flag: "-c"
+    string: "Read from server: 144 bytes read"
+
+requires_map:
+  protocol:
+    dtls13: "requires_protocol_version dtls13"
+    dtls12: "requires_protocol_version dtls12"
+  config:   "requires_config_enabled {value}"
+  max_content_len: "requires_max_content_len {value}"
+  not_valgrind: "not_with_valgrind"

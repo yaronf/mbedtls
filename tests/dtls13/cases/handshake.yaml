@@ -1,0 +1,40 @@
+family: "DTLS 1.3"
+requires:
+  - protocol: dtls13
+
+cases:
+  - name: "full 1-RTT handshake"
+    server:
+      debug_level: 2
+    client:
+      debug_level: 2
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+
+  - name: "bidirectional application data (2 exchanges)"
+    server:
+      exchanges: 2
+    client:
+      exchanges: 2
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - server_read_client_data
+        - client_read_server_data
+
+  - name: "client ACKs server Finished flight"
+    server:
+      debug_level: 2
+    client:
+      debug_level: 2
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - client_ack_sent

@@ -1,0 +1,21 @@
+family: "DTLS 1.3"
+requires:
+  - protocol: dtls13
+
+cases:
+  - name: "HRR+cookie exchange (cookie enabled)"
+    requires:
+      - config: MBEDTLS_SSL_DTLS_HELLO_VERIFY
+    server:
+      groups: secp384r1
+      debug_level: 2
+    client:
+      debug_level: 2
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - client_hrr_received
+        - server_cookie_verified
+

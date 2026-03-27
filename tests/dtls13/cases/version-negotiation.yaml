@@ -1,0 +1,30 @@
+family: "DTLS 1.3 client, DTLS 1.2 server"
+requires:
+  - protocol: dtls13
+  - protocol: dtls12
+
+cases:
+  - name: "negotiate down to DTLS 1.2 (no cookie)"
+    server:
+      force_version: dtls12
+      cookies: 0
+    client:
+      min_version: dtls12
+      max_version: dtls13
+    expect:
+      exit: 0
+      assert:
+        - server_dtls12_negotiated
+        - client_dtls12_negotiated
+
+  - name: "negotiate down to DTLS 1.2 (with cookie)"
+    server:
+      force_version: dtls12
+    client:
+      min_version: dtls12
+      max_version: dtls13
+    expect:
+      exit: 0
+      assert:
+        - server_dtls12_negotiated
+        - client_dtls12_negotiated

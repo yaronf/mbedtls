@@ -1,0 +1,118 @@
+family: "DTLS 1.3"
+
+cases:
+  - name: "proxy - 3d, basic handshake"
+    requires:
+      - config: MBEDTLS_SSL_PROTO_DTLS
+    client_time_factor: 4
+    proxy:
+      drop: 5
+      delay: 5
+      duplicate: 5
+    server:
+      dgram_packing: false
+      hs_timeout: [500, 20000]
+      debug_level: 2
+    client:
+      dgram_packing: false
+      hs_timeout: [500, 20000]
+      debug_level: 2
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+
+  - name: "proxy - 3d, client auth"
+    requires:
+      - config: MBEDTLS_SSL_PROTO_DTLS
+    client_time_factor: 4
+    proxy:
+      drop: 5
+      delay: 5
+      duplicate: 5
+    server:
+      dgram_packing: false
+      hs_timeout: [500, 20000]
+      auth_mode: required
+      debug_level: 2
+    client:
+      dgram_packing: false
+      hs_timeout: [500, 20000]
+      debug_level: 2
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+
+  - name: "proxy - 3d, nbio"
+    requires:
+      - config: MBEDTLS_SSL_PROTO_DTLS
+    client_time_factor: 4
+    proxy:
+      drop: 5
+      delay: 5
+      duplicate: 5
+    server:
+      dgram_packing: false
+      hs_timeout: [500, 20000]
+      nbio: 2
+      debug_level: 1
+    client:
+      dgram_packing: false
+      hs_timeout: [500, 20000]
+      nbio: 2
+      debug_level: 1
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+
+  - name: "loss recovery via retransmit"
+    requires:
+      - config: MBEDTLS_SSL_PROTO_DTLS
+    client_time_factor: 4
+    proxy:
+      drop: 5
+      delay: 5
+      duplicate: 5
+    server:
+      debug_level: 2
+      hs_timeout: [250, 20000]
+    client:
+      debug_level: 2
+      hs_timeout: [250, 20000]
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+
+  - name: "proxy - 3d, HRR+cookie exchange"
+    requires:
+      - protocol: dtls13
+      - config: MBEDTLS_SSL_PROTO_DTLS
+      - config: MBEDTLS_SSL_DTLS_HELLO_VERIFY
+    client_time_factor: 4
+    proxy:
+      drop: 8
+      delay: 8
+      duplicate: 8
+    server:
+      groups: secp384r1
+      dgram_packing: false
+      hs_timeout: [500, 20000]
+      debug_level: 2
+    client:
+      dgram_packing: false
+      hs_timeout: [500, 20000]
+      debug_level: 2
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - client_hrr_received
+        - server_cookie_verified

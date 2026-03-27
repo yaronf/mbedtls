@@ -509,13 +509,22 @@ have been drilled down in `local-docs/design-drilldown.md`:
 ### Phase 4: Session Resumption and PSK
 *Goal: PSK and resumption handshakes work, including 0-RTT.*
 
-- [ ] 1. Validate PSK path through DTLS 1.3 (should largely reuse TLS 1.3 PSK code).
-- [ ] 2. NewSessionTicket: implement server-side ACK requirement (server retransmits until ACKed).
-- [ ] 3. PSK+cookie interaction: server MAY skip cookie when PSK + known IP.
-- [ ] 4. 0-RTT (early data): epoch 1 handling; no EndOfEarlyData; server drops epoch 1 keys
+- [ ] 1. Declarative test infrastructure (YAML + generator).
+         Implement Stage 1 of `local-docs/yaml-test-plan.md`: schema, generator, and
+         mbedtls runner profile for all existing 17 DTLS 1.3 integration tests.
+         Validate that generated output is equivalent to the hand-written bash.
+         Wire generator into CI so the DTLS 1.3 section of ssl-opt.sh is always
+         produced from YAML. Commit only YAML + generator, not the generated bash.
+         This is a prerequisite for wolfSSL interop in step 7 below.
+- [ ] 2. Validate PSK path through DTLS 1.3 (should largely reuse TLS 1.3 PSK code).
+- [ ] 3. NewSessionTicket: implement server-side ACK requirement (server retransmits until ACKed).
+- [ ] 4. PSK+cookie interaction: server MAY skip cookie when PSK + known IP.
+- [ ] 5. 0-RTT (early data): epoch 1 handling; no EndOfEarlyData; server drops epoch 1 keys
          after first epoch 3 data arrives.
-- [ ] 5. Self-test: resumption handshake, 0-RTT data delivery.
-- [ ] 6. Interop: wolfSSL client ↔ mbedtls server and vice versa for PSK, resumption, 0-RTT.
+- [ ] 6. Self-test: resumption handshake, 0-RTT data delivery.
+- [ ] 7. Interop: wolfSSL client ↔ mbedtls server and vice versa for PSK, resumption, 0-RTT.
+         Implement wolfSSL runner profile (Stage 2 of yaml-test-plan.md). Cases with
+         `skip: true` parameters are excluded automatically; no new test authoring needed.
          See `reference-implementations.md`.
 
 ### Phase 5: Post-Handshake Messages
