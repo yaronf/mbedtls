@@ -1,6 +1,6 @@
 # DTLS 1.3 Test Inventory
 
-**Last updated:** 2026-03-26 (Phase 3b.7 proxy test parity — 8 new tests; bad-MAC-at-Finished fix)
+**Last updated:** 2026-03-27 (Phase 3b.8+3b.9 — fragmentation + empty ACK on future-epoch discard)
 **Branch:** `dtls13`
 
 Tests are grouped by type.  Status: `pass` = currently passing, `fail` = currently failing (expected), `todo` = not yet written.
@@ -107,8 +107,10 @@ These use `ssl_client2` / `ssl_server2` over loopback UDP.
 | `DTLS 1.3: proxy — multiple records in same datagram, duplicate every packet`| pass | —                                                       |
 | `DTLS 1.3: proxy — 3d, basic handshake`                                      | pass | —                                                       |
 | `DTLS 1.3: proxy — 3d, client auth`                                          | pass | —                                                       |
-| `DTLS 1.3: proxy — 3d, nbio`                                                 | skip | deferred to Phase 3c (ACK); see local-docs/3d-nbio-flakiness.md |
+| `DTLS 1.3: proxy — 3d, nbio`                                                 | pass | — (flaky ~20%/run; ACK reduces failures; see 3d-nbio-flakiness.md) |
 | `DTLS 1.3: proxy — inject invalid AD record, default badmac_limit`           | pass | —                                                       |
+| `DTLS 1.3: fragmenting — proxy MTU`                                          | pass | —                                                       |
+| `DTLS 1.3: fragmenting — proxy MTU, nbio`                                    | pass | —                                                       |
 
 
 ### Planned — to be added as phases complete

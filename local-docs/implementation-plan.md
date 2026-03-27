@@ -478,12 +478,23 @@ have been drilled down in `local-docs/design-drilldown.md`:
            with bad_ad=1; needs post-handshake injection); fragmentation+3d
            (Phase 3b.8); 3d+PSK/ticket/resumption (Phase 4); interop (Phase 3b.6).
          Not applicable: CCS tests, renegotiation tests, CKE tests.
-- [ ] 8. Outgoing handshake fragmentation for DTLS 1.3.
-         The DTLS 1.3 write path does not fragment large handshake messages when
-         they exceed the MTU.  Server Certificate hits INTERNAL_ERROR at mtu=512.
-         Blocks "DTLS 1.3: fragmenting — proxy MTU + 3d" (and nbio variant).
-         Implementation: apply the DTLS 1.2 fragmentation logic from
-         mbedtls_ssl_flight_transmit to the DTLS 1.3 outgoing write path.
+- [x] 8. Outgoing handshake fragmentation for DTLS 1.3.
+         The DTLS 1.3 write path fragments large handshake messages via the
+         existing flight_transmit MTU loop.  ServerHello is added to the flight
+         (was previously excluded) with save/restore of transform_out to keep it
+         plaintext on retransmit.  Tests: "DTLS 1.3: fragmenting — proxy MTU"
+         and "DTLS 1.3: fragmenting — proxy MTU, nbio" both pass.
+- [x] 9. Empty ACK on future-epoch record discard (RFC 9147 §7.1).
+         When the client discards a record from a future epoch (e.g. encrypted
+         server flight arriving before ServerHello), set dtls13_ack_pending and
+         send an empty ACK.  This triggers an immediate server retransmit instead
+         of waiting for the full retransmit timer.
+         Three fixes: (1) trigger in ssl_get_next_record() on future-epoch discard;
+         (2) send in CONTINUE_PROCESSING branch and at top of read_record();
+         (3) ssl_dtls13_write_ack() defers if out_left > 0, retries flush once on
+         WANT_WRITE.  Server-side: allow ACK records from old epochs through the
+         epoch check (ssl_parse_record_header) and skip decryption
+         (ssl_prepare_record_content) since they are always plaintext.
 
 ### Phase 4: Session Resumption and PSK
 *Goal: PSK and resumption handshakes work, including 0-RTT.*
