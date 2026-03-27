@@ -5990,6 +5990,7 @@ static int ssl_dtls13_process_ack(mbedtls_ssl_context *ssl,
     uint16_t count;
     uint16_t i;
     int all_acked;
+    int newly_acked = 0;
     mbedtls_ssl_flight_item *item;
 
     /* Need at least 2 bytes for the length field. */
@@ -6036,11 +6037,14 @@ static int ssl_dtls13_process_ack(mbedtls_ssl_context *ssl,
             for (j = 0; j < item->sent_record_count; j++) {
                 if (item->sent_records[j] == seq &&
                     item->sent_record_epoch[j] == (uint8_t)(epoch & 0xFF)) {
-                    MBEDTLS_SSL_DEBUG_MSG(2, ("ACK: marking flight item acked"
-                                              " (epoch=%llu seq=%llu)",
-                                              (unsigned long long) epoch,
-                                              (unsigned long long) seq));
-                    item->acked = 1;
+                    if (!item->acked) {
+                        MBEDTLS_SSL_DEBUG_MSG(2, ("ACK: marking flight item acked"
+                                                  " (epoch=%llu seq=%llu)",
+                                                  (unsigned long long) epoch,
+                                                  (unsigned long long) seq));
+                        item->acked = 1;
+                        newly_acked = 1;
+                    }
                 }
             }
         }
@@ -6059,14 +6063,24 @@ static int ssl_dtls13_process_ack(mbedtls_ssl_context *ssl,
         MBEDTLS_SSL_DEBUG_MSG(2, ("ACK: full flight acked; cancelling retransmit timer"));
         mbedtls_ssl_set_timer(ssl, 0);
         hs->retransmit_state = MBEDTLS_SSL_RETRANS_FINISHED;
-    } else {
-        /* Partial ACK: retransmit only the unacked items immediately.
-         * Reset to the start of the flight so flight_transmit iterates all
-         * items; acked ones will be skipped by the acked-item check above. */
+    } else if (newly_acked) {
+        /* Partial ACK: at least one item was newly acknowledged — confirmed
+         * progress.  Retransmit the remaining unacked items immediately and
+         * reset the timer to hs_timeout_min.
+         *
+         * RFC 9147 §7.3: "Upon receiving an ACK, an implementation SHOULD
+         * immediately send any unacknowledged handshake messages and then
+         * reset the retransmit timer."  We only do this when the ACK actually
+         * acknowledges something new; an empty ACK (no record numbers) or an
+         * ACK listing only already-seen records is not evidence of forward
+         * progress and should not reset the timer. */
         MBEDTLS_SSL_DEBUG_MSG(2, ("ACK: partial — retransmitting unacked items"));
+        ssl_reset_retransmit_timeout(ssl);
         hs->cur_msg   = hs->flight;
         hs->cur_msg_p = hs->flight->p + 12;
         hs->retransmit_state = MBEDTLS_SSL_RETRANS_SENDING;
+    } else {
+        MBEDTLS_SSL_DEBUG_MSG(2, ("ACK: no new items acked — ignoring"));
     }
 
     return 0;

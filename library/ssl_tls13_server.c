@@ -2648,6 +2648,15 @@ static int ssl_tls13_write_hello_retry_request(mbedtls_ssl_context *ssl)
         mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_CLIENT_HELLO);
     }
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+    /* DTLS: arm the retransmit timer so the HRR is resent if the second
+     * ClientHello is lost.  Without this the server has no flight to
+     * retransmit and simply waits forever for the retried CH. */
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+        mbedtls_ssl_send_flight_completed(ssl);
+    }
+#endif /* MBEDTLS_SSL_PROTO_DTLS */
+
 cleanup:
     MBEDTLS_SSL_DEBUG_MSG(2, ("<= write hello retry request"));
     return ret;
