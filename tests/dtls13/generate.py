@@ -60,7 +60,20 @@ def render_requires(guards, runner):
         elif "not_valgrind" in g:
             lines.append(rmap.get("not_valgrind", "not_with_valgrind"))
         else:
-            raise ValueError(f"Unknown guard type: {g}")
+            # Generic lookup: the first key in the guard dict is looked up in
+            # requires_map.  If the value is a plain string it is emitted as-is;
+            # if it is a dict, the guard value selects the sub-key.
+            key = next(iter(g))
+            if key not in rmap:
+                raise ValueError(f"Unknown guard type: {g}")
+            entry = rmap[key]
+            if isinstance(entry, dict):
+                val = g[key]
+                if val not in entry:
+                    raise ValueError(f"Unknown value '{val}' for guard '{key}'")
+                lines.append(entry[val])
+            else:
+                lines.append(entry)
     return lines
 
 
@@ -177,10 +190,11 @@ def render_case(family, case, runner):
     return lines
 
 
-EMIT_HEADER = """\
+def emit_header(runner_name, emit_path_name):
+    return f"""\
 #!/bin/sh
 # AUTO-GENERATED — do not edit.
-# Regenerate: python3 tests/dtls13/generate.py --runner runners/mbedtls.yaml --emit
+# Regenerate: python3 tests/dtls13/generate.py --runner runners/{runner_name} --emit
 #
 # Standalone DTLS 1.3 integration test script.
 # Designed to run from the same directory as ssl-opt.sh (typically
@@ -190,7 +204,7 @@ EMIT_HEADER = """\
 # executing its main body, then runs all DTLS 1.3 tests and exits with $FAILS.
 #
 # Usage (from build tests directory):
-#   ./dtls13-tests.sh [-f FILTER] [-e EXCLUDE] [other ssl-opt.sh flags]
+#   ./{emit_path_name} [-f FILTER] [-e EXCLUDE] [other ssl-opt.sh flags]
 
 set -u
 
@@ -215,17 +229,18 @@ exit $FAILS
 """
 
 
-def generate(case_files, runner_path, emit=False):
+def generate(case_files, runner_path, emit=False, emit_path=None):
     runner = load_yaml(runner_path)
 
+    runner_name = Path(runner_path).name
     if emit:
-        header_lines = EMIT_HEADER.splitlines()
+        ep_name = Path(emit_path).name if emit_path else DEFAULT_EMIT_PATH.name
+        header_lines = emit_header(runner_name, ep_name).splitlines()
     else:
         header_lines = [
             "# AUTO-GENERATED — do not edit.",
             f"# Runner: {runner_path}",
-            "# Regenerate: python3 tests/dtls13/generate.py --runner "
-            "runners/mbedtls.yaml --all",
+            f"# Regenerate: python3 tests/dtls13/generate.py --runner {runner_name} --all",
         ]
     output = header_lines + [""]
 
@@ -255,16 +270,16 @@ def generate(case_files, runner_path, emit=False):
     return result
 
 
-EMIT_PATH = SCRIPT_DIR / "dtls13-tests.sh"
+DEFAULT_EMIT_PATH = SCRIPT_DIR / "dtls13-tests.sh"
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runner", required=True, help="Runner profile YAML file")
     parser.add_argument("--all", action="store_true",
-                        help="Process all cases/*.yaml files")
+                        help="Process all cases matching the runner's case_glob")
     parser.add_argument("--emit", action="store_true",
-                        help=f"Write standalone {EMIT_PATH.name} instead of stdout")
+                        help="Write standalone shell script instead of stdout")
     parser.add_argument("cases", nargs="*", help="Case YAML files")
     args = parser.parse_args()
 
@@ -272,8 +287,17 @@ def main():
     if not runner_path.is_absolute():
         runner_path = SCRIPT_DIR / runner_path
 
+    runner = load_yaml(runner_path)
+
+    # Determine emit path: runner can specify its own via emit_path key.
+    emit_path_str = runner.get("emit_path")
+    emit_path = (SCRIPT_DIR / emit_path_str) if emit_path_str else DEFAULT_EMIT_PATH
+
+    # Determine which case files to use.
     if args.emit or args.all:
-        case_files = sorted(CASES_DIR.glob("*.yaml"))
+        # Runners can restrict which cases they handle via case_glob.
+        case_glob = runner.get("case_glob", "*.yaml")
+        case_files = sorted(CASES_DIR.glob(case_glob))
     else:
         case_files = [Path(f) for f in args.cases]
 
@@ -281,12 +305,12 @@ def main():
         print("ERROR: no case files. Use --all, --emit, or list files.", file=sys.stderr)
         sys.exit(1)
 
-    result = generate(case_files, runner_path, emit=args.emit)
+    result = generate(case_files, runner_path, emit=args.emit, emit_path=emit_path)
 
     if args.emit:
-        EMIT_PATH.write_text(result)
-        EMIT_PATH.chmod(0o755)
-        print(f"Written: {EMIT_PATH}", file=sys.stderr)
+        emit_path.write_text(result)
+        emit_path.chmod(0o755)
+        print(f"Written: {emit_path}", file=sys.stderr)
     else:
         print(result)
 

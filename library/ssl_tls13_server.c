@@ -3273,6 +3273,11 @@ static int ssl_tls13_process_client_finished(mbedtls_ssl_context *ssl)
     if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
         MBEDTLS_SSL_DEBUG_MSG(2, ("DTLS 1.3: client finished — freeing server flight"));
         mbedtls_ssl_recv_flight_completed(ssl);
+
+        /* RFC 9147 §7.2.1: the server MUST send an ACK for the client's
+         * final Finished flight once it has been verified.  Schedule the ACK;
+         * it will be emitted at the top of the next ssl_read_record(). */
+        ssl->dtls13_ack_pending = 1;
     }
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
 

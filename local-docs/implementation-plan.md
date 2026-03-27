@@ -481,18 +481,22 @@ have been drilled down in `local-docs/design-drilldown.md`:
              could match non-DTLS records. Fix: added `rec->ver[0] == 0xfe` guard.
          SSLKEYLOGFILE: `nss_keylog_export` in `ssl_test_common_source.c` extended to emit
              all TLS 1.3 secret types in NSS key log format.
-- [ ] 11. Interop: wolfSSL client ↔ mbedtls server.
+- [x] 11. Interop: wolfSSL client ↔ mbedtls server.
          Run wolfSSL client against mbedtls ssl_server2 with force_version=dtls13.
-         Identify and fix any failures (expected: symmetric bugs to c2s direction).
-         Success criterion: wolfSSL client prints "SSL_connect ok", mbedtls server
-         prints "Protocol is DTLSv1.3" and "Read from client".
-- [ ] 12. Automated interop tests for both directions.
-         Add a wolfSSL runner profile (`tests/dtls13/runners/wolfssl.yaml`) and a new
+         Root cause: server never sent ACK for client Finished (RFC 9147 §7.2.1).
+         wolfSSL enters WAIT_FINISHED_ACK state and loops retransmitting Finished.
+         Fix: set `ssl->dtls13_ack_pending = 1` in `ssl_tls13_process_client_finished`
+         after `mbedtls_ssl_recv_flight_completed`.
+         wolfSSL client prints "SSL version is DTLSv1.3", app data flows both ways.
+- [x] 12. Automated interop tests for both directions.
+         Added wolfSSL runner profile (`tests/dtls13/runners/wolfssl.yaml`) and new
          case file (`tests/dtls13/cases/interop-wolfssl.yaml`) covering:
-           - mbedtls client ↔ wolfSSL server: full 1-RTT handshake, app data
-           - wolfSSL client ↔ mbedtls server: full 1-RTT handshake, app data
-         Add `requires_wolfssl` guard (skip if wolfSSL binaries not on PATH).
-         Regenerate `dtls13-tests.sh`.  Update test-inventory.md status to `pass`.
+           - mbedtls server ↔ wolfSSL client: full 1-RTT handshake
+           - mbedtls server ↔ wolfSSL client: application data
+           - mbedtls server ↔ wolfSSL client: server ACKs client Finished
+         Added `requires_wolfssl` guard to ssl-opt.sh.
+         Generated `dtls13-wolfssl-tests.sh` (separate from mbedtls-vs-mbedtls tests).
+         All 3 wolfSSL interop tests pass.
 - [x] 7. Proxy test parity: port all immediately-portable DTLS 1.2 proxy tests to DTLS 1.3.
          Full analysis in `local-docs/proxy-test-parity.md`.
          Done (8 tests passing):

@@ -2,6 +2,9 @@
 # Maps abstract case fields to ssl_server2 / ssl_client2 / udp_proxy flags.
 # Every field that appears in any cases/*.yaml file must be listed here,
 # either with a mapping or with skip: true.
+#
+# case_glob: exclude interop-* files (those use separate runner profiles)
+case_glob: "[!i]*.yaml"
 
 server_cmd: "$P_SRV dtls=1 force_version=dtls13"
 client_cmd: "$P_CLI dtls=1 force_version=dtls13"
@@ -105,3 +108,5 @@ requires_map:
   config:   "requires_config_enabled {value}"
   max_content_len: "requires_max_content_len {value}"
   not_valgrind: "not_with_valgrind"
+  # wolfssl: true → skip unless wolfSSL is present (interop cases)
+  wolfssl:  "requires_wolfssl"

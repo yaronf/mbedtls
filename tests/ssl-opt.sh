@@ -40,6 +40,12 @@ DATA_FILES_PATH=../framework/data_files
 : ${GNUTLS_CLI:=gnutls-cli}
 : ${GNUTLS_SERV:=gnutls-serv}
 : ${PERL:=perl}
+# wolfSSL interop tools (optional — tests skipped if not available).
+# WOLFSSL_DIR must point to the wolfSSL source tree so that the examples
+# binaries can find ./certs/ at runtime.
+: ${WOLFSSL_DIR:=}
+: ${WOLFSSL_CLI:=examples/client/client}
+: ${WOLFSSL_SRV:=examples/server/server}
 
 # The OPENSSL variable used to be OPENSSL_CMD for historical reasons.
 # To help the migration, error out if the old variable is set,
@@ -738,6 +744,23 @@ requires_gnutls_next() {
         fi
     fi
     if [ "$GNUTLS_NEXT_AVAILABLE" = "NO" ]; then
+        SKIP_NEXT="YES"
+    fi
+}
+
+# skip next test if wolfSSL isn't available
+# wolfSSL binaries must be run from WOLFSSL_DIR (needed for ./certs/).
+requires_wolfssl() {
+    if [ -z "${WOLFSSL_AVAILABLE:-}" ]; then
+        if [ -n "$WOLFSSL_DIR" ] && \
+           [ -x "$WOLFSSL_DIR/$WOLFSSL_CLI" ] && \
+           [ -x "$WOLFSSL_DIR/$WOLFSSL_SRV" ]; then
+            WOLFSSL_AVAILABLE="YES"
+        else
+            WOLFSSL_AVAILABLE="NO"
+        fi
+    fi
+    if [ "$WOLFSSL_AVAILABLE" = "NO" ]; then
         SKIP_NEXT="YES"
     fi
 }

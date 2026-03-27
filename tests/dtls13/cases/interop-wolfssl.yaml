@@ -1,0 +1,31 @@
+family: "DTLS 1.3 wolfSSL interop"
+requires:
+  - wolfssl: true
+
+cases:
+  - name: "mbedtls server ↔ wolfSSL client: full handshake"
+    server:
+      debug_level: 2
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - wolfssl_dtls13_negotiated
+
+  - name: "mbedtls server ↔ wolfSSL client: application data"
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - wolfssl_dtls13_negotiated
+        - server_read_client_data
+
+  - name: "mbedtls server ↔ wolfSSL client: server ACKs client Finished"
+    server:
+      debug_level: 2
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - wolfssl_dtls13_negotiated
+        - server_ack_sent

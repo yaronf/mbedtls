@@ -1,0 +1,66 @@
+# wolfSSL interop runner profile for DTLS 1.3 test cases.
+#
+# emit_path: output file when using --emit (relative to tests/dtls13/)
+emit_path: "dtls13-wolfssl-tests.sh"
+# case_glob: only process wolfssl interop case files
+case_glob: "interop-wolfssl.yaml"
+#
+#
+# This runner generates interop tests where one side is mbedtls and the other
+# is wolfSSL.  wolfSSL binaries must be run from WOLFSSL_DIR so they can
+# find ./certs/ at runtime.
+#
+# Prerequisites:
+#   - requires_wolfssl guard (defined in ssl-opt.sh)
+#   - WOLFSSL_DIR env var pointing to the wolfSSL source tree
+#   - wolfSSL built with --enable-dtls13 --enable-dtls
+#
+# Generates two flavours of test from each case:
+#   server_cmd  = mbedtls ssl_server2   (the mbedtls side is always the server)
+#   client_cmd  = wolfSSL client        (wolfSSL side is always the client)
+
+server_cmd: "$P_SRV dtls=1 force_version=dtls13 auth_mode=none"
+client_cmd: "cd $WOLFSSL_DIR && $WOLFSSL_CLI -u -v 4 -d -p +SRV_PORT"
+
+# No proxy for wolfSSL interop (wolfSSL uses its own UDP stack).
+# proxy_cmd is not used; leave undefined.
+
+# force_version override not needed — version is fixed by -v 4 / force_version.
+force_version_override: false
+
+param_map:
+  debug_level:  "debug_level={value}"
+
+# No proxy parameters.
+proxy_param_map: {}
+
+assertion_map:
+  server_dtls13_negotiated:
+    flag: "-s"
+    string: "Protocol is DTLSv1.3"
+  wolfssl_dtls13_negotiated:
+    flag: "-c"
+    string: "SSL version is DTLSv1.3"
+  wolfssl_cipher_aes256:
+    flag: "-c"
+    string: "SSL cipher suite is TLS_AES_256_GCM_SHA384"
+  wolfssl_cipher_aes128:
+    flag: "-c"
+    string: "SSL cipher suite is TLS_AES_128_GCM_SHA256"
+  server_read_client_data:
+    flag: "-s"
+    string: "Read from client:"
+  server_ack_sent:
+    flag: "-s"
+    string: "=> write ACK"
+  server_no_error:
+    flag: "-S"
+    string: "error"
+  wolfssl_no_error:
+    flag: "-C"
+    string: "wolfSSL error"
+
+requires_map:
+  protocol:
+    dtls13: "requires_wolfssl"
+  wolfssl: "requires_wolfssl"

@@ -135,11 +135,12 @@ cd ~/misc/wolfssl
 
 Full handshake + application data.
 
-### wolfSSL client ↔ mbedtls server: **handshake works, app data pending**
+### wolfSSL client ↔ mbedtls server: **WORKING**
 
-Handshake completes end-to-end:
+Full handshake + application data:
 - mbedtls server prints `Protocol is DTLSv1.3`
-- Application data AEAD still fails (epoch 3 / application keys).
+- wolfSSL client prints `SSL version is DTLSv1.3`, `SSL cipher suite is TLS_AES_256_GCM_SHA384`
+- Application data flows both directions.
 
 ---
 
@@ -189,13 +190,25 @@ unified header at `out_hdr`, `memmove` ciphertext to follow it, and set
 - Derive outbound SNE key (`sn_key_enc`) from local write secret; apply SNE
   to seq field in the transmitted header after AEAD.
 
+### (e) Server never sent ACK for client Finished [fixed]
+
+RFC 9147 §7.2.1: the server MUST send an ACK for the client's final Finished
+flight after verifying it.  wolfSSL enters `WAIT_FINISHED_ACK` state and keeps
+retransmitting its Finished if no ACK arrives, causing an infinite retransmit
+loop.
+
+The mbedtls server's `ssl_tls13_process_client_finished` freed the server
+flight and advanced the state machine, but never set `ssl->dtls13_ack_pending`.
+The `dtls13_ack_pending` flag was only set for discarded future-epoch records
+(empty ACK path), not for successfully-verified Finished messages.
+
+Fix: set `ssl->dtls13_ack_pending = 1` in `ssl_tls13_process_client_finished`
+after `mbedtls_ssl_recv_flight_completed`.  The ACK is emitted at the top of
+the next `ssl_read_record` call.
+
 ---
 
-## Remaining work (3b.11 / 3b.12)
-
-- **App-data AEAD failure** (wolfSSL client ↔ mbedtls server, epoch 3):
-  Debug why application-epoch records fail AEAD after the handshake succeeds.
-  Likely a key or seq issue specific to the epoch-3 transform setup.
+## Remaining work (3b.12)
 
 - **3b.12**: Automated interop tests (wolfSSL runner YAML + cases YAML,
   `requires_wolfssl` guard, regenerate `dtls13-tests.sh`).
