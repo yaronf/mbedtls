@@ -1971,7 +1971,10 @@ cleanup() {
 #
 # MAIN
 #
-
+# When sourced by another script (e.g. tests/dtls13/dtls13-tests.sh), that
+# script sets SSL_OPT_SOURCE_ONLY=1 before sourcing us.  We skip the main
+# body so only the function definitions, variable initialisations, and setup
+# above this point are executed.
 # Make the outcome file path relative to the original directory, not
 # to .../tests
 case "$MBEDTLS_TEST_OUTCOME_FILE" in
@@ -2152,6 +2155,11 @@ SESSION="session.$$"
 SKIP_NEXT="NO"
 
 trap cleanup INT TERM HUP
+
+# When sourced by another script (e.g. tests/dtls13/dtls13-tests.sh), that
+# script sets SSL_OPT_SOURCE_ONLY=1 before sourcing us.  All setup above has
+# run; we stop here so the caller can run its own tests with our infrastructure.
+if [ "${SSL_OPT_SOURCE_ONLY:-0}" = "1" ]; then return 0 2>/dev/null || exit 0; fi
 
 # Basic test
 
@@ -13974,266 +13982,6 @@ EOF
         fi
     fi
 fi
-
-# =============================================================================
-# Tests for DTLS 1.3
-# =============================================================================
-# These tests are gated on MBEDTLS_SSL_PROTO_TLS1_3.  Each test starts
-# failing and is expected to pass once the relevant Phase 3 work lands.
-# Do not remove tests when they start passing — keep them as regression guards.
-# =============================================================================
-
-requires_protocol_version dtls13
-run_test    "DTLS 1.3: full 1-RTT handshake" \
-            "$P_SRV dtls=1 force_version=dtls13 debug_level=2" \
-            "$P_CLI dtls=1 force_version=dtls13 debug_level=2" \
-            0 \
-            -s "Protocol is DTLSv1.3" \
-            -c "Protocol is DTLSv1.3"
-
-requires_protocol_version dtls13
-run_test    "DTLS 1.3: bidirectional application data (2 exchanges)" \
-            "$P_SRV dtls=1 force_version=dtls13 exchanges=2" \
-            "$P_CLI dtls=1 force_version=dtls13 exchanges=2" \
-            0 \
-            -s "Protocol is DTLSv1.3" \
-            -c "Protocol is DTLSv1.3" \
-            -s "Read from client: 51 bytes read" \
-            -c "Read from server: 144 bytes read"
-
-requires_protocol_version dtls13
-run_test    "DTLS 1.3: client ACKs server Finished flight" \
-            "$P_SRV dtls=1 force_version=dtls13 debug_level=2" \
-            "$P_CLI dtls=1 force_version=dtls13 debug_level=2" \
-            0 \
-            -s "Protocol is DTLSv1.3" \
-            -c "Protocol is DTLSv1.3" \
-            -c "=> write ACK"
-
-# DTLS 1.3 client connecting to DTLS 1.2 server: must negotiate down to 1.2.
-# The client advertises both 0xfefc (1.3) and 0xfefd (1.2) in supported_versions;
-# the 1.2 server picks 1.2.  Requires MBEDTLS_SSL_PROTO_TLS1_2 on both sides.
-#
-# cookies=0: DTLS 1.2 HelloVerifyRequest is not yet handled by the mixed-version
-# client path (the TLS 1.3 SERVER_HELLO state rejects a HVR with unexpected_message).
-# That is a separate known issue from the transcript hash fix (Option B).
-# For now test the no-HVR path which exercises the transcript re-hash.
-requires_protocol_version dtls13
-requires_protocol_version dtls12
-run_test    "DTLS 1.3 client, DTLS 1.2 server: negotiate down to DTLS 1.2 (no cookie)" \
-            "$P_SRV dtls=1 force_version=dtls12 cookies=0" \
-            "$P_CLI dtls=1 min_version=dtls12 max_version=dtls13" \
-            0 \
-            -s "Protocol is DTLSv1.2" \
-            -c "Protocol is DTLSv1.2"
-
-# Same but with DTLS 1.2 HelloVerifyRequest enabled (default cookies=1).
-# The client detects the HVR in the SERVER_HELLO state, stores the cookie,
-# and retries the ClientHello with the cookie in the legacy_cookie field.
-requires_protocol_version dtls13
-requires_protocol_version dtls12
-run_test    "DTLS 1.3 client, DTLS 1.2 server: negotiate down to DTLS 1.2 (with cookie)" \
-            "$P_SRV dtls=1 force_version=dtls12" \
-            "$P_CLI dtls=1 min_version=dtls12 max_version=dtls13" \
-            0 \
-            -s "Protocol is DTLSv1.2" \
-            -c "Protocol is DTLSv1.2"
-
-# DTLS 1.3 client connecting to DTLS 1.3 server with HRR+cookie.
-# Force an HRR by restricting the server to secp384r1 (client offers x25519
-# first, triggering a key_share mismatch).  Server includes a cookie extension
-# in the HRR; client echoes it in the second ClientHello; server validates and
-# completes the handshake.
-requires_protocol_version dtls13
-requires_config_enabled MBEDTLS_SSL_DTLS_HELLO_VERIFY
-run_test    "DTLS 1.3: HRR+cookie exchange (cookie enabled)" \
-            "$P_SRV dtls=1 force_version=dtls13 groups=secp384r1 debug_level=2" \
-            "$P_CLI dtls=1 force_version=dtls13 debug_level=2" \
-            0 \
-            -s "Protocol is DTLSv1.3" \
-            -c "Protocol is DTLSv1.3" \
-            -c "received HelloRetryRequest message" \
-            -s "cookie verified"
-
-# DTLS 1.3 HRR+cookie exchange under loss/delay/duplicate (Phase 3b.10).
-# Same HRR setup as the non-3d variant (server restricted to secp384r1 forces
-# a key_share mismatch → HRR).  Loss recovery must work across the HRR flight
-# boundary: client may need to retransmit its second ClientHello, and the
-# server may need to retransmit the HRR itself.
-client_needs_more_time 4
-requires_protocol_version dtls13
-requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
-requires_config_enabled MBEDTLS_SSL_DTLS_HELLO_VERIFY
-run_test    "DTLS 1.3: proxy - 3d, HRR+cookie exchange" \
-            -p "$P_PXY drop=8 delay=8 duplicate=8" \
-            "$P_SRV dtls=1 force_version=dtls13 groups=secp384r1 dgram_packing=0 hs_timeout=500-20000 debug_level=2" \
-            "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-20000 debug_level=2" \
-            0 \
-            -s "Protocol is DTLSv1.3" \
-            -c "Protocol is DTLSv1.3" \
-            -c "received HelloRetryRequest message" \
-            -s "cookie verified"
-
-client_needs_more_time 4
-requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
-run_test    "DTLS 1.3: loss recovery via retransmit" \
-            -p "$P_PXY drop=5 delay=5 duplicate=5" \
-            "$P_SRV dtls=1 force_version=dtls13 debug_level=2 hs_timeout=250-20000" \
-            "$P_CLI dtls=1 force_version=dtls13 debug_level=2 hs_timeout=250-20000" \
-            0 \
-            -s "Protocol is DTLSv1.3" \
-            -c "Protocol is DTLSv1.3"
-
-# ---------------------------------------------------------------------------
-# DTLS 1.3 proxy test parity (see local-docs/proxy-test-parity.md)
-# ---------------------------------------------------------------------------
-
-not_with_valgrind # spurious resend due to timeout
-requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
-run_test    "DTLS 1.3: proxy - duplicate every packet" \
-            -p "$P_PXY duplicate=1" \
-            "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 debug_level=2 hs_timeout=10000-20000" \
-            "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 debug_level=2 hs_timeout=10000-20000" \
-            0 \
-            -c "record from another epoch" \
-            -s "record from another epoch" \
-            -S "resend" \
-            -s "Protocol is DTLSv1.3" \
-            -c "Protocol is DTLSv1.3"
-
-# Note: in DTLS 1.3 duplicated records from a past epoch show as
-# "record from another epoch", not "replayed record" (which fires only
-# for same-epoch anti-replay hits).  anti_replay=0 disables same-epoch
-# checking; out-of-epoch duplicates are still logged.
-requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
-run_test    "DTLS 1.3: proxy - duplicate every packet, anti-replay off" \
-            -p "$P_PXY duplicate=1" \
-            "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 debug_level=2 anti_replay=0" \
-            "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 debug_level=2" \
-            0 \
-            -c "record from another epoch" \
-            -s "record from another epoch" \
-            -s "Protocol is DTLSv1.3" \
-            -c "Protocol is DTLSv1.3"
-
-requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
-run_test    "DTLS 1.3: proxy - multiple records in same datagram" \
-            -p "$P_PXY pack=50" \
-            "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 debug_level=2" \
-            "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 debug_level=2" \
-            0 \
-            -c "next record in same datagram" \
-            -s "next record in same datagram"
-
-requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
-run_test    "DTLS 1.3: proxy - multiple records in same datagram, duplicate every packet" \
-            -p "$P_PXY pack=50 duplicate=1" \
-            "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 debug_level=2" \
-            "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 debug_level=2" \
-            0 \
-            -c "next record in same datagram" \
-            -s "next record in same datagram"
-
-client_needs_more_time 4
-requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
-run_test    "DTLS 1.3: proxy - inject invalid AD record, default badmac_limit" \
-            -p "$P_PXY bad_ad=1" \
-            "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 debug_level=1 hs_timeout=500-10000" \
-            "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 debug_level=1 hs_timeout=500-10000" \
-            0 \
-            -c "discarding invalid record (mac)" \
-            -s "discarding invalid record (mac)" \
-            -S "too many records with bad MAC" \
-            -s "Protocol is DTLSv1.3" \
-            -c "Protocol is DTLSv1.3"
-
-# badmac_limit 2 test: not ported.  With bad_ad=1 and DTLS 1.3's flight
-# structure, the server hits the limit during the handshake itself (2 corrupt
-# records arrive before the handshake completes), whereas DTLS 1.2 tolerates
-# it.  Testing the fatal-on-limit path needs a targeted bad_ad injection
-# after the handshake; deferred. See proxy-test-parity.md.
-
-client_needs_more_time 4
-requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
-run_test    "DTLS 1.3: proxy - 3d, basic handshake" \
-            -p "$P_PXY drop=5 delay=5 duplicate=5" \
-            "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-20000 debug_level=2" \
-            "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-20000 debug_level=2" \
-            0 \
-            -s "Protocol is DTLSv1.3" \
-            -c "Protocol is DTLSv1.3"
-
-client_needs_more_time 4
-requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
-run_test    "DTLS 1.3: proxy - 3d, client auth" \
-            -p "$P_PXY drop=5 delay=5 duplicate=5" \
-            "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-20000 auth_mode=required debug_level=2" \
-            "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-20000 debug_level=2" \
-            0 \
-            -s "Protocol is DTLSv1.3" \
-            -c "Protocol is DTLSv1.3"
-
-client_needs_more_time 4
-requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
-run_test    "DTLS 1.3: proxy - 3d, nbio" \
-            -p "$P_PXY drop=5 delay=5 duplicate=5" \
-            "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-20000 nbio=2 debug_level=1" \
-            "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-20000 nbio=2 debug_level=1" \
-            0 \
-            -s "Protocol is DTLSv1.3" \
-            -c "Protocol is DTLSv1.3"
-
-# DTLS 1.3: outgoing handshake fragmentation (Phase 3b.8).
-# The server Certificate (server7_int-ca.crt, ~2000 bytes DER) exceeds MTU=512,
-# so the server fragments it.  The client (and server, for client-auth cert)
-# log "found fragmented DTLS handshake message" as reassembly proceeds.
-# Use the same cert setup as "DTLS fragmenting: proxy MTU, simple handshake"
-# but with force_version=dtls13 instead of a forced ciphersuite.
-#
-# Note: the +3d variant (mtu + drop/delay/duplicate) is deferred.  DTLS 1.3
-# fragments inline (not via flight_transmit), so lost individual fragments
-# must wait for the whole-flight retransmit triggered by the peer's timeout.
-# Whole-flight retransmit does work (the flight IS populated), but the peer
-# has to time out first, which with large MTU fragmentation takes longer.
-# Deferred until retransmit granularity for individual fragments is improved.
-requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
-requires_max_content_len 2048
-run_test    "DTLS 1.3: fragmenting — proxy MTU" \
-            -p "$P_PXY mtu=512" \
-            "$P_SRV dgram_packing=0 dtls=1 force_version=dtls13 debug_level=2 auth_mode=required \
-             crt_file=$DATA_FILES_PATH/server7_int-ca.crt \
-             key_file=$DATA_FILES_PATH/server7.key \
-             hs_timeout=10000-60000 mtu=512" \
-            "$P_CLI dgram_packing=0 dtls=1 force_version=dtls13 debug_level=2 \
-             crt_file=$DATA_FILES_PATH/server8_int-ca2.crt \
-             key_file=$DATA_FILES_PATH/server8.key \
-             hs_timeout=10000-60000 mtu=512" \
-            0 \
-            -s "found fragmented DTLS handshake message" \
-            -c "found fragmented DTLS handshake message" \
-            -s "Protocol is DTLSv1.3" \
-            -c "Protocol is DTLSv1.3" \
-            -C "error"
-
-requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
-requires_max_content_len 2048
-run_test    "DTLS 1.3: fragmenting — proxy MTU, nbio" \
-            -p "$P_PXY mtu=512" \
-            "$P_SRV dgram_packing=0 dtls=1 force_version=dtls13 debug_level=2 auth_mode=required \
-             crt_file=$DATA_FILES_PATH/server7_int-ca.crt \
-             key_file=$DATA_FILES_PATH/server7.key \
-             hs_timeout=10000-60000 mtu=512 nbio=2" \
-            "$P_CLI dgram_packing=0 dtls=1 force_version=dtls13 debug_level=2 \
-             crt_file=$DATA_FILES_PATH/server8_int-ca2.crt \
-             key_file=$DATA_FILES_PATH/server8.key \
-             hs_timeout=10000-60000 mtu=512 nbio=2" \
-            0 \
-            -s "found fragmented DTLS handshake message" \
-            -c "found fragmented DTLS handshake message" \
-            -s "Protocol is DTLSv1.3" \
-            -c "Protocol is DTLSv1.3" \
-            -C "error"
-
 if [ $FAILS -gt 255 ]; then
     # Clamp at 255 as caller gets exit code & 0xFF
     # (so 256 would be 0, or success, etc)
