@@ -44,22 +44,43 @@ static void nss_keylog_export(void *p_expkey,
                               const unsigned char server_random[32],
                               mbedtls_tls_prf_types tls_prf_type)
 {
-    char nss_keylog_line[200];
+    char nss_keylog_line[500];
     size_t const client_random_len = 32;
     size_t len = 0;
     size_t j;
-
-    /* We're only interested in the TLS 1.2 master secret */
-    if (secret_type != MBEDTLS_SSL_KEY_EXPORT_TLS12_MASTER_SECRET) {
-        return;
-    }
+    const char *label = NULL;
 
     ((void) p_expkey);
     ((void) server_random);
     ((void) tls_prf_type);
 
-    len += sprintf(nss_keylog_line + len,
-                   "%s", "CLIENT_RANDOM ");
+    switch (secret_type) {
+        case MBEDTLS_SSL_KEY_EXPORT_TLS12_MASTER_SECRET:
+            label = "CLIENT_RANDOM";
+            break;
+        case MBEDTLS_SSL_KEY_EXPORT_TLS1_3_CLIENT_HANDSHAKE_TRAFFIC_SECRET:
+            label = "CLIENT_HANDSHAKE_TRAFFIC_SECRET";
+            break;
+        case MBEDTLS_SSL_KEY_EXPORT_TLS1_3_SERVER_HANDSHAKE_TRAFFIC_SECRET:
+            label = "SERVER_HANDSHAKE_TRAFFIC_SECRET";
+            break;
+        case MBEDTLS_SSL_KEY_EXPORT_TLS1_3_CLIENT_APPLICATION_TRAFFIC_SECRET:
+            label = "CLIENT_TRAFFIC_SECRET_0";
+            break;
+        case MBEDTLS_SSL_KEY_EXPORT_TLS1_3_SERVER_APPLICATION_TRAFFIC_SECRET:
+            label = "SERVER_TRAFFIC_SECRET_0";
+            break;
+        case MBEDTLS_SSL_KEY_EXPORT_TLS1_3_EARLY_EXPORTER_SECRET:
+            label = "EARLY_EXPORTER_SECRET";
+            break;
+        case MBEDTLS_SSL_KEY_EXPORT_TLS1_3_CLIENT_EARLY_SECRET:
+            label = "CLIENT_EARLY_TRAFFIC_SECRET";
+            break;
+        default:
+            return;
+    }
+
+    len += sprintf(nss_keylog_line + len, "%s ", label);
 
     for (j = 0; j < client_random_len; j++) {
         len += sprintf(nss_keylog_line + len,

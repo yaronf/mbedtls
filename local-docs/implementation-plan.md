@@ -462,8 +462,26 @@ have been drilled down in `local-docs/design-drilldown.md`:
          so ACK matching works.
          ssl-opt.sh test "DTLS 1.3: loss recovery via retransmit" passes
          (drop=5 delay=5 duplicate=5 via udp_proxy).
-- [ ] 6. Interop: mbedtls client ↔ wolfSSL server, and wolfSSL client ↔ mbedtls server.
-         See `reference-implementations.md`.
+- [x] 6. Interop: mbedtls client ↔ wolfSSL server, and wolfSSL client ↔ mbedtls server.
+         See `reference-implementations.md` and `local-docs/wolfssl-interop-notes.md`.
+         mbedtls client ↔ wolfSSL server: handshake completes, application data flows.
+         Four bugs fixed during interop debugging:
+         (a) Wrong AAD in `ssl_decrypt_buf`: unified-header detect was missing `rec->ver[0]==0xfe`
+             guard; fix in `ssl_msg.c`: detect DTLS 1.3 record and pass raw unified header bytes
+             as AAD per RFC 9147 §4.3.3.
+         (b) `in_len` pointer corrupts decrypted plaintext: for DTLS 1.3 unified-header records,
+             `ssl->in_len` falls inside the plaintext at `in_msg+6` (the `frag_offset` field).
+             `PUT_UINT16_BE(rec.data_len, ssl->in_len, 0)` overwrote it.
+             Fix: skip the in_len write for DTLS 1.3 (TLS 1.3 never reads in_len).
+         (c) Wrong Finished/binder key prefix: `ssl_tls13_calc_finished_core` used `"tls13 "`
+             HKDF label; DTLS 1.3 requires `"dtls13"` (RFC 9147 §5.2).
+             Fix: added `use_dtls13_prefix` parameter to `ssl_tls13_calc_finished_core`;
+             callers pass the DTLS flag; PSK binder call guards against NULL ssl.
+         (d) AAD false-positive in TLS 1.3 non-DTLS path: `(rec->buf[0] & 0xE0) == 0x20`
+             could match non-DTLS records. Fix: added `rec->ver[0] == 0xfe` guard.
+         SSLKEYLOGFILE: `nss_keylog_export` in `ssl_test_common_source.c` extended to emit
+             all TLS 1.3 secret types in NSS key log format.
+         wolfSSL client ↔ mbedtls server: not yet tested (automated interop tests pending).
 - [x] 7. Proxy test parity: port all immediately-portable DTLS 1.2 proxy tests to DTLS 1.3.
          Full analysis in `local-docs/proxy-test-parity.md`.
          Done (8 tests passing):

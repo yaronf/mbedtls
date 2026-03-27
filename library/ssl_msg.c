@@ -1027,9 +1027,26 @@ hmac_failed_etm_disabled:
          *       in TLS 1.3 use the record sequence number as the
          *       dynamic part of the nonce, we uniformly use the
          *       record sequence number here in all cases.
+         *
+         * For DTLS 1.3 (RFC 9147 §4.2): the epoch is NOT included in
+         * the nonce; only the 48-bit per-epoch sequence number is XORed
+         * with the static IV.  rec->ctr layout: [0..1]=epoch, [2..7]=seq.
+         * Skip the epoch bytes by using ctr[2..7] as the dynamic IV.
          */
-        dynamic_iv     = rec->ctr;
-        dynamic_iv_len = sizeof(rec->ctr);
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+        if (transform->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+            rec->ver[0] == 0xfe) {
+            /* RFC 9147 §4.2: for DTLS 1.3 the epoch is NOT part of the nonce;
+             * only the 48-bit per-epoch sequence number is XORed with the IV.
+             * rec->ctr layout: [0..1]=epoch, [2..7]=seqnum — skip epoch bytes. */
+            dynamic_iv     = rec->ctr + 2;
+            dynamic_iv_len = sizeof(rec->ctr) - 2;
+        } else
+#endif
+        {
+            dynamic_iv     = rec->ctr;
+            dynamic_iv_len = sizeof(rec->ctr);
+        }
 
         ssl_build_record_nonce(iv, sizeof(iv),
                                transform->iv_enc,
@@ -1369,8 +1386,21 @@ int mbedtls_ssl_decrypt_buf(mbedtls_ssl_context const *ssl,
          *       part of the IV is prepended to the ciphertext and
          *       can be chosen freely - in particular, it need not
          *       agree with the record sequence number.
+         *
+         * For DTLS 1.3 (RFC 9147 §4.2): epoch is NOT part of the nonce;
+         * only the 48-bit per-epoch seq is XORed.  rec->ctr[0..1]=epoch,
+         * rec->ctr[2..7]=seq — skip the epoch bytes.
          */
-        dynamic_iv_len = sizeof(rec->ctr);
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+        if (transform->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+            rec->ver[0] == 0xfe) {
+            /* RFC 9147 §4.2: epoch not in nonce; skip ctr[0..1] (epoch bytes). */
+            dynamic_iv_len = sizeof(rec->ctr) - 2;
+        } else
+#endif
+        {
+            dynamic_iv_len = sizeof(rec->ctr);
+        }
         if (ssl_transform_aead_dynamic_iv_is_explicit(transform) == 1) {
             if (rec->data_len < dynamic_iv_len) {
                 MBEDTLS_SSL_DEBUG_MSG(1, ("msglen (%" MBEDTLS_PRINTF_SIZET
@@ -1385,7 +1415,15 @@ int mbedtls_ssl_decrypt_buf(mbedtls_ssl_context const *ssl,
             rec->data_offset += dynamic_iv_len;
             rec->data_len    -= dynamic_iv_len;
         } else {
-            dynamic_iv = rec->ctr;
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+            if (transform->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+                rec->ver[0] == 0xfe) {
+                dynamic_iv = rec->ctr + 2;
+            } else
+#endif
+            {
+                dynamic_iv = rec->ctr;
+            }
         }
 
         /* Check that there's space for the authentication tag. */
@@ -1408,13 +1446,32 @@ int mbedtls_ssl_decrypt_buf(mbedtls_ssl_context const *ssl,
                                dynamic_iv_len);
 
         /*
-         * Build additional data for AEAD encryption.
+         * Build additional data for AEAD decryption.
          * This depends on the TLS version.
+         *
+         * For DTLS 1.3 (RFC 9147 §4.3.3): AAD = raw unified header bytes,
+         * i.e. rec->buf[0..data_offset-1].
          */
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+        const unsigned char *dtls13_hdr_dec = NULL;
+        size_t dtls13_hdr_dec_len = 0;
+        if (transform->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+            rec->ver[0] == 0xfe &&
+            rec->buf != NULL && rec->data_offset > 0 &&
+            (rec->buf[0] & 0xE0) == 0x20) {
+            dtls13_hdr_dec = rec->buf;
+            dtls13_hdr_dec_len = rec->data_offset;
+        }
+        ssl_extract_add_data_from_record(add_data, &add_data_len, rec,
+                                         transform->tls_version,
+                                         transform->taglen,
+                                         dtls13_hdr_dec, dtls13_hdr_dec_len);
+#else
         ssl_extract_add_data_from_record(add_data, &add_data_len, rec,
                                          transform->tls_version,
                                          transform->taglen,
                                          NULL, 0);
+#endif
         MBEDTLS_SSL_DEBUG_BUF(4, "additional data used for AEAD",
                               add_data, add_data_len);
 
@@ -3356,19 +3413,6 @@ int mbedtls_ssl_prepare_handshake_record(mbedtls_ssl_context *ssl)
             MBEDTLS_SSL_DEBUG_MSG(1, ("invalid handshake header"));
             return MBEDTLS_ERR_SSL_INVALID_RECORD;
         }
-
-        /* Log all handshake records once client flight starts (in_msg_seq>=1) */
-        if (ssl->handshake && ssl->handshake->in_msg_seq >= 1 &&
-            mbedtls_ssl_is_handshake_over(ssl) == 0) {
-            MBEDTLS_SSL_DEBUG_MSG(1, ("DBG prepare_hs_record: hs_type=%u recv_seq=%u "
-                                      "in_msg_seq=%u frag_off=%u frag_len=%u total_len=%u is_frag=%d",
-                                      (unsigned)ssl->in_msg[0], recv_msg_seq,
-                                      ssl->handshake->in_msg_seq,
-                                      (unsigned)MBEDTLS_GET_UINT24_BE(ssl->in_msg, 6),
-                                      (unsigned)MBEDTLS_GET_UINT24_BE(ssl->in_msg, 9),
-                                      (unsigned)MBEDTLS_GET_UINT24_BE(ssl->in_msg, 1),
-                                      ssl_hs_is_proper_fragment(ssl)));
-        }
         if (ssl->handshake != NULL &&
             ((mbedtls_ssl_is_handshake_over(ssl) == 0 &&
               recv_msg_seq != ssl->handshake->in_msg_seq) ||
@@ -4523,8 +4567,6 @@ static int ssl_parse_record_header(mbedtls_ssl_context const *ssl,
          * (The case of same-port Client reconnects must be considered in
          *  the caller). */
         if (rec_epoch != ssl->in_epoch) {
-            MBEDTLS_SSL_DEBUG_MSG(1, ("DBG epoch_MISMATCH: rec_epoch=%u in_epoch=%u",
-                                      (unsigned)rec_epoch, (unsigned)ssl->in_epoch));
             MBEDTLS_SSL_DEBUG_MSG(1, ("record from another epoch: "
                                       "expected %u, received %lu",
                                       ssl->in_epoch, (unsigned long) rec_epoch));
@@ -5886,7 +5928,20 @@ static int ssl_get_next_record(mbedtls_ssl_context *ssl)
     ssl->in_hdr[0] = rec.type;
     ssl->in_msg    = rec.buf + rec.data_offset;
     ssl->in_msglen = rec.data_len;
-    MBEDTLS_PUT_UINT16_BE(rec.data_len, ssl->in_len, 0);
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    /* For DTLS 1.3 unified-header records, ssl->in_len is computed from the
+     * legacy 13-byte DTLS header layout and falls inside the decrypted payload
+     * (the unified header is only 2-5 bytes, so rec.data_offset < 13).
+     * Writing rec.data_len there would corrupt the handshake message body.
+     * TLS 1.3 never reads in_len for length; ssl->in_msglen is authoritative. */
+    if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+        ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+        /* skip the in_len write — would corrupt plaintext */
+    } else
+#endif
+    {
+        MBEDTLS_PUT_UINT16_BE(rec.data_len, ssl->in_len, 0);
+    }
 
     return 0;
 }

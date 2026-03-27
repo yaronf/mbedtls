@@ -1928,7 +1928,7 @@ void ssl_tls13_traffic_key_generation(int hash_alg,
                     server_secret->x,
                     client_secret->len /* == server_secret->len */,
                     desired_key_len, desired_iv_len,
-                    &keys) == 0);
+                    &keys, 0 /* TLS 1.3 prefix */) == 0);
 
     TEST_MEMORY_COMPARE(keys.client_write_key,
                         keys.key_len,
@@ -2050,7 +2050,7 @@ void ssl_tls13_derive_early_secrets(int hash_alg,
 
     TEST_EQUAL(mbedtls_ssl_tls13_derive_early_secrets(
                    alg, secret->x, transcript->x, transcript->len,
-                   &secrets),  0);
+                   &secrets, 0 /* TLS 1.3 prefix */),  0);
 
     TEST_MEMORY_COMPARE(secrets.client_early_traffic_secret, hash_len,
                         traffic_expected->x, traffic_expected->len);
@@ -2084,7 +2084,7 @@ void ssl_tls13_derive_handshake_secrets(int hash_alg,
 
     TEST_EQUAL(mbedtls_ssl_tls13_derive_handshake_secrets(
                    alg, secret->x, transcript->x, transcript->len,
-                   &secrets),  0);
+                   &secrets, 0 /* TLS 1.3 prefix */),  0);
 
     TEST_MEMORY_COMPARE(secrets.client_handshake_traffic_secret, hash_len,
                         client_expected->x, client_expected->len);
@@ -2120,7 +2120,7 @@ void ssl_tls13_derive_application_secrets(int hash_alg,
 
     TEST_EQUAL(mbedtls_ssl_tls13_derive_application_secrets(
                    alg, secret->x, transcript->x, transcript->len,
-                   &secrets),  0);
+                   &secrets, 0 /* TLS 1.3 prefix */),  0);
 
     TEST_MEMORY_COMPARE(secrets.client_application_traffic_secret_N, hash_len,
                         client_expected->x, client_expected->len);
@@ -2154,7 +2154,7 @@ void ssl_tls13_derive_resumption_secrets(int hash_alg,
 
     TEST_EQUAL(mbedtls_ssl_tls13_derive_resumption_master_secret(
                    alg, secret->x, transcript->x, transcript->len,
-                   &secrets),  0);
+                   &secrets, 0 /* TLS 1.3 prefix */),  0);
 
     TEST_MEMORY_COMPARE(secrets.resumption_master_secret, hash_len,
                         resumption_expected->x, resumption_expected->len);

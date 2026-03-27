@@ -169,7 +169,8 @@ int mbedtls_ssl_tls13_make_traffic_keys(
     const unsigned char *client_secret,
     const unsigned char *server_secret, size_t secret_len,
     size_t key_len, size_t iv_len,
-    mbedtls_ssl_key_set *keys);
+    mbedtls_ssl_key_set *keys,
+    int use_dtls13_prefix);
 
 /**
  * \brief The \c Derive-Secret function from the TLS 1.3 standard RFC 8446.
@@ -266,7 +267,8 @@ int mbedtls_ssl_tls13_derive_early_secrets(
     psa_algorithm_t hash_alg,
     unsigned char const *early_secret,
     unsigned char const *transcript, size_t transcript_len,
-    mbedtls_ssl_tls13_early_secrets *derived);
+    mbedtls_ssl_tls13_early_secrets *derived,
+    int use_dtls13_prefix);
 
 /**
  * \brief Derive TLS 1.3 handshake key material from the handshake secret.
@@ -312,7 +314,8 @@ int mbedtls_ssl_tls13_derive_handshake_secrets(
     psa_algorithm_t hash_alg,
     unsigned char const *handshake_secret,
     unsigned char const *transcript, size_t transcript_len,
-    mbedtls_ssl_tls13_handshake_secrets *derived);
+    mbedtls_ssl_tls13_handshake_secrets *derived,
+    int use_dtls13_prefix);
 
 /**
  * \brief Derive TLS 1.3 application key material from the master secret.
@@ -363,7 +366,8 @@ int mbedtls_ssl_tls13_derive_application_secrets(
     psa_algorithm_t hash_alg,
     unsigned char const *master_secret,
     unsigned char const *transcript, size_t transcript_len,
-    mbedtls_ssl_tls13_application_secrets *derived);
+    mbedtls_ssl_tls13_application_secrets *derived,
+    int use_dtls13_prefix);
 
 /**
  * \brief Derive TLS 1.3 resumption master secret from the master secret.
@@ -394,7 +398,8 @@ int mbedtls_ssl_tls13_derive_resumption_master_secret(
     psa_algorithm_t hash_alg,
     unsigned char const *application_secret,
     unsigned char const *transcript, size_t transcript_len,
-    mbedtls_ssl_tls13_application_secrets *derived);
+    mbedtls_ssl_tls13_application_secrets *derived,
+    int use_dtls13_prefix);
 
 /**
  * \brief Compute the next secret in the TLS 1.3 key schedule
