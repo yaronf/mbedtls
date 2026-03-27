@@ -1177,12 +1177,16 @@ struct mbedtls_ssl_transform {
 #endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
 
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
-    /* DTLS 1.3 sequence number encryption key (§4.2.3 of RFC 9147 bis).
-     * Derived via HKDF-Expand-Label(traffic_secret, "sn", "", key_len)
-     * using the "dtls13" prefix.  Length is key_len (16 for AES-128/256-GCM,
-     * 32 for ChaCha20-Poly1305). */
+    /* DTLS 1.3 sequence number encryption keys (§4.2.3 of RFC 9147 bis).
+     * Derived via HKDF-Expand-Label(traffic_secret, "sn", "", key_len).
+     * sn_key     = inbound  (decrypt) direction SNE key.
+     * sn_key_enc = outbound (encrypt) direction SNE key.
+     * Length is key_len (16 for AES-128/256-GCM, 32 for ChaCha20-Poly1305).
+     * _len fields are 0 when SNE is not active for that direction. */
     unsigned char sn_key[MBEDTLS_SSL_MAX_KEY_LENGTH];
-    size_t        sn_key_len;         /*!< 0 when SNE is not active */
+    size_t        sn_key_len;         /*!< 0 when inbound SNE is not active */
+    unsigned char sn_key_enc[MBEDTLS_SSL_MAX_KEY_LENGTH];
+    size_t        sn_key_enc_len;     /*!< 0 when outbound SNE is not active */
 
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
     /* DTLS 1.3 epoch this transform belongs to (RFC 9147 §4.2.2):

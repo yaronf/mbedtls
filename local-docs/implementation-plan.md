@@ -462,7 +462,7 @@ have been drilled down in `local-docs/design-drilldown.md`:
          so ACK matching works.
          ssl-opt.sh test "DTLS 1.3: loss recovery via retransmit" passes
          (drop=5 delay=5 duplicate=5 via udp_proxy).
-- [x] 6. Interop: mbedtls client ↔ wolfSSL server, and wolfSSL client ↔ mbedtls server.
+- [x] 6. Interop bug fixes (mbedtls client ↔ wolfSSL server — handshake works).
          See `reference-implementations.md` and `local-docs/wolfssl-interop-notes.md`.
          mbedtls client ↔ wolfSSL server: handshake completes, application data flows.
          Four bugs fixed during interop debugging:
@@ -481,7 +481,18 @@ have been drilled down in `local-docs/design-drilldown.md`:
              could match non-DTLS records. Fix: added `rec->ver[0] == 0xfe` guard.
          SSLKEYLOGFILE: `nss_keylog_export` in `ssl_test_common_source.c` extended to emit
              all TLS 1.3 secret types in NSS key log format.
-         wolfSSL client ↔ mbedtls server: not yet tested (automated interop tests pending).
+- [ ] 11. Interop: wolfSSL client ↔ mbedtls server.
+         Run wolfSSL client against mbedtls ssl_server2 with force_version=dtls13.
+         Identify and fix any failures (expected: symmetric bugs to c2s direction).
+         Success criterion: wolfSSL client prints "SSL_connect ok", mbedtls server
+         prints "Protocol is DTLSv1.3" and "Read from client".
+- [ ] 12. Automated interop tests for both directions.
+         Add a wolfSSL runner profile (`tests/dtls13/runners/wolfssl.yaml`) and a new
+         case file (`tests/dtls13/cases/interop-wolfssl.yaml`) covering:
+           - mbedtls client ↔ wolfSSL server: full 1-RTT handshake, app data
+           - wolfSSL client ↔ mbedtls server: full 1-RTT handshake, app data
+         Add `requires_wolfssl` guard (skip if wolfSSL binaries not on PATH).
+         Regenerate `dtls13-tests.sh`.  Update test-inventory.md status to `pass`.
 - [x] 7. Proxy test parity: port all immediately-portable DTLS 1.2 proxy tests to DTLS 1.3.
          Full analysis in `local-docs/proxy-test-parity.md`.
          Done (8 tests passing):

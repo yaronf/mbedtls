@@ -1058,10 +1058,45 @@ hmac_failed_etm_disabled:
          * Build additional data for AEAD encryption.
          * This depends on the TLS version.
          */
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+        /* DTLS 1.3 AAD = the 5-byte unified header (RFC 9147 §4.3.3).
+         * Build it here from rec fields so ssl_extract_add_data_from_record
+         * can copy it as-is.  The header uses the plaintext sequence number;
+         * SNE (if active) is applied after AEAD on the transmitted header.
+         *
+         * Format (no CID, 2-byte seq, length present):
+         *   byte[0]: 0b00101100 | (epoch & 0x3)
+         *   byte[1]: seq high byte  (rec->ctr[6])
+         *   byte[2]: seq low byte   (rec->ctr[7])
+         *   byte[3]: ciphertext length high byte
+         *   byte[4]: ciphertext length low byte
+         * ciphertext length = plaintext (inner) length + AEAD tag length.
+         */
+        unsigned char dtls13_unified_hdr[5];
+        const unsigned char *dtls13_hdr_enc = NULL;
+        size_t dtls13_hdr_enc_len = 0;
+        if (transform->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+            rec->ver[0] == 0xfe) {
+            uint8_t epoch_bits = rec->ctr[1] & 0x03;
+            size_t ct_len = rec->data_len + transform->taglen;
+            dtls13_unified_hdr[0] = 0x2C | epoch_bits; /* 001 C=0 S=1 L=1 EE */
+            dtls13_unified_hdr[1] = rec->ctr[6];       /* seq high */
+            dtls13_unified_hdr[2] = rec->ctr[7];       /* seq low  */
+            dtls13_unified_hdr[3] = (unsigned char) (ct_len >> 8);
+            dtls13_unified_hdr[4] = (unsigned char) (ct_len);
+            dtls13_hdr_enc     = dtls13_unified_hdr;
+            dtls13_hdr_enc_len = sizeof(dtls13_unified_hdr);
+        }
+        ssl_extract_add_data_from_record(add_data, &add_data_len, rec,
+                                         transform->tls_version,
+                                         transform->taglen,
+                                         dtls13_hdr_enc, dtls13_hdr_enc_len);
+#else
         ssl_extract_add_data_from_record(add_data, &add_data_len, rec,
                                          transform->tls_version,
                                          transform->taglen,
                                          NULL, 0);
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 
         MBEDTLS_SSL_DEBUG_BUF(4, "IV used (internal)",
                               iv, transform->ivlen);
@@ -3082,6 +3117,17 @@ cleanup:
  * Record layer functions
  */
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+/* Forward declaration: defined later in this file. */
+MBEDTLS_CHECK_RETURN_CRITICAL
+static int ssl_dtls13_sne_apply(
+    const mbedtls_ssl_transform *transform,
+    unsigned char *seq_in_header,
+    size_t seq_len,
+    const unsigned char *ciphertext,
+    size_t ct_len);
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
+
 /*
  * Write current record.
  *
@@ -3156,9 +3202,77 @@ int mbedtls_ssl_write_record(mbedtls_ssl_context *ssl, int force_flush)
 #endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
             ssl->out_msglen = len = rec.data_len;
             MBEDTLS_PUT_UINT16_BE(rec.data_len, ssl->out_len, 0);
-        }
 
-        protected_record_size = len + mbedtls_ssl_out_hdr_len(ssl);
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+            /*
+             * DTLS 1.3: replace the legacy 13-byte DTLS record header with a
+             * 5-byte unified header (RFC 9147 §4.3.3, no CID, 2-byte seq,
+             * length present).  The ciphertext currently sits at ssl->out_iv
+             * (= ssl->out_hdr + 13); shift it 8 bytes earlier to sit right
+             * after the 5-byte header.
+             *
+             * Format:
+             *   byte[0]: 0b00101100 | (epoch & 0x3)   (001 C=0 S=1 L=1 EE)
+             *   byte[1]: seq high
+             *   byte[2]: seq low
+             *   byte[3]: ciphertext length high
+             *   byte[4]: ciphertext length low
+             */
+            if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+                ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3) {
+                uint8_t epoch_bits =
+                    (uint8_t) (ssl->cur_out_ctr[1] & 0x03);
+                /* seq low 16 bits: cur_out_ctr[6..7] (incremented above) */
+                uint8_t seq_hi = ssl->cur_out_ctr[6];
+                uint8_t seq_lo = ssl->cur_out_ctr[7];
+
+                /* Build 5-byte unified header at ssl->out_hdr */
+                ssl->out_hdr[0] = (unsigned char) (0x2C | epoch_bits);
+                ssl->out_hdr[1] = seq_hi;
+                ssl->out_hdr[2] = seq_lo;
+                ssl->out_hdr[3] = (unsigned char) (len >> 8);
+                ssl->out_hdr[4] = (unsigned char) (len);
+
+                /* Shift ciphertext from out_iv (out_hdr+13) to out_hdr+5 */
+                memmove(ssl->out_hdr + 5, ssl->out_iv, len);
+
+                /*
+                 * Apply outbound SNE (RFC 9147 §4.2.3): encrypt the seq
+                 * field in the transmitted header using the outbound sn_key.
+                 * Must be done after AEAD (SNE mask comes from ciphertext).
+                 * AAD was already computed with plaintext seq; SNE only affects
+                 * the on-wire seq, not the AEAD.
+                 */
+                if (ssl->transform_out->sn_key_enc_len > 0 && len >= 16) {
+                    /* Reuse sn_apply with a temporary transform that presents
+                     * sn_key_enc as sn_key so ssl_dtls13_sne_apply can use it. */
+                    mbedtls_ssl_transform tmp_transform;
+                    memset(&tmp_transform, 0, sizeof(tmp_transform));
+                    tmp_transform.psa_alg    = ssl->transform_out->psa_alg;
+                    tmp_transform.sn_key_len = ssl->transform_out->sn_key_enc_len;
+                    memcpy(tmp_transform.sn_key,
+                           ssl->transform_out->sn_key_enc,
+                           ssl->transform_out->sn_key_enc_len);
+                    ret = ssl_dtls13_sne_apply(&tmp_transform,
+                                              ssl->out_hdr + 1, 2,
+                                              ssl->out_hdr + 5, len);
+                    mbedtls_platform_zeroize(&tmp_transform,
+                                            sizeof(tmp_transform));
+                    if (ret != 0) {
+                        MBEDTLS_SSL_DEBUG_RET(1, "ssl_dtls13_sne_apply(enc)", ret);
+                        return ret;
+                    }
+                }
+
+                protected_record_size = 5 + len;
+            } else
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
+            {
+                protected_record_size = len + mbedtls_ssl_out_hdr_len(ssl);
+            }
+        } else {
+            protected_record_size = len + mbedtls_ssl_out_hdr_len(ssl);
+        }
 
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
         /* In case of DTLS, double-check that we don't exceed
@@ -3177,8 +3291,20 @@ int mbedtls_ssl_write_record(mbedtls_ssl_context *ssl, int force_flush)
 
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
 
-        /* Now write the potentially updated record content type. */
-        ssl->out_hdr[0] = (unsigned char) ssl->out_msgtype;
+        /* Now write the potentially updated record content type.
+         * For DTLS 1.3 encrypted records the first byte of the output
+         * buffer is the unified header type byte (already written above),
+         * not the TLS content type, so skip the write in that case. */
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+        if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+            ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+            ssl->transform_out != NULL) {
+            /* out_hdr[0] already contains the DTLS 1.3 unified header byte. */
+        } else
+#endif
+        {
+            ssl->out_hdr[0] = (unsigned char) ssl->out_msgtype;
+        }
 
         MBEDTLS_SSL_DEBUG_MSG(3, ("output record: msgtype = %u, "
                                   "version = [%u:%u], msglen = %" MBEDTLS_PRINTF_SIZET,
@@ -4747,6 +4873,16 @@ static int ssl_prepare_record_content(mbedtls_ssl_context *ssl,
             unsigned char *seq_ptr = rec->buf + 1;
             const unsigned char *ciphertext = rec->buf + rec->data_offset;
 
+            /*
+             * Apply SNE: XOR seq bytes in the header with the mask derived
+             * from the first 16 bytes of ciphertext.  After this call,
+             * seq_ptr[0..seq_len-1] hold the plaintext sequence number.
+             *
+             * RFC 9147 §4.2.3: sender applies SNE after AEAD; receiver
+             * reverses it before AEAD.  The AAD for AEAD uses the on-wire
+             * unified header with the *plaintext* sequence number (i.e. after
+             * SNE reversal on receive), not the encrypted on-wire value.
+             */
             ret = ssl_dtls13_sne_apply(transform_in,
                                        seq_ptr, seq_len,
                                        ciphertext, rec->data_len);
