@@ -105,6 +105,12 @@ assertion_map:
   server_psk_ephemeral:
     flag: "-s"
     string: "key exchange mode: psk_ephemeral"
+  client_no_hrr:
+    flag: "-C"
+    string: "received HelloRetryRequest message"
+  server_no_cookie_verified:
+    flag: "-S"
+    string: "cookie verified"
 
 requires_map:
   protocol:

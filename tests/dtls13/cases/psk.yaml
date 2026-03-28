@@ -20,3 +20,29 @@ cases:
         - server_dtls13_negotiated
         - client_dtls13_negotiated
         - server_psk_ephemeral
+
+  - name: "PSK with cookie enabled — no HRR/cookie exchange (RFC 9147 §5.1)"
+    # RFC 9147 §5.1: server MAY skip address validation when a valid PSK is
+    # available, because the client already proved reachability when the PSK
+    # (ticket) was delivered.  Pure psk_ephemeral with a matching key share
+    # never triggers HRR, so no cookie is required even when cookies=1.
+    requires:
+      - config: MBEDTLS_SSL_DTLS_HELLO_VERIFY
+    server:
+      psk: "abc123"
+      psk_identity: "Client_identity"
+      auth_mode: required
+      cookies: 1
+      debug_level: 2
+    client:
+      psk: "abc123"
+      psk_identity: "Client_identity"
+      debug_level: 2
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - server_psk_ephemeral
+        - client_no_hrr
+        - server_no_cookie_verified

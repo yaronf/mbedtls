@@ -557,8 +557,8 @@ have been drilled down in `local-docs/design-drilldown.md`:
          Fix: broaden DTLS branch to cover all DTLS (not just TLS 1.2); add DTLS 1.3
          + PSK binder fill-in block before transmission. Non-PSK path unchanged.
          Test: `DTLS 1.3 PSK: external PSK, psk_ephemeral` passes.
-- [ ] 3. NewSessionTicket: implement server-side ACK requirement (server retransmits until ACKed).
-- [ ] 4. PSK+cookie interaction: server MAY skip cookie when PSK + known IP.
+- [x] 3. NewSessionTicket: implement server-side ACK requirement (server retransmits until ACKed).
+- [x] 4. PSK+cookie interaction: server MAY skip cookie when PSK + known IP.
 - [ ] 5. 0-RTT (early data): epoch 1 handling; no EndOfEarlyData; server drops epoch 1 keys
          after first epoch 3 data arrives.
 - [ ] 6. Self-test: resumption handshake, 0-RTT data delivery.
