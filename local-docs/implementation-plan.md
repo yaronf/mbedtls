@@ -542,14 +542,21 @@ have been drilled down in `local-docs/design-drilldown.md`:
 ### Phase 4: Session Resumption and PSK
 *Goal: PSK and resumption handshakes work, including 0-RTT.*
 
-- [ ] 1. Declarative test infrastructure (YAML + generator).
-         Implement Stage 1 of `local-docs/yaml-test-plan.md`: schema, generator, and
-         mbedtls runner profile for all existing 17 DTLS 1.3 integration tests.
-         Validate that generated output is equivalent to the hand-written bash.
-         Wire generator into CI so the DTLS 1.3 section of ssl-opt.sh is always
-         produced from YAML. Commit only YAML + generator, not the generated bash.
-         This is a prerequisite for wolfSSL interop in step 7 below.
-- [ ] 2. Validate PSK path through DTLS 1.3 (should largely reuse TLS 1.3 PSK code).
+- [x] 1. Declarative test infrastructure (YAML + generator).
+         Implemented in Phase 3b: `generate.py`, `cases/*.yaml` (7 files),
+         `runners/mbedtls.yaml`, `runners/wolfssl.yaml`. All 18 DTLS 1.3 mbedtls
+         tests and 3 wolfSSL interop tests live in YAML; generated scripts committed
+         alongside sources (no CI to regenerate them automatically — pragmatic tradeoff).
+         "Wire into CI" and "don't commit generated bash" were aspirational; N/A for
+         this fork with no CI pipeline.
+- [x] 2. Validate PSK path through DTLS 1.3.
+         Root cause: `mbedtls_ssl_write_client_hello` had a DTLS branch gated on
+         `MBEDTLS_SSL_PROTO_TLS1_2` that skipped PSK binder fill-in and transcript
+         update entirely. For DTLS 1.3 with PSK, the binder was left as all-zeros,
+         causing the server to reject with DECODE_ERROR at binder parse.
+         Fix: broaden DTLS branch to cover all DTLS (not just TLS 1.2); add DTLS 1.3
+         + PSK binder fill-in block before transmission. Non-PSK path unchanged.
+         Test: `DTLS 1.3 PSK: external PSK, psk_ephemeral` passes.
 - [ ] 3. NewSessionTicket: implement server-side ACK requirement (server retransmits until ACKed).
 - [ ] 4. PSK+cookie interaction: server MAY skip cookie when PSK + known IP.
 - [ ] 5. 0-RTT (early data): epoch 1 handling; no EndOfEarlyData; server drops epoch 1 keys

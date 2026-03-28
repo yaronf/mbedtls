@@ -30,6 +30,8 @@ param_map:
   crt_file:       "crt_file=$DATA_FILES_PATH/{value}"
   key_file:       "key_file=$DATA_FILES_PATH/{value}"
   anti_replay:    "anti_replay={value}"
+  psk:            "psk={value}"
+  psk_identity:   "psk_identity={value}"
 
 proxy_param_map:
   drop:       "drop={value}"
@@ -100,6 +102,9 @@ assertion_map:
   client_read_server_data:
     flag: "-c"
     string: "Read from server: 144 bytes read"
+  server_psk_ephemeral:
+    flag: "-s"
+    string: "key exchange mode: psk_ephemeral"
 
 requires_map:
   protocol:

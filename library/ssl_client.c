@@ -936,8 +936,42 @@ int mbedtls_ssl_write_client_hello(mbedtls_ssl_context *ssl)
                                                      &msg_len,
                                                      &binders_len));
 
-#if defined(MBEDTLS_SSL_PROTO_TLS1_2) && defined(MBEDTLS_SSL_PROTO_DTLS)
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
     if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && \
+    defined(MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_SOME_PSK_ENABLED)
+        /*
+         * DTLS 1.3 with PSK: fill in the PSK binder and update the transcript
+         * before transmission.  The binder placeholder was written by
+         * ssl_write_client_hello_body(); the transcript must cover the whole
+         * ClientHello including the real binder value.
+         */
+        if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 && binders_len > 0) {
+            ret = mbedtls_ssl_add_hs_hdr_to_checksum(ssl,
+                                                     MBEDTLS_SSL_HS_CLIENT_HELLO,
+                                                     msg_len);
+            if (ret != 0) {
+                MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_add_hs_hdr_to_checksum", ret);
+                return ret;
+            }
+            ret = ssl->handshake->update_checksum(ssl, buf, msg_len - binders_len);
+            if (ret != 0) {
+                MBEDTLS_SSL_DEBUG_RET(1, "update_checksum", ret);
+                return ret;
+            }
+            MBEDTLS_SSL_PROC_CHK(
+                mbedtls_ssl_tls13_write_binders_of_pre_shared_key_ext(
+                    ssl, buf + msg_len - binders_len, buf + msg_len));
+            ret = ssl->handshake->update_checksum(ssl,
+                                                  buf + msg_len - binders_len,
+                                                  binders_len);
+            if (ret != 0) {
+                MBEDTLS_SSL_DEBUG_RET(1, "update_checksum", ret);
+                return ret;
+            }
+        }
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 && PSK */
+
         ssl->out_msglen = msg_len + 4;
         mbedtls_ssl_send_flight_completed(ssl);
 
@@ -962,7 +996,7 @@ int mbedtls_ssl_write_client_hello(mbedtls_ssl_context *ssl)
             return ret;
         }
     } else
-#endif /* MBEDTLS_SSL_PROTO_TLS1_2 && MBEDTLS_SSL_PROTO_DTLS */
+#endif /* MBEDTLS_SSL_PROTO_DTLS */
     {
 
         ret = mbedtls_ssl_add_hs_hdr_to_checksum(ssl,
@@ -994,17 +1028,6 @@ int mbedtls_ssl_write_client_hello(mbedtls_ssl_context *ssl)
         MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_finish_handshake_msg(ssl,
                                                               buf_len,
                                                               msg_len));
-
-#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
-        /* DTLS 1.3: arm the retransmit timer so ClientHello is retransmitted
-         * if no ServerHello arrives before the timeout.  ClientHello is stored
-         * in handshake->dtls13_cli_hello; flight_transmit handles the resend
-         * when it finds an empty flight but dtls13_cli_hello is set. */
-        if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
-            ssl->conf->max_tls_version >= MBEDTLS_SSL_VERSION_TLS1_3) {
-            mbedtls_ssl_send_flight_completed(ssl);
-        }
-#endif
 
         /*
          * Set next state. Note that if TLS 1.3 is proposed, this may be
