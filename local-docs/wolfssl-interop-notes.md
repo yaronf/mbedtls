@@ -208,7 +208,19 @@ the next `ssl_read_record` call.
 
 ---
 
-## Remaining work (3b.12)
+## Automated tests (3b.12 — complete)
 
-- **3b.12**: Automated interop tests (wolfSSL runner YAML + cases YAML,
-  `requires_wolfssl` guard, regenerate `dtls13-tests.sh`).
+wolfSSL interop tests are automated via the YAML test framework:
+
+- Runner: `tests/dtls13/runners/wolfssl.yaml`
+- Cases: `tests/dtls13/cases/interop-wolfssl.yaml` (3 test cases)
+- Generated script: `tests/dtls13/dtls13-wolfssl-tests.sh`
+- Guard: `requires_wolfssl` in `tests/ssl-opt.sh` (skips if `WOLFSSL_DIR` not set)
+
+To run:
+
+```sh
+WOLFSSL_DIR=~/misc/wolfssl ./build-dbg/tests/dtls13/dtls13-wolfssl-tests.sh
+```
+
+All 3 tests pass.
