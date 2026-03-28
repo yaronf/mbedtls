@@ -137,10 +137,14 @@ Full handshake + application data.
 
 ### wolfSSL client ↔ mbedtls server: **WORKING**
 
-Full handshake + application data:
+Full handshake + application data + PSK (psk_ephemeral):
 - mbedtls server prints `Protocol is DTLSv1.3`
 - wolfSSL client prints `SSL version is DTLSv1.3`, `SSL cipher suite is TLS_AES_256_GCM_SHA384`
 - Application data flows both directions.
+- PSK with `-s --openssl-psk`: mbedtls server prints `key exchange mode: psk_ephemeral`.
+
+**wolfSSL build requirement for PSK:** must include `--enable-psk` in configure flags.
+Without it, `NO_PSK` is defined and the `-s`/`--openssl-psk` flags are compiled out.
 
 ---
 
@@ -208,12 +212,28 @@ the next `ssl_read_record` call.
 
 ---
 
-## Automated tests (3b.12 — complete)
+### (f) Wrong HKDF label prefix in PSK binder derivation [fixed]
+
+`mbedtls_ssl_tls13_create_psk_binder()` derived the `ext_binder` / `res_binder`
+key using `mbedtls_ssl_tls13_derive_secret()`, which hardcodes the TLS 1.3 label
+prefix `"tls13 "`.  For DTLS 1.3 the prefix must be `"dtls13"` (RFC 9147 §5.2).
+wolfSSL correctly uses `"dtls13"` for binder key derivation in DTLS 1.3 mode, so
+the binder HMAC never matched and the server rejected the ClientHello with
+`DECODE_ERROR`.
+
+Fix: replace both `mbedtls_ssl_tls13_derive_secret()` calls in
+`mbedtls_ssl_tls13_create_psk_binder()` with `ssl_tls13_derive_secret_with_prefix()`
+passing `use_dtls13_prefix` (already derived from `ssl->conf->transport` at the top
+of that function).
+
+---
+
+## Automated tests (4.7 — complete)
 
 wolfSSL interop tests are automated via the YAML test framework:
 
 - Runner: `tests/dtls13/runners/wolfssl.yaml`
-- Cases: `tests/dtls13/cases/interop-wolfssl.yaml` (3 test cases)
+- Cases: `tests/dtls13/cases/interop-wolfssl.yaml` (4 test cases)
 - Generated script: `tests/dtls13/dtls13-wolfssl-tests.sh`
 - Guard: `requires_wolfssl` in `tests/ssl-opt.sh` (skips if `WOLFSSL_DIR` not set)
 
@@ -222,5 +242,7 @@ To run:
 ```sh
 WOLFSSL_DIR=~/misc/wolfssl ./build-dbg/tests/dtls13/dtls13-wolfssl-tests.sh
 ```
+
+All 4 tests pass (full handshake, application data, server ACKs Finished, PSK psk_ephemeral).
 
 All 3 tests pass.

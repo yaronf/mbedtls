@@ -571,13 +571,18 @@ have been drilled down in `local-docs/design-drilldown.md`:
          `reconnect` and `skip_close_notify` params plus `client_got_ticket` /
          `client_reconnecting` assertions to `runners/mbedtls.yaml`.
          Test: `DTLS 1.3 PSK: session resumption via NewSessionTicket PSK` passes.
-- [ ] 7. Interop: wolfSSL client ↔ mbedtls server and vice versa for PSK and resumption
-         (0-RTT excluded). Implement wolfSSL runner profile (Stage 2 of yaml-test-plan.md).
-         Cases with `skip: true` parameters are excluded automatically.
-         PSK interop case added to YAML but currently failing: wolfSSL sends no
-         `pre_shared_key` extension in ClientHello with `-s --openssl-psk` for DTLS 1.3
-         without a pre-established session — needs further investigation.
-         See `reference-implementations.md`.
+- [x] 7. Interop: wolfSSL client ↔ mbedtls server for PSK (psk_ephemeral).
+         Root cause: two bugs:
+         (a) wolfSSL was built without PSK support (NO_PSK defined). Rebuilt with
+             `--enable-psk` to enable PSK in wolfSSL.
+         (b) `mbedtls_ssl_tls13_create_psk_binder()` used `mbedtls_ssl_tls13_derive_secret()`
+             (hardcoded TLS prefix "tls13 ") for the `ext_binder` / `res_binder` derivation
+             steps, instead of the DTLS 1.3 `"dtls13"` prefix. Fixed by switching both calls
+             to `ssl_tls13_derive_secret_with_prefix(..., use_dtls13_prefix)`.
+         wolfSSL client `-s --openssl-psk` uses identity="Client_identity" and a fixed 32-byte
+         key (0x01,0x23,...,repeating). mbedTLS server configured with matching psk/psk_identity.
+         Test: `DTLS 1.3 wolfSSL interop: mbedtls server ↔ wolfSSL client: PSK (psk_ephemeral)` passes.
+         All 4 wolfSSL interop tests pass.
 
 ### Phase 5: Post-Handshake Messages
 *Goal: KeyUpdate, CID management, post-handshake auth all work with ACK reliability.*

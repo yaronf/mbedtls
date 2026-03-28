@@ -1124,20 +1124,20 @@ int mbedtls_ssl_tls13_create_psk_binder(mbedtls_ssl_context *ssl,
                           early_secret, hash_len);
 
     if (psk_type == MBEDTLS_SSL_TLS1_3_PSK_RESUMPTION) {
-        ret = mbedtls_ssl_tls13_derive_secret(
+        ret = ssl_tls13_derive_secret_with_prefix(
             hash_alg,
             early_secret, hash_len,
             MBEDTLS_SSL_TLS1_3_LBL_WITH_LEN(res_binder),
             NULL, 0, MBEDTLS_SSL_TLS1_3_CONTEXT_UNHASHED,
-            binder_key, hash_len);
+            binder_key, hash_len, use_dtls13_prefix);
         MBEDTLS_SSL_DEBUG_MSG(4, ("Derive Early Secret with 'res binder'"));
     } else {
-        ret = mbedtls_ssl_tls13_derive_secret(
+        ret = ssl_tls13_derive_secret_with_prefix(
             hash_alg,
             early_secret, hash_len,
             MBEDTLS_SSL_TLS1_3_LBL_WITH_LEN(ext_binder),
             NULL, 0, MBEDTLS_SSL_TLS1_3_CONTEXT_UNHASHED,
-            binder_key, hash_len);
+            binder_key, hash_len, use_dtls13_prefix);
         MBEDTLS_SSL_DEBUG_MSG(4, ("Derive Early Secret with 'ext binder'"));
     }
 
