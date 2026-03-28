@@ -3782,12 +3782,81 @@ int mbedtls_ssl_tls13_handshake_server_step(mbedtls_ssl_context *ssl)
             ret = 0;
 
             if (ssl->handshake->new_session_tickets_count == 0) {
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+                /* DTLS 1.3: RFC 9147 §7.2 — post-handshake messages require
+                 * ACK-based reliability.  Arm the retransmit timer and wait
+                 * for the client to ACK the NewSessionTicket flight before
+                 * declaring the handshake complete. */
+                if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+                    mbedtls_ssl_send_flight_completed(ssl);
+                    mbedtls_ssl_handshake_set_state(
+                        ssl, MBEDTLS_SSL_TLS1_3_NEW_SESSION_TICKET_WAIT_ACK);
+                    break;
+                }
+#endif /* MBEDTLS_SSL_PROTO_DTLS */
                 mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_HANDSHAKE_OVER);
             } else {
                 mbedtls_ssl_handshake_set_state(
                     ssl, MBEDTLS_SSL_TLS1_3_NEW_SESSION_TICKET);
             }
             break;
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+        case MBEDTLS_SSL_TLS1_3_NEW_SESSION_TICKET_WAIT_ACK:
+            /* DTLS 1.3 only: wait for the client to ACK the NewSessionTicket
+             * flight.  The ACK is processed by ssl_dtls13_process_ack() inside
+             * mbedtls_ssl_handle_message_type(), which sets retransmit_state
+             * to RETRANS_FINISHED when the full flight is acknowledged.
+             * The retransmit timer (armed in FLUSH above) drives retransmits
+             * via ssl_prepare_handshake_step / mbedtls_ssl_resend until then.
+             */
+            if (ssl->handshake->retransmit_state ==
+                MBEDTLS_SSL_RETRANS_FINISHED) {
+                mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_HANDSHAKE_OVER);
+                ret = 0;
+                break;
+            }
+
+            /* Try to read an incoming ACK record.  The ACK handler updates
+             * retransmit_state; we return WANT_READ so the caller retries. */
+            ret = mbedtls_ssl_read_record(ssl, 0);
+            if (ret == MBEDTLS_ERR_SSL_WANT_READ ||
+                ret == MBEDTLS_ERR_SSL_NON_FATAL) {
+                ret = MBEDTLS_ERR_SSL_WANT_READ;
+                break;
+            }
+            if (ret != 0) {
+                MBEDTLS_SSL_DEBUG_RET(1,
+                                      "mbedtls_ssl_read_record "
+                                      "(waiting for NST ACK)", ret);
+                break;
+            }
+            /* Record received; ACK processing already updated retransmit_state.
+             * Re-check and advance if fully acked. */
+            if (ssl->handshake->retransmit_state ==
+                MBEDTLS_SSL_RETRANS_FINISHED) {
+                mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_HANDSHAKE_OVER);
+                ret = 0;
+            } else if (ssl->in_msgtype == MBEDTLS_SSL_MSG_APPLICATION_DATA) {
+                /* RFC 9147 §7.3: receiving application data from the peer
+                 * is an implicit acknowledgment — the client could not have
+                 * sent application data unless it had already processed the
+                 * NewSessionTicket and installed the application keys.
+                 * Treat this as a full ACK, cancel the retransmit timer, and
+                 * preserve the record so ssl_read() can deliver it. */
+                MBEDTLS_SSL_DEBUG_MSG(2, ("WAIT_ACK: app data received — "
+                                          "implicit NST ACK; advancing"));
+                mbedtls_ssl_set_timer(ssl, 0);
+                ssl->handshake->retransmit_state =
+                    MBEDTLS_SSL_RETRANS_FINISHED;
+                mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_HANDSHAKE_OVER);
+                ssl->keep_current_message = 1;
+                ret = 0;
+            } else {
+                ret = MBEDTLS_ERR_SSL_WANT_READ;
+            }
+            break;
+#endif /* MBEDTLS_SSL_PROTO_DTLS */
 
 #endif /* MBEDTLS_SSL_SESSION_TICKETS */
 

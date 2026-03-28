@@ -2204,6 +2204,18 @@ static int ssl_tls13_process_server_hello(mbedtls_ssl_context *ssl)
         }
     } else {
         MBEDTLS_SSL_PROC_CHK(ssl_tls13_postprocess_server_hello(ssl));
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+        /* DTLS 1.3: receiving ServerHello implicitly acknowledges our
+         * ClientHello flight.  Clear it so we start the Finished flight
+         * fresh and the partial-ACK retransmit logic does not loop forever. */
+        if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+            ssl->handshake->flight != NULL) {
+            mbedtls_ssl_flight_free(ssl->handshake->flight);
+            ssl->handshake->flight   = NULL;
+            ssl->handshake->cur_msg  = NULL;
+            ssl->handshake->cur_msg_p = NULL;
+        }
+#endif /* MBEDTLS_SSL_PROTO_DTLS */
         mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_ENCRYPTED_EXTENSIONS);
     }
 
@@ -3263,6 +3275,23 @@ static int ssl_tls13_process_new_session_ticket(mbedtls_ssl_context *ssl)
     }
 
     mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_HANDSHAKE_OVER);
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+    /* DTLS 1.3: RFC 9147 §7.2 — post-handshake messages require ACK.
+     * Schedule the ACK here; it is emitted at the top of the next
+     * mbedtls_ssl_read_record() call.
+     *
+     * NOTE: do NOT call mbedtls_ssl_handshake_wrapup_free_hs_transform()
+     * here — the ACK uses ssl->handshake->dtls13_received_records and
+     * the handshake context must remain valid until the ACK is sent.
+     * The handle_message_type() DTLS path will free it on the next call
+     * once dtls13_ack_pending==0 and in_msgtype!=HANDSHAKE. */
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+        ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3) {
+        MBEDTLS_SSL_DEBUG_MSG(2, ("DTLS 1.3: scheduling ACK for NewSessionTicket"));
+        ssl->dtls13_ack_pending = 1;
+    }
+#endif /* MBEDTLS_SSL_PROTO_DTLS */
 
 cleanup:
 

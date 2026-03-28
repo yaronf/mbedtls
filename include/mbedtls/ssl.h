@@ -729,6 +729,9 @@ typedef enum {
     MBEDTLS_SSL_HANDSHAKE_OVER,
     MBEDTLS_SSL_TLS1_3_NEW_SESSION_TICKET,
     MBEDTLS_SSL_TLS1_3_NEW_SESSION_TICKET_FLUSH,
+    /* DTLS 1.3 only: server waits for client ACK of NewSessionTicket flight
+     * before declaring the handshake complete. */
+    MBEDTLS_SSL_TLS1_3_NEW_SESSION_TICKET_WAIT_ACK,
 }
 mbedtls_ssl_states;
 

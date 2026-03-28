@@ -2747,6 +2747,13 @@ send_request:
             }
 #endif
 
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_SESSION_TICKETS)
+            if (ret == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET) {
+                mbedtls_printf(" got new session ticket (datagram).\n");
+                continue;
+            }
+#endif
+
             if (ret != MBEDTLS_ERR_SSL_WANT_READ &&
                 ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
                 break;

@@ -29,6 +29,10 @@
 #include "psa_util_internal.h"
 #include "psa/crypto.h"
 
+#if defined(MBEDTLS_CHACHA20_C)
+#include "mbedtls/private/chacha20.h"
+#endif
+
 #if defined(MBEDTLS_X509_CRT_PARSE_C)
 #include "mbedtls/oid.h"
 #endif
@@ -3083,9 +3087,47 @@ int mbedtls_ssl_write_handshake_msg_ext(mbedtls_ssl_context *ssl,
         }
 #endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 
-        if ((ret = mbedtls_ssl_write_record(ssl, force_flush)) != 0) {
-            MBEDTLS_SSL_DEBUG_RET(1, "ssl_write_record", ret);
-            return ret;
+        {
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+            /* DTLS 1.3: record the initial send's epoch and sequence number
+             * in the just-appended flight item so ssl_dtls13_process_ack()
+             * can match the original send.  The retransmit path records each
+             * resend; we capture the original here, BEFORE write_record
+             * increments cur_out_ctr. */
+            if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+                ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+                ssl->handshake != NULL &&
+                ssl->out_msgtype == MBEDTLS_SSL_MSG_HANDSHAKE) {
+                mbedtls_ssl_flight_item *tail = ssl->handshake->flight;
+                if (tail != NULL) {
+                    while (tail->next != NULL) {
+                        tail = tail->next;
+                    }
+                    uint8_t idx = tail->sent_record_count %
+                                  MBEDTLS_SSL_DTLS13_MAX_RECORDS_PER_FLIGHT_ITEM;
+                    tail->sent_record_epoch[idx] = ssl->cur_out_ctr[1];
+                    tail->sent_records[idx] =
+                        ((uint64_t) ssl->cur_out_ctr[2] << 40) |
+                        ((uint64_t) ssl->cur_out_ctr[3] << 32) |
+                        ((uint64_t) ssl->cur_out_ctr[4] << 24) |
+                        ((uint64_t) ssl->cur_out_ctr[5] << 16) |
+                        ((uint64_t) ssl->cur_out_ctr[6] <<  8) |
+                        ((uint64_t) ssl->cur_out_ctr[7]);
+                    if (tail->sent_record_count <
+                        MBEDTLS_SSL_DTLS13_MAX_RECORDS_PER_FLIGHT_ITEM) {
+                        tail->sent_record_count++;
+                    }
+                    MBEDTLS_SSL_DEBUG_MSG(2, (
+                        "DTLS 1.3: initial send epoch=%u seq=%llu",
+                        (unsigned) tail->sent_record_epoch[idx],
+                        (unsigned long long) tail->sent_records[idx]));
+                }
+            }
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
+            if ((ret = mbedtls_ssl_write_record(ssl, force_flush)) != 0) {
+                MBEDTLS_SSL_DEBUG_RET(1, "ssl_write_record", ret);
+                return ret;
+            }
         }
     }
 
@@ -3543,7 +3585,10 @@ int mbedtls_ssl_prepare_handshake_record(mbedtls_ssl_context *ssl)
             ((mbedtls_ssl_is_handshake_over(ssl) == 0 &&
               recv_msg_seq != ssl->handshake->in_msg_seq) ||
              (mbedtls_ssl_is_handshake_over(ssl) == 1 &&
-              ssl->in_msg[0] != MBEDTLS_SSL_HS_CLIENT_HELLO))) {
+              ssl->in_msg[0] != MBEDTLS_SSL_HS_CLIENT_HELLO &&
+              /* DTLS 1.3: post-handshake messages (e.g. NewSessionTicket) arrive
+               * after HANDSHAKE_OVER with the expected in_msg_seq; allow them. */
+              recv_msg_seq != ssl->handshake->in_msg_seq))) {
             if (recv_msg_seq > ssl->handshake->in_msg_seq) {
                 MBEDTLS_SSL_DEBUG_MSG(2,
                                       (
@@ -3728,7 +3773,17 @@ int mbedtls_ssl_update_handshake_status(mbedtls_ssl_context *ssl)
         unsigned offset;
         mbedtls_ssl_hs_buffer *hs_buf;
 
-        /* Increment handshake sequence number */
+        /* Increment handshake sequence number.
+         * DTLS 1.3 post-handshake messages (NST etc.) arrive via the
+         * ssl_read() loop which calls read_record(update_hs_digest=1),
+         * but their in_msg_seq is managed by fetch_hs_msg() in the TLS 1.3
+         * post-handshake handler.  Skip the increment here to avoid
+         * double-counting. */
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+        if (!(ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+              ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+              mbedtls_ssl_is_handshake_over(ssl) == 1))
+#endif
         hs->in_msg_seq++;
 
         /*
@@ -4259,115 +4314,45 @@ static int ssl_dtls13_sne_compute_mask(
     }
 
     if (transform->psa_alg == PSA_ALG_CHACHA20_POLY1305) {
+#if defined(MBEDTLS_CHACHA20_C)
         /*
-         * ChaCha20 mask:
+         * ChaCha20 mask (RFC 9147 §4.2.3):
          *   counter = sample[0..3] as little-endian uint32
          *   nonce   = sample[4..15]  (12 bytes)
          *   keystream = ChaCha20(sn_key, nonce, counter)
          *   mask = keystream[0:2]
-         */
-        psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
-        psa_key_id_t key_id = PSA_KEY_ID_NULL;
-        psa_cipher_operation_t op = PSA_CIPHER_OPERATION_INIT;
-        unsigned char zero_in[2] = { 0, 0 };
-        size_t out_len;
-
-        psa_set_key_type(&attr, PSA_KEY_TYPE_CHACHA20);
-        psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_ENCRYPT);
-        psa_set_key_algorithm(&attr, PSA_ALG_STREAM_CIPHER);
-
-        status = psa_import_key(&attr,
-                                transform->sn_key, transform->sn_key_len,
-                                &key_id);
-        if (status != PSA_SUCCESS) {
-            return PSA_TO_MBEDTLS_ERR(status);
-        }
-
-        status = psa_cipher_encrypt_setup(&op, key_id, PSA_ALG_STREAM_CIPHER);
-        if (status != PSA_SUCCESS) {
-            psa_destroy_key(key_id);
-            return PSA_TO_MBEDTLS_ERR(status);
-        }
-
-        /* nonce = sample[4..15] (12 bytes); ChaCha20 IV in PSA is 12 bytes */
-        status = psa_cipher_set_iv(&op, ciphertext + 4, 12);
-        if (status != PSA_SUCCESS) {
-            psa_cipher_abort(&op);
-            psa_destroy_key(key_id);
-            return PSA_TO_MBEDTLS_ERR(status);
-        }
-
-        /*
-         * PSA ChaCha20 stream cipher does not expose the block counter directly.
-         * The RFC 9147 spec uses counter = LE32(sample[0:4]) and nonce = sample[4:16].
-         * The PSA STREAM_CIPHER for ChaCha20 starts the counter at 0.
-         * When sample[0:4] != 0, we need to skip ahead by counter * 64 bytes.
-         * In practice, for short-lived epoch keys (seq# < 2^32), counter is
-         * the record sequence number and will be small (often 0 or low).
-         * We emit (counter * 64) zero bytes to advance, then read 2 bytes.
          *
-         * NOTE: This is correct but potentially slow for high seq#.  An
-         * alternative is to import a raw ChaCha20 block via psa_raw_key_agreement
-         * or a vendor extension; for now use the streaming approach.
+         * Use mbedtls_chacha20_crypt() which accepts an arbitrary block
+         * counter directly, avoiding the O(counter) PSA streaming loop.
          */
         {
             uint32_t counter =
-                (uint32_t) ciphertext[0]        |
-                ((uint32_t) ciphertext[1] << 8)  |
+                (uint32_t) ciphertext[0]         |
+                ((uint32_t) ciphertext[1] <<  8) |
                 ((uint32_t) ciphertext[2] << 16) |
                 ((uint32_t) ciphertext[3] << 24);
-            unsigned char skip_buf[64];
-            uint32_t i;
+            unsigned char zero_in[2] = { 0, 0 };
+            unsigned char keystream[2];
+            int chacha_ret;
 
-            memset(skip_buf, 0, sizeof(skip_buf));
-            for (i = 0; i < counter; i++) {
-                status = psa_cipher_update(&op, skip_buf, 64,
-                                           skip_buf, 64, &out_len);
-                if (status != PSA_SUCCESS) {
-                    psa_cipher_abort(&op);
-                    psa_destroy_key(key_id);
-                    return PSA_TO_MBEDTLS_ERR(status);
-                }
+            chacha_ret = mbedtls_chacha20_crypt(
+                transform->sn_key,   /* 32-byte key  */
+                ciphertext + 4,      /* 12-byte nonce = sample[4..15] */
+                counter,
+                2,
+                zero_in,
+                keystream);
+            if (chacha_ret != 0) {
+                return chacha_ret;
             }
+            mask[0] = keystream[0];
+            mask[1] = keystream[1];
         }
-
-        /*
-         * Some PSA implementations may buffer the final partial block.
-         * Use psa_cipher_finish to flush any buffered output for the
-         * 2-byte zero plaintext → we get the first 2 keystream bytes.
-         * We use a 64-byte output buffer and take only the first 2 bytes,
-         * since psa_cipher_finish may output up to one block.
-         */
-        {
-            unsigned char finish_buf[64];
-            size_t finish_len;
-
-            status = psa_cipher_update(&op, zero_in, 2,
-                                       finish_buf, sizeof(finish_buf), &out_len);
-            if (status != PSA_SUCCESS) {
-                psa_cipher_abort(&op);
-                psa_destroy_key(key_id);
-                return PSA_TO_MBEDTLS_ERR(status);
-            }
-            status = psa_cipher_finish(&op,
-                                       finish_buf + out_len,
-                                       sizeof(finish_buf) - out_len,
-                                       &finish_len);
-            if (status != PSA_SUCCESS) {
-                psa_destroy_key(key_id);
-                return PSA_TO_MBEDTLS_ERR(status);
-            }
-            out_len += finish_len;
-            if (out_len < 2) {
-                psa_destroy_key(key_id);
-                return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
-            }
-            mask[0] = finish_buf[0];
-            mask[1] = finish_buf[1];
-        }
-
-        psa_cipher_abort(&op);
-        psa_destroy_key(key_id);
+#else
+        /* ChaCha20 not compiled in — no SNE for this suite */
+        mask[0] = 0;
+        mask[1] = 0;
+#endif /* MBEDTLS_CHACHA20_C */
     } else {
         /*
          * AES mask: AES-ECB(sn_key, sample)[0:2]
@@ -6413,7 +6398,21 @@ int mbedtls_ssl_handle_message_type(mbedtls_ssl_context *ssl)
         }
 
         if (ssl->handshake != NULL &&
-            mbedtls_ssl_is_handshake_over(ssl) == 1) {
+            ssl->state == MBEDTLS_SSL_HANDSHAKE_OVER &&
+            /* DTLS 1.3: do NOT free the handshake context when:
+             *   (a) a post-handshake message (e.g. NST) is being processed —
+             *       ssl_tls13_handle_hs_message_post_handshake() still needs it; or
+             *   (b) a DTLS ACK is pending — ssl_dtls13_write_ack() accesses
+             *       ssl->handshake->dtls13_received_records.
+             *   (c) the server is in WAIT_ACK (state > HANDSHAKE_OVER) and still
+             *       needs ssl->handshake->retransmit_state after read_record returns.
+             * Using ssl->state == HANDSHAKE_OVER (not >=) covers (c) automatically.
+             * Free only when the message is non-handshake AND no ACK is pending. */
+            ssl->in_msgtype != MBEDTLS_SSL_MSG_HANDSHAKE
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+            && !ssl->dtls13_ack_pending
+#endif
+            ) {
             mbedtls_ssl_handshake_wrapup_free_hs_transform(ssl);
         }
     }

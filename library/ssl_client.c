@@ -922,6 +922,11 @@ int mbedtls_ssl_write_client_hello(mbedtls_ssl_context *ssl)
     int ret = 0;
     unsigned char *buf;
     size_t buf_len, msg_len, binders_len;
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && \
+    defined(MBEDTLS_SSL_PROTO_TLS1_3) && \
+    defined(MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_SOME_PSK_ENABLED)
+    int dtls13_psk_checksum_done = 0;
+#endif
 
     MBEDTLS_SSL_DEBUG_MSG(2, ("=> write client hello"));
 
@@ -947,6 +952,8 @@ int mbedtls_ssl_write_client_hello(mbedtls_ssl_context *ssl)
          * ClientHello including the real binder value.
          */
         if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 && binders_len > 0) {
+            /* Compute transcript Hash(header || body_up_to_binders) so that
+             * write_binders can derive the correct PSK binder value. */
             ret = mbedtls_ssl_add_hs_hdr_to_checksum(ssl,
                                                      MBEDTLS_SSL_HS_CLIENT_HELLO,
                                                      msg_len);
@@ -962,6 +969,9 @@ int mbedtls_ssl_write_client_hello(mbedtls_ssl_context *ssl)
             MBEDTLS_SSL_PROC_CHK(
                 mbedtls_ssl_tls13_write_binders_of_pre_shared_key_ext(
                     ssl, buf + msg_len - binders_len, buf + msg_len));
+            /* Add the binders portion to complete the full ClientHello transcript.
+             * write_handshake_msg_ext must NOT re-add the transcript (pass
+             * update_checksum=0 below). */
             ret = ssl->handshake->update_checksum(ssl,
                                                   buf + msg_len - binders_len,
                                                   binders_len);
@@ -969,6 +979,7 @@ int mbedtls_ssl_write_client_hello(mbedtls_ssl_context *ssl)
                 MBEDTLS_SSL_DEBUG_RET(1, "update_checksum", ret);
                 return ret;
             }
+            dtls13_psk_checksum_done = 1;
         }
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 && PSK */
 
@@ -986,9 +997,19 @@ int mbedtls_ssl_write_client_hello(mbedtls_ssl_context *ssl)
          */
         mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_SERVER_HELLO);
 
-        if ((ret = mbedtls_ssl_write_handshake_msg(ssl)) != 0) {
-            MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_write_handshake_msg", ret);
-            return ret;
+        {
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && \
+    defined(MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_SOME_PSK_ENABLED)
+            /* When PSK already updated the transcript above, skip the
+             * redundant update inside write_handshake_msg_ext. */
+            int do_checksum = dtls13_psk_checksum_done ? 0 : 1;
+#else
+            int do_checksum = 1;
+#endif
+            if ((ret = mbedtls_ssl_write_handshake_msg_ext(ssl, do_checksum, 1)) != 0) {
+                MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_write_handshake_msg", ret);
+                return ret;
+            }
         }
 
         if ((ret = mbedtls_ssl_flight_transmit(ssl)) != 0) {
