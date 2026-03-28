@@ -55,6 +55,16 @@ run_test    "DTLS 1.3 wolfSSL interop: mbedtls server ↔ wolfSSL client: server
             -c "SSL version is DTLSv1.3" \
             -s "=> write ACK"
 
+requires_wolfssl
+requires_config_enabled MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_PSK_EPHEMERAL_ENABLED
+run_test    "DTLS 1.3 wolfSSL interop: mbedtls server ↔ wolfSSL client: PSK (psk_ephemeral)" \
+            "$P_SRV dtls=1 force_version=dtls13 auth_mode=none psk=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef psk_identity=Client_identity debug_level=2" \
+            "cd $WOLFSSL_DIR && $WOLFSSL_CLI -u -v 4 -d -p +SRV_PORT -s --openssl-psk" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "SSL version is DTLSv1.3" \
+            -s "key exchange mode: psk_ephemeral"
+
 if [ $FAILS -gt 255 ]; then
     FAILS=255
 fi

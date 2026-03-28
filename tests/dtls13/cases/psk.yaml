@@ -21,6 +21,27 @@ cases:
         - client_dtls13_negotiated
         - server_psk_ephemeral
 
+  - name: "session resumption via NewSessionTicket PSK"
+    # Full flow: cert-based handshake → server issues NST → client saves ticket →
+    # client reconnects → server accepts resumed handshake via psk_ephemeral.
+    # Requires MBEDTLS_SSL_SESSION_TICKETS for NewSessionTicket support.
+    requires:
+      - config: MBEDTLS_SSL_SESSION_TICKETS
+    server:
+      debug_level: 2
+    client:
+      reconnect: 1
+      skip_close_notify: true
+      debug_level: 2
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - client_got_ticket
+        - client_reconnecting
+        - server_psk_ephemeral
+
   - name: "PSK with cookie enabled — no HRR/cookie exchange (RFC 9147 §5.1)"
     # RFC 9147 §5.1: server MAY skip address validation when a valid PSK is
     # available, because the client already proved reachability when the PSK

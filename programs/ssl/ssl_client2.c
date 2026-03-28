@@ -2750,6 +2750,31 @@ send_request:
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_SESSION_TICKETS)
             if (ret == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET) {
                 mbedtls_printf(" got new session ticket (datagram).\n");
+                if (opt.reconnect != 0) {
+                    mbedtls_printf("  . Saving session for reuse...");
+                    fflush(stdout);
+                    if (opt.reco_mode == 1) {
+                        if ((ret = ssl_save_session_serialize(
+                                 &ssl, &session_data,
+                                 &session_data_len)) != 0) {
+                            mbedtls_printf(
+                                " failed\n  ! ssl_save_session_serialize"
+                                " returned -0x%04x\n\n",
+                                (unsigned int) -ret);
+                            goto exit;
+                        }
+                    } else {
+                        if ((ret = mbedtls_ssl_get_session(
+                                 &ssl, &saved_session)) != 0) {
+                            mbedtls_printf(
+                                " failed\n  ! mbedtls_ssl_get_session"
+                                " returned -0x%x\n\n",
+                                (unsigned int) -ret);
+                            goto exit;
+                        }
+                    }
+                    mbedtls_printf(" ok\n");
+                }
                 continue;
             }
 #endif

@@ -29,3 +29,21 @@ cases:
         - server_dtls13_negotiated
         - wolfssl_dtls13_negotiated
         - server_ack_sent
+
+  - name: "mbedtls server ↔ wolfSSL client: PSK (psk_ephemeral)"
+    # wolfSSL uses --openssl-psk which hardcodes identity="Client_identity"
+    # and a fixed 32-byte key (0x01, 0x23, ..., wrapping at 0x100).
+    requires:
+      - config: MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_PSK_EPHEMERAL_ENABLED
+    server:
+      psk: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      psk_identity: "Client_identity"
+      debug_level: 2
+    client:
+      wolfssl_psk: true
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - wolfssl_dtls13_negotiated
+        - server_psk_ephemeral

@@ -559,12 +559,24 @@ have been drilled down in `local-docs/design-drilldown.md`:
          Test: `DTLS 1.3 PSK: external PSK, psk_ephemeral` passes.
 - [x] 3. NewSessionTicket: implement server-side ACK requirement (server retransmits until ACKed).
 - [x] 4. PSK+cookie interaction: server MAY skip cookie when PSK + known IP.
-- [ ] 5. 0-RTT (early data): epoch 1 handling; no EndOfEarlyData; server drops epoch 1 keys
-         after first epoch 3 data arrives.
-- [ ] 6. Self-test: resumption handshake, 0-RTT data delivery.
-- [ ] 7. Interop: wolfSSL client ↔ mbedtls server and vice versa for PSK, resumption, 0-RTT.
-         Implement wolfSSL runner profile (Stage 2 of yaml-test-plan.md). Cases with
-         `skip: true` parameters are excluded automatically; no new test authoring needed.
+- [N/A] 5. 0-RTT (early data): out of scope by design.
+         RFC 9147 makes this optional (MAY).  0-RTT carries well-known replay
+         risks that are hard to mitigate correctly — especially in DTLS where
+         replay protection interacts with the anti-replay window and amplification
+         limits.  The latency benefit is marginal on embedded/IoT links.
+         Decision: do not implement; reject early_data in ClientHello.
+- [x] 6. Self-test: session resumption via NewSessionTicket PSK (mbedTLS ↔ mbedTLS).
+         Fixed `ssl_client2` datagram path to save session on NST receipt when
+         `reconnect != 0` (was silently discarding the ticket).  Added
+         `reconnect` and `skip_close_notify` params plus `client_got_ticket` /
+         `client_reconnecting` assertions to `runners/mbedtls.yaml`.
+         Test: `DTLS 1.3 PSK: session resumption via NewSessionTicket PSK` passes.
+- [ ] 7. Interop: wolfSSL client ↔ mbedtls server and vice versa for PSK and resumption
+         (0-RTT excluded). Implement wolfSSL runner profile (Stage 2 of yaml-test-plan.md).
+         Cases with `skip: true` parameters are excluded automatically.
+         PSK interop case added to YAML but currently failing: wolfSSL sends no
+         `pre_shared_key` extension in ClientHello with `-s --openssl-psk` for DTLS 1.3
+         without a pre-established session — needs further investigation.
          See `reference-implementations.md`.
 
 ### Phase 5: Post-Handshake Messages

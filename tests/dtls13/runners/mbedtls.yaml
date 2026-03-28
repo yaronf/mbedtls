@@ -32,6 +32,8 @@ param_map:
   anti_replay:    "anti_replay={value}"
   psk:            "psk={value}"
   psk_identity:   "psk_identity={value}"
+  reconnect:      "reconnect={value}"
+  skip_close_notify: "skip_close_notify={1 if value else 0}"
 
 proxy_param_map:
   drop:       "drop={value}"
@@ -111,6 +113,15 @@ assertion_map:
   server_no_cookie_verified:
     flag: "-S"
     string: "cookie verified"
+  client_got_ticket:
+    flag: "-c"
+    string: "got new session ticket (datagram)."
+  client_reconnecting:
+    flag: "-c"
+    string: "Reconnecting with saved session..."
+  server_resumed:
+    flag: "-s"
+    string: "key exchange mode: psk_ephemeral"
 
 requires_map:
   protocol:
