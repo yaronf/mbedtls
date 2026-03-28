@@ -3617,6 +3617,17 @@ int mbedtls_ssl_prepare_handshake_record(mbedtls_ssl_context *ssl)
                                           "message_seq = %u, expected = %u",
                                           recv_msg_seq,
                                           ssl->handshake->in_msg_seq));
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+                /* RFC 9147 §7.3: when a receiver drops a duplicate/old message
+                 * while waiting for a later one from the same flight, send an
+                 * ACK listing received records.  This tells the sender exactly
+                 * which messages the receiver is missing so it can retransmit
+                 * selectively rather than waiting for the full timer. */
+                if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+                    ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+                    ssl->dtls13_ack_pending = 1;
+                }
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
             }
 
             return MBEDTLS_ERR_SSL_CONTINUE_PROCESSING;
@@ -4485,6 +4496,36 @@ static int ssl_parse_record_header(mbedtls_ssl_context const *ssl,
             /* Silently discard malformed unified-header records. */
             return MBEDTLS_ERR_SSL_UNEXPECTED_RECORD;
         }
+
+        /* Epoch check for DTLS 1.3 unified-header records.
+         *
+         * rec->ctr[0..1] now holds the reconstructed epoch (16-bit BE).
+         * - Future epoch (rec_epoch > in_epoch): record may be a handshake
+         *   message from an upcoming flight; treat as EARLY_MESSAGE so the
+         *   caller can buffer it or discard with ACK.  This covers the
+         *   0→2 epoch skip in non-early-data DTLS 1.3 handshakes where the
+         *   server's encrypted handshake records arrive before ServerHello.
+         * - Past epoch not in pool: stale retransmit, discard silently.
+         */
+        {
+            uint32_t rec_epoch = MBEDTLS_GET_UINT16_BE(rec->ctr, 0);
+            if (rec_epoch > (uint32_t) ssl->in_epoch) {
+                MBEDTLS_SSL_DEBUG_MSG(2, ("DTLS 1.3 unified hdr: future epoch %u "
+                                          "(in_epoch=%u) — EARLY_MESSAGE",
+                                          rec_epoch, (unsigned) ssl->in_epoch));
+                return MBEDTLS_ERR_SSL_EARLY_MESSAGE;
+            } else if (rec_epoch < (uint32_t) ssl->in_epoch) {
+                /* Old epoch: allow if it's still in the epoch pool (e.g.
+                 * retransmitted handshake record); otherwise discard. */
+                if (ssl_dtls13_epoch_pool_lookup(ssl, (uint64_t) rec_epoch) == NULL) {
+                    MBEDTLS_SSL_DEBUG_MSG(2, ("DTLS 1.3 unified hdr: old epoch %u "
+                                              "(in_epoch=%u) not in pool — discarding",
+                                              rec_epoch, (unsigned) ssl->in_epoch));
+                    return MBEDTLS_ERR_SSL_UNEXPECTED_RECORD;
+                }
+            }
+        }
+
         /* Signal to the caller that this is a DTLS 1.3 record by setting
          * tls_version on the rec.  The existing caller (ssl_get_next_record)
          * only inspects rec->type and rec->ctr, so this is safe. */
@@ -5211,6 +5252,22 @@ int mbedtls_ssl_read_record(mbedtls_ssl_context *ssl,
                 }
 
                 ret = MBEDTLS_ERR_SSL_CONTINUE_PROCESSING;
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+                /* Send any ACK scheduled by ssl_buffer_message (RFC 9147 §7.1:
+                 * ACK on partial flight receipt) before fetching the next
+                 * record.  Early delivery of the ACK tells the sender which
+                 * messages are still missing, enabling prompt selective
+                 * retransmit rather than waiting for the full retransmit
+                 * timer. */
+                if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+                    ssl->dtls13_ack_pending) {
+                    int ack_ret = ssl_dtls13_write_ack(ssl);
+                    if (ack_ret != 0) {
+                        MBEDTLS_SSL_DEBUG_RET(1, "ssl_dtls13_write_ack", ack_ret);
+                    }
+                }
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
             }
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
 
@@ -5571,6 +5628,16 @@ static int ssl_buffer_message(mbedtls_ssl_context *ssl)
                 MBEDTLS_SSL_DEBUG_MSG(2, ("message %scomplete",
                                           hs_buf->is_complete ? "" : "not yet "));
             }
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+            /* RFC 9147 §7.1: when a future-seq handshake message is buffered,
+             * send an ACK listing the records received so far.  This tells the
+             * sender which messages are missing and prompts an early selective
+             * retransmit instead of waiting for the full retransmit timer. */
+            if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3) {
+                ssl->dtls13_ack_pending = 1;
+            }
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 
             break;
         }

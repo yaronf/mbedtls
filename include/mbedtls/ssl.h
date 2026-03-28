@@ -732,6 +732,11 @@ typedef enum {
     /* DTLS 1.3 only: server waits for client ACK of NewSessionTicket flight
      * before declaring the handshake complete. */
     MBEDTLS_SSL_TLS1_3_NEW_SESSION_TICKET_WAIT_ACK,
+    /* DTLS 1.3 only: client waits for server ACK of client Finished flight
+     * before advancing to FLUSH_BUFFERS.  Without this, the client discards
+     * its Finished flight before the server has confirmed receipt, preventing
+     * retransmit when the Finished is lost. */
+    MBEDTLS_SSL_TLS1_3_CLIENT_FINISHED_WAIT_ACK,
 }
 mbedtls_ssl_states;
 

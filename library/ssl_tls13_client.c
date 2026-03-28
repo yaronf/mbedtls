@@ -2902,20 +2902,19 @@ static int ssl_tls13_write_client_finished(mbedtls_ssl_context *ssl)
     }
 
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
-    /* DTLS 1.3: arm the retransmit timer so the client flight (Certificate +
-     * CertificateVerify + Finished, or just Finished for no-client-auth) is
-     * retransmitted if the server's ACK or next message does not arrive before
-     * the timeout.  The flight was stored in handshake->flight by
-     * write_handshake_msg_ext.
-     *
-     * We cannot use mbedtls_ssl_send_flight_completed() here because at this
-     * point in_msg[0] is the server's Finished, which would cause it to set
-     * RETRANS_FINISHED (suppressing retransmit) instead of RETRANS_WAITING.
-     * Arm the timer and set state directly. */
-    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+    /* DTLS 1.3: install application keys now so we can receive the server's
+     * ACK (sent at epoch 3) while waiting in CLIENT_FINISHED_WAIT_ACK.
+     * This also retires the epoch-2 transform to the pool so reordered
+     * handshake records can still be decrypted (RFC 9147 §4.2.1). */
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+        ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3) {
+        mbedtls_ssl_tls13_handshake_wrapup(ssl);
         ssl->handshake->retransmit_timeout = ssl->conf->hs_timeout_min;
         mbedtls_ssl_set_timer(ssl, ssl->handshake->retransmit_timeout);
         ssl->handshake->retransmit_state = MBEDTLS_SSL_RETRANS_WAITING;
+        mbedtls_ssl_handshake_set_state(
+            ssl, MBEDTLS_SSL_TLS1_3_CLIENT_FINISHED_WAIT_ACK);
+        return 0;
     }
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
 
@@ -3358,6 +3357,55 @@ int mbedtls_ssl_tls13_handshake_client_step(mbedtls_ssl_context *ssl)
         case MBEDTLS_SSL_CLIENT_FINISHED:
             ret = ssl_tls13_write_client_finished(ssl);
             break;
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+        case MBEDTLS_SSL_TLS1_3_CLIENT_FINISHED_WAIT_ACK:
+            /* DTLS 1.3: wait for the server to ACK the client Finished flight.
+             * Application keys are already installed (done in write_client_finished).
+             * The ACK handler (ssl_dtls13_process_ack) sets retransmit_state to
+             * RETRANS_FINISHED when all flight items are acknowledged.
+             * The retransmit timer drives resends until then. */
+            if (ssl->handshake->retransmit_state ==
+                MBEDTLS_SSL_RETRANS_FINISHED) {
+                mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_HANDSHAKE_OVER);
+                ret = 0;
+                break;
+            }
+
+            ret = mbedtls_ssl_read_record(ssl, 0);
+            if (ret == MBEDTLS_ERR_SSL_WANT_READ ||
+                ret == MBEDTLS_ERR_SSL_NON_FATAL) {
+                ret = MBEDTLS_ERR_SSL_WANT_READ;
+                break;
+            }
+            if (ret != 0) {
+                MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_read_record "
+                                      "(waiting for Finished ACK)", ret);
+                break;
+            }
+            if (ssl->handshake->retransmit_state ==
+                MBEDTLS_SSL_RETRANS_FINISHED) {
+                /* Explicit ACK fully acknowledged our Finished flight. */
+                mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_HANDSHAKE_OVER);
+                ret = 0;
+            } else if (ssl->in_msgtype == MBEDTLS_SSL_MSG_HANDSHAKE ||
+                       ssl->in_msgtype == MBEDTLS_SSL_MSG_APPLICATION_DATA) {
+                /* Server sent a post-handshake message (e.g. NST) or app data
+                 * — it must have received our Finished to derive app-data keys.
+                 * Treat as implicit ACK, preserve the message for normal
+                 * processing. */
+                MBEDTLS_SSL_DEBUG_MSG(2, ("CLIENT_FINISHED_WAIT_ACK: implicit "
+                                          "ACK from server message"));
+                mbedtls_ssl_set_timer(ssl, 0);
+                ssl->handshake->retransmit_state = MBEDTLS_SSL_RETRANS_FINISHED;
+                ssl->keep_current_message = 1;
+                mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_HANDSHAKE_OVER);
+                ret = 0;
+            } else {
+                ret = MBEDTLS_ERR_SSL_WANT_READ;
+            }
+            break;
+#endif /* MBEDTLS_SSL_PROTO_DTLS */
 
         case MBEDTLS_SSL_FLUSH_BUFFERS:
             ret = ssl_tls13_flush_buffers(ssl);
