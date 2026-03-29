@@ -111,7 +111,7 @@ def render_assertions(assertions, assertion_map):
     return parts
 
 
-def render_case(family, case, runner):
+def render_case(family, case, runner, runner_stem=""):
     lines = []
     name = case["name"]
     full_name = f"{family}: {name}"
@@ -144,6 +144,14 @@ def render_case(family, case, runner):
     proxy_block = dict(raw_proxy or {})
     server_block = dict(case.get("server") or {})
     client_block = dict(case.get("client") or {})
+
+    # runner_overrides: per-runner substitutions for server/client/proxy blocks.
+    # Keys in the override dict are merged (shallow) over the base block.
+    overrides = (case.get("runner_overrides") or {}).get(runner_stem, {})
+    if overrides:
+        server_block.update(overrides.get("server") or {})
+        client_block.update(overrides.get("client") or {})
+        proxy_block.update(overrides.get("proxy") or {})
     param_map = runner.get("param_map") or {}
     proxy_param_map = runner.get("proxy_param_map") or {}
     assertion_map = runner.get("assertion_map") or {}
@@ -273,7 +281,7 @@ def generate(case_files, runner_path, emit=False, emit_path=None):
                 continue
             case["_file_requires"] = file_requires
             try:
-                lines = render_case(family, case, runner)
+                lines = render_case(family, case, runner, runner_stem)
                 output.extend(lines)
             except ValueError as e:
                 print(f"ERROR in {case_file.name} case '{case.get('name')}': {e}",

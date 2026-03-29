@@ -7,29 +7,10 @@ requires:
 # DTLS 1.3 server silently drops mbedtls ClientHellos (protocol incompatibility).
 #
 # wolfSSL-specific cases for Direction A.
-# These cases require wolfSSL-specific params or cert/key material that cannot
-# be expressed using the shared mbedtls case params.
+# These cases use wolfSSL client flags (-J, -r) that have no equivalent in the
+# shared mbedtls param set. PSK cases are in psk.yaml with runner_overrides.
 
 cases:
-  - name: "A: PSK (psk_ephemeral) — wolfSSL hardcoded key"
-    # wolfSSL --openssl-psk hardcodes identity="Client_identity" and a fixed
-    # 32-byte key 0x01,0x23,... (wrapping at 0x100). The mbedtls test PSK
-    # (abc123) is incompatible, so this case lives here separately.
-    requires:
-      - config: MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_PSK_EPHEMERAL_ENABLED
-    server:
-      psk: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-      psk_identity: "Client_identity"
-      debug_level: 2
-    client:
-      wolfssl_psk: true
-    expect:
-      exit: 0
-      assert:
-        - server_dtls13_negotiated
-        - client_dtls13_negotiated
-        - server_psk_ephemeral
-
   - name: "A: HRR — wolfSSL client triggers HelloRetryRequest"
     # wolfSSL -J sends an empty KeyShare, forcing the server to send HRR.
     server:

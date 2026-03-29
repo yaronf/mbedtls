@@ -174,6 +174,13 @@ assertion_map:
   client_reconnecting:
     flag: "-s"
     string: "key exchange mode: psk_ephemeral"
+  # Negative assertions: check mbedtls server did NOT do these things.
+  client_no_hrr:
+    flag: "-S"
+    string: "write hello retry request"
+  server_no_cookie_verified:
+    flag: "-S"
+    string: "cookie verified"
 
 requires_map:
   protocol:

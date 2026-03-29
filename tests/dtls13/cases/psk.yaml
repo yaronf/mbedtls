@@ -5,18 +5,24 @@ requires:
 
 cases:
   - name: "external PSK, psk_ephemeral key exchange"
-    # wolfssl: wolfSSL client uses a hardcoded PSK key/identity via --openssl-psk,
-    # incompatible with the test PSK values here. Covered in interop-wolfssl.yaml.
-    skip_runners: [wolfssl]
+    # wolfssl: override server PSK to wolfSSL's hardcoded key/identity
+    # (--openssl-psk uses 0x0123... key, identity="Client_identity").
     server:
       psk: "abc123"
       psk_identity: "Client_identity"
-      auth_mode: required
       debug_level: 2
     client:
       psk: "abc123"
       psk_identity: "Client_identity"
       debug_level: 2
+    runner_overrides:
+      wolfssl:
+        server:
+          psk: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          psk_identity: "Client_identity"
+          debug_level: 2
+        client:
+          wolfssl_psk: true
     expect:
       exit: 0
       assert:
@@ -50,21 +56,27 @@ cases:
 
   - name: "PSK with cookie enabled — no HRR/cookie exchange (RFC 9147 §5.1)"
     # RFC 9147 §5.1: server MAY skip address validation when a valid PSK is
-    # available. wolfSSL PSK uses hardcoded values, not compatible with this
-    # test's psk/psk_identity params.
-    skip_runners: [wolfssl]
+    # available. Override server PSK to wolfSSL's hardcoded key for wolfssl runner.
     requires:
       - config: MBEDTLS_SSL_DTLS_HELLO_VERIFY
     server:
       psk: "abc123"
       psk_identity: "Client_identity"
-      auth_mode: required
       cookies: 1
       debug_level: 2
     client:
       psk: "abc123"
       psk_identity: "Client_identity"
       debug_level: 2
+    runner_overrides:
+      wolfssl:
+        server:
+          psk: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          psk_identity: "Client_identity"
+          cookies: 1
+          debug_level: 2
+        client:
+          wolfssl_psk: true
     expect:
       exit: 0
       assert:
