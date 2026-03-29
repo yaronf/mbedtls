@@ -98,6 +98,7 @@ int main(void)
 #define DFL_RENEGOTIATION       MBEDTLS_SSL_RENEGOTIATION_DISABLED
 #define DFL_ALLOW_LEGACY        -2
 #define DFL_RENEGOTIATE         0
+#define DFL_KEY_UPDATE          0
 #define DFL_RENEGO_DELAY        -2
 #define DFL_RENEGO_PERIOD       ((uint64_t) -1)
 #define DFL_EXCHANGES           1
@@ -402,6 +403,15 @@ int main(void)
 #define USAGE_REPRODUCIBLE \
     "    reproducible=0/1     default: 0 (disabled)\n"
 
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS)
+#define USAGE_KEY_UPDATE \
+    "    key_update=%%d       default: 0 (disabled)\n"                  \
+    "                        1: send KeyUpdate(update_not_requested)\n" \
+    "                        2: send KeyUpdate(update_requested)\n"
+#else
+#define USAGE_KEY_UPDATE ""
+#endif
+
 #if defined(MBEDTLS_SSL_RENEGOTIATION)
 #define USAGE_RENEGO \
     "    renegotiation=%%d    default: 0 (disabled)\n"      \
@@ -544,6 +554,7 @@ int main(void)
 #define USAGE3 \
     "    allow_legacy=%%d     default: (library default: no)\n"      \
     USAGE_RENEGO                                            \
+    USAGE_KEY_UPDATE                                        \
     "    exchanges=%%d        default: 1\n"                 \
     "\n"                                                    \
     USAGE_TICKETS                                           \
@@ -647,6 +658,7 @@ struct options {
     int renegotiation;          /* enable / disable renegotiation           */
     int allow_legacy;           /* allow legacy renegotiation               */
     int renegotiate;            /* attempt renegotiation?                   */
+    int key_update;             /* send DTLS 1.3 KeyUpdate after handshake  */
     int renego_delay;           /* delay before enforcing renegotiation     */
     uint64_t renego_period;     /* period for automatic renegotiation       */
     int exchanges;              /* number of data exchanges                 */
@@ -1716,6 +1728,7 @@ int main(int argc, char *argv[])
     opt.renegotiation       = DFL_RENEGOTIATION;
     opt.allow_legacy        = DFL_ALLOW_LEGACY;
     opt.renegotiate         = DFL_RENEGOTIATE;
+    opt.key_update          = DFL_KEY_UPDATE;
     opt.renego_delay        = DFL_RENEGO_DELAY;
     opt.renego_period       = DFL_RENEGO_PERIOD;
     opt.exchanges           = DFL_EXCHANGES;
@@ -2006,6 +2019,11 @@ usage:
         } else if (strcmp(p, "renegotiate") == 0) {
             opt.renegotiate = atoi(q);
             if (opt.renegotiate < 0 || opt.renegotiate > 1) {
+                goto usage;
+            }
+        } else if (strcmp(p, "key_update") == 0) {
+            opt.key_update = atoi(q);
+            if (opt.key_update < 0 || opt.key_update > 2) {
                 goto usage;
             }
         } else if (strcmp(p, "renego_delay") == 0) {
@@ -3844,6 +3862,26 @@ data_exchange:
         ret = 0;
     }
 
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS)
+    /* Drain any incoming ACKs for a reciprocal KeyUpdate that was sent
+     * internally (e.g. update_requested=1 from the client), before we
+     * write the response.  The library returns WANT_READ as soon as the
+     * KU ACK is processed, so this loop exits promptly without needing
+     * a timeout. */
+    while (mbedtls_ssl_dtls13_key_update_pending(&ssl)) {
+        int drain_ret = mbedtls_ssl_read(&ssl, buf, sizeof(buf) - 1);
+        if (drain_ret == MBEDTLS_ERR_SSL_WANT_READ ||
+            drain_ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+            continue;
+        }
+        if (drain_ret <= 0) {
+            break;
+        }
+        mbedtls_printf("  ! unexpected data while waiting "
+                       "for reciprocal KeyUpdate ACK (%d bytes)\n", drain_ret);
+    }
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 && MBEDTLS_SSL_PROTO_DTLS */
+
     /*
      * 7a. Request renegotiation while client is waiting for input from us.
      * (only on the first exchange, to be able to test retransmission)
@@ -3872,6 +3910,38 @@ data_exchange:
         mbedtls_printf(" ok\n");
     }
 #endif /* MBEDTLS_SSL_RENEGOTIATION */
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS)
+    if (opt.key_update && exchanges_left == opt.exchanges) {
+        mbedtls_printf("  . Sending KeyUpdate...");
+        fflush(stdout);
+        if ((ret = mbedtls_ssl_send_key_update(
+                       &ssl, opt.key_update == 2 ? 1 : 0)) != 0) {
+            mbedtls_printf(" failed\n  ! mbedtls_ssl_send_key_update returned -0x%x\n\n",
+                           (unsigned int) -ret);
+            goto reset;
+        }
+        mbedtls_printf(" ok\n");
+
+        /* Drain incoming records until the peer's ACK is processed.
+         * The library returns WANT_READ as soon as the KU ACK is processed,
+         * so this loop exits promptly without needing a timeout. */
+        while (mbedtls_ssl_dtls13_key_update_pending(&ssl)) {
+            ret = mbedtls_ssl_read(&ssl, buf, sizeof(buf) - 1);
+            if (ret == MBEDTLS_ERR_SSL_WANT_READ ||
+                ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+                continue;
+            }
+            if (ret <= 0) {
+                break; /* error — proceed anyway */
+            }
+            /* Unexpected application data while waiting for ACK. */
+            mbedtls_printf("  ! unexpected data while waiting "
+                           "for KeyUpdate ACK (%d bytes)\n", ret);
+        }
+        ret = 0;
+    }
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 && MBEDTLS_SSL_PROTO_DTLS */
 
 #if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
     ret = report_cid_usage(&ssl, "after renegotiation");

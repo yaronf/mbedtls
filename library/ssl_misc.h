@@ -476,6 +476,23 @@ size_t mbedtls_ssl_get_input_max_frag_len(const mbedtls_ssl_context *ssl);
 size_t mbedtls_ssl_get_output_record_size_limit(const mbedtls_ssl_context *ssl);
 #endif /* MBEDTLS_SSL_RECORD_SIZE_LIMIT */
 
+static inline const char *mbedtls_ssl_hs_type_name(unsigned hs_type)
+{
+    switch (hs_type) {
+        case MBEDTLS_SSL_HS_CLIENT_HELLO:         return "ClientHello";
+        case MBEDTLS_SSL_HS_SERVER_HELLO:         return "ServerHello";
+        case MBEDTLS_SSL_HS_NEW_SESSION_TICKET:   return "NewSessionTicket";
+        case MBEDTLS_SSL_HS_CERTIFICATE:          return "Certificate";
+        case MBEDTLS_SSL_HS_CERTIFICATE_REQUEST:  return "CertificateRequest";
+        case MBEDTLS_SSL_HS_CERTIFICATE_VERIFY:   return "CertificateVerify";
+        case MBEDTLS_SSL_HS_FINISHED:             return "Finished";
+        case MBEDTLS_SSL_HS_KEY_UPDATE:           return "KeyUpdate";
+        case MBEDTLS_SSL_HS_HELLO_VERIFY_REQUEST: return "HelloVerifyRequest";
+        case MBEDTLS_SSL_HS_ENCRYPTED_EXTENSIONS: return "EncryptedExtensions";
+        default:                                  return "unknown";
+    }
+}
+
 #if defined(MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH)
 static inline size_t mbedtls_ssl_get_output_buflen(const mbedtls_ssl_context *ctx)
 {
@@ -1271,6 +1288,28 @@ mbedtls_ssl_transform *ssl_dtls13_epoch_pool_lookup(
     const mbedtls_ssl_context *ssl,
     uint64_t epoch);
 
+
+/**
+ * \brief  Return non-zero if \p transform (by pointer) is already in the pool.
+ *         Used to guard against double-insert when in/out KUs retire the same
+ *         epoch at different times.
+ */
+static inline int ssl_dtls13_epoch_pool_contains(
+    const mbedtls_ssl_context *ssl,
+    const mbedtls_ssl_transform *transform)
+{
+    int i;
+    const mbedtls_ssl_dtls13_epoch_slot *pool = ssl->dtls13_epoch_pool;
+    if (transform == NULL) {
+        return 0;
+    }
+    for (i = 0; i < MBEDTLS_SSL_DTLS13_EPOCH_POOL_SIZE; i++) {
+        if (pool[i].transform == transform) {
+            return 1;
+        }
+    }
+    return 0;
+}
 
 /**
  * \brief  Free all transforms in the pool.  Called from mbedtls_ssl_free().

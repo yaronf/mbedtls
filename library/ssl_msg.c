@@ -2841,7 +2841,9 @@ int mbedtls_ssl_write_handshake_msg_ext(mbedtls_ssl_context *ssl,
     const size_t hs_len = ssl->out_msglen - 4;
     const unsigned char hs_type = ssl->out_msg[0];
 
-    MBEDTLS_SSL_DEBUG_MSG(2, ("=> write handshake message"));
+    MBEDTLS_SSL_DEBUG_MSG(2, ("=> write handshake message (%s, type=%u)",
+                              mbedtls_ssl_hs_type_name((unsigned) hs_type),
+                              (unsigned) hs_type));
 
     /*
      * Sanity checks
@@ -3747,10 +3749,11 @@ int mbedtls_ssl_prepare_handshake_record(mbedtls_ssl_context *ssl)
               recv_msg_seq != ssl->handshake->in_msg_seq))) {
             if (recv_msg_seq > ssl->handshake->in_msg_seq) {
                 MBEDTLS_SSL_DEBUG_MSG(2,
-                                      (
-                                          "received future handshake message of sequence number %u (next %u)",
-                                          recv_msg_seq,
-                                          ssl->handshake->in_msg_seq));
+                                      ("received future %s (type=%u) seq=%u (next expected=%u)",
+                                       mbedtls_ssl_hs_type_name(ssl->in_msg[0]),
+                                       (unsigned) ssl->in_msg[0],
+                                       recv_msg_seq,
+                                       ssl->handshake->in_msg_seq));
                 return MBEDTLS_ERR_SSL_EARLY_MESSAGE;
             }
 
@@ -3779,8 +3782,10 @@ int mbedtls_ssl_prepare_handshake_record(mbedtls_ssl_context *ssl)
                     return ret;
                 }
             } else {
-                MBEDTLS_SSL_DEBUG_MSG(2, ("dropping out-of-sequence message: "
+                MBEDTLS_SSL_DEBUG_MSG(2, ("dropping out-of-sequence %s (type=%u): "
                                           "message_seq = %u, expected = %u",
+                                          mbedtls_ssl_hs_type_name(ssl->in_msg[0]),
+                                          (unsigned) ssl->in_msg[0],
                                           recv_msg_seq,
                                           ssl->handshake->in_msg_seq));
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
@@ -4399,16 +4404,32 @@ static int ssl_parse_dtls13_record_header(mbedtls_ssl_context *ssl,
         rec->ctr[7] = buf[1];
     }
 
-    /* Epoch reconstruction: combine epoch_bits with in_epoch_full. */
+    /* Epoch reconstruction: combine epoch_bits with in_epoch_full.
+     *
+     * The on-wire epoch is only the low 2 bits.  We reconstruct the full
+     * 64-bit epoch by combining those bits with the receiver's current epoch
+     * (in_epoch_full), choosing the candidate closest to in_epoch_full.
+     * The period is 4 (2-bit epoch field), so valid candidates are:
+     *   ..., base-2, base-1, base, base+1, ...  (modulo 4 ≡ epoch_bits)
+     *
+     * Algorithm (RFC 9147 §4.2.2):
+     *   1. Start from the candidate aligned to the current epoch's epoch
+     *      period: candidate = (base & ~3) | epoch_bits.
+     *   2. If candidate is more than half a period (2) behind base, it is
+     *      more likely to be one period ahead — advance by 4.
+     *   3. If candidate is more than half a period (2) ahead of base, it is
+     *      more likely to be one period behind — subtract 4.
+     * This correctly handles the common case of records from the immediately
+     * preceding epoch (e.g. epoch=3 arriving after receiver advanced to
+     * epoch=4 via KeyUpdate). */
     {
         uint64_t base = ssl->in_epoch_full;
         uint64_t candidate = (base & ~(uint64_t)0x03) | epoch_bits;
-        /* If candidate is more than half a period behind base, advance it. */
         if (candidate + 2 < base) {
             candidate += 4;
+        } else if (candidate > base + 2 && candidate >= 4) {
+            candidate -= 4;
         }
-        /* Store low 16 bits in ctr[0..1] for compatibility with existing
-         * anti-replay code (which uses the 16-bit epoch). */
         rec->ctr[0] = (uint8_t)(candidate >> 8);
         rec->ctr[1] = (uint8_t)(candidate);
     }
@@ -6628,6 +6649,7 @@ int mbedtls_ssl_handle_message_type(mbedtls_ssl_context *ssl)
         ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
         ssl->in_msgtype == MBEDTLS_SSL_MSG_ACK) {
         /* Process incoming ACK message (RFC 9147 §7). */
+        int ku_was_pending = ssl->dtls13_ku_ack_pending;
         ret = ssl_dtls13_process_ack(ssl,
                                      ssl->in_msg,
                                      ssl->in_msg + ssl->in_msglen);
@@ -6635,6 +6657,14 @@ int mbedtls_ssl_handle_message_type(mbedtls_ssl_context *ssl)
             MBEDTLS_SSL_DEBUG_RET(1, "ssl_dtls13_process_ack", ret);
             /* Non-fatal: a malformed ACK should not kill the connection. */
             return MBEDTLS_ERR_SSL_NON_FATAL;
+        }
+        /* If this ACK cleared a pending KeyUpdate, surface to the caller
+         * immediately so it can observe the new outbound epoch without
+         * blocking on the next recv.  Any caller polling
+         * mbedtls_ssl_dtls13_key_update_pending() will re-enter and find
+         * the flag cleared. */
+        if (ku_was_pending && !ssl->dtls13_ku_ack_pending) {
+            return MBEDTLS_ERR_SSL_WANT_READ;
         }
         return MBEDTLS_ERR_SSL_NON_FATAL; /* consume and continue */
     }
@@ -7111,9 +7141,22 @@ static void ssl_dtls13_key_update_install_outbound(mbedtls_ssl_context *ssl)
     size_t hash_len;
 
     /* Retire the current outbound transform to the epoch pool so that any
-     * reordered records the peer sends referencing the old epoch can still
-     * be decrypted. */
-    ssl_dtls13_epoch_pool_insert(ssl, ssl->transform_out);
+     * records the peer sends at the old epoch can still be decrypted.
+     * (Both directions share the same transform_application object, so the
+     * pool is used even for the outbound direction transition.)
+     *
+     * Avoid double-insert: if an inbound KeyUpdate already pooled this same
+     * transform (same dtls13_epoch number), skip insertion.  Null out
+     * transform_application if it aliases the outgoing pointer to prevent
+     * a double-free in ssl_free(). */
+    if (ssl->transform_out == ssl->transform_application) {
+        ssl->transform_application = NULL;
+    }
+    if (ssl->transform_out != NULL &&
+        !ssl_dtls13_epoch_pool_contains(ssl, ssl->transform_out)) {
+        ssl_dtls13_epoch_pool_insert(ssl, ssl->transform_out);
+    }
+    ssl->transform_out = NULL; /* set_outbound_transform will reassign */
 
     /* Install the new outbound transform. */
     mbedtls_ssl_set_outbound_transform(ssl, ssl->dtls13_transform_pending_out);
@@ -7228,6 +7271,18 @@ static int ssl_tls13_write_key_update(mbedtls_ssl_context *ssl,
 
     MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_finish_handshake_msg(
                              ssl, buf_len, SSL_KEY_UPDATE_BODY_LEN));
+
+    /* Flush immediately so that out_left == 0 before returning.  If this is
+     * not done, a subsequent mbedtls_ssl_write() call will mistake leftover
+     * output bytes for a partially-written application-data record and return
+     * 'len' without actually writing the caller's data. */
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+        if ((ret = mbedtls_ssl_flush_output(ssl)) != 0) {
+            goto cleanup;
+        }
+    }
+#endif
 
     MBEDTLS_SSL_DEBUG_MSG(2, ("KeyUpdate sent (update_requested=%d, "
                               "new outbound epoch=%u)",
@@ -7360,8 +7415,20 @@ static int ssl_tls13_handle_key_update(mbedtls_ssl_context *ssl)
     }
 
     /* Retire old inbound transform to the epoch pool so reordered records
-     * from the old epoch can still be decrypted. */
-    ssl_dtls13_epoch_pool_insert(ssl, ssl->transform_in);
+     * from the old epoch can still be decrypted.  Per pool ownership rules,
+     * null out all aliasing pointers immediately after the insert.
+     *
+     * Guard against double-insert: if an outbound KeyUpdate ACK was already
+     * processed and retired this same epoch, it is already in the pool. */
+    if (ssl->transform_in == ssl->transform_application) {
+        ssl->transform_application = NULL;
+    }
+    if (ssl->transform_in != NULL &&
+        !ssl_dtls13_epoch_pool_contains(ssl, ssl->transform_in)) {
+        ssl_dtls13_epoch_pool_insert(ssl, ssl->transform_in);
+    }
+    /* else: already in pool from a prior outbound KU; just drop the pointer */
+    ssl->transform_in = NULL; /* pool owns it now; set_inbound_transform will reassign */
 
     /* Install the new inbound transform. */
     mbedtls_ssl_set_inbound_transform(ssl, new_transform);

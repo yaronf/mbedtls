@@ -5016,6 +5016,20 @@ int mbedtls_ssl_close_notify(mbedtls_ssl_context *ssl);
  *                 epoch until the ACK is received (RFC 9147 §8).
  */
 int mbedtls_ssl_send_key_update(mbedtls_ssl_context *ssl, int update_requested);
+
+/**
+ * \brief          Return non-zero if the peer has not yet acknowledged a
+ *                 previously sent KeyUpdate.  While this returns non-zero,
+ *                 outbound application records are still protected by the
+ *                 pre-KeyUpdate epoch.  The caller may use this to decide
+ *                 whether to drain incoming records (via mbedtls_ssl_read())
+ *                 before sending application data.
+ */
+static inline int mbedtls_ssl_dtls13_key_update_pending(
+    const mbedtls_ssl_context *ssl)
+{
+    return ssl->MBEDTLS_PRIVATE(dtls13_ku_ack_pending);
+}
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 && MBEDTLS_SSL_PROTO_DTLS */
 
 #if defined(MBEDTLS_SSL_EARLY_DATA)

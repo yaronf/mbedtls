@@ -106,6 +106,67 @@ run_test    "DTLS 1.3: HRR+cookie exchange (cookie enabled)" \
             -s "cookie verified"
 
 # ======================================================================
+# Cases from: keyupdate.yaml
+# ======================================================================
+
+requires_protocol_version dtls13
+run_test    "DTLS 1.3 KeyUpdate: client sends KeyUpdate (update_not_requested)" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=2" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=2 key_update=1" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -c "KeyUpdate sent" \
+            -c "ACK: KeyUpdate acknowledged" \
+            -c "KeyUpdate: new outbound transform installed" \
+            -s "KeyUpdate received" \
+            -s "KeyUpdate: new inbound transform installed"
+
+requires_protocol_version dtls13
+run_test    "DTLS 1.3 KeyUpdate: server sends KeyUpdate (update_not_requested)" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=2 key_update=1" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=2" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -s "KeyUpdate sent" \
+            -s "ACK: KeyUpdate acknowledged" \
+            -s "KeyUpdate: new outbound transform installed" \
+            -c "KeyUpdate received" \
+            -c "KeyUpdate: new inbound transform installed"
+
+requires_protocol_version dtls13
+run_test    "DTLS 1.3 KeyUpdate: client sends KeyUpdate (update_requested) — server reciprocates" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=2" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=2 key_update=2" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -c "KeyUpdate sent" \
+            -s "KeyUpdate received" \
+            -s "KeyUpdate sent" \
+            -s "ACK: KeyUpdate acknowledged" \
+            -s "KeyUpdate: new outbound transform installed" \
+            -c "KeyUpdate received" \
+            -c "KeyUpdate: new inbound transform installed"
+
+requires_protocol_version dtls13
+run_test    "DTLS 1.3 KeyUpdate: KeyUpdate followed by application data exchange" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=2 key_update=1 exchanges=2" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=2 exchanges=2" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -s "KeyUpdate sent" \
+            -s "ACK: KeyUpdate acknowledged" \
+            -s "51 bytes read" \
+            -c "144 bytes read"
+
+# ======================================================================
 # Cases from: proxy-3d.yaml
 # ======================================================================
 

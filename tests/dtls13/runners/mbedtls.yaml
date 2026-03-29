@@ -38,6 +38,7 @@ param_map:
   psk:            "psk={value}"
   psk_identity:   "psk_identity={value}"
   reconnect:      "reconnect={value}"
+  key_update:     "key_update={value}"
   skip_close_notify: "skip_close_notify={1 if value else 0}"
   read_timeout:   "read_timeout={value}"
   max_resend:     "max_resend={value}"
@@ -129,6 +130,36 @@ assertion_map:
   server_resumed:
     flag: "-s"
     string: "key exchange mode: psk_ephemeral"
+  client_key_update_sent:
+    flag: "-c"
+    string: "KeyUpdate sent"
+  server_key_update_sent:
+    flag: "-s"
+    string: "KeyUpdate sent"
+  client_key_update_received:
+    flag: "-c"
+    string: "KeyUpdate received"
+  server_key_update_received:
+    flag: "-s"
+    string: "KeyUpdate received"
+  client_key_update_outbound_installed:
+    flag: "-c"
+    string: "KeyUpdate: new outbound transform installed"
+  server_key_update_outbound_installed:
+    flag: "-s"
+    string: "KeyUpdate: new outbound transform installed"
+  client_key_update_inbound_installed:
+    flag: "-c"
+    string: "KeyUpdate: new inbound transform installed"
+  server_key_update_inbound_installed:
+    flag: "-s"
+    string: "KeyUpdate: new inbound transform installed"
+  client_key_update_acked:
+    flag: "-c"
+    string: "ACK: KeyUpdate acknowledged"
+  server_key_update_acked:
+    flag: "-s"
+    string: "ACK: KeyUpdate acknowledged"
 
 requires_map:
   protocol:

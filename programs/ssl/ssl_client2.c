@@ -63,6 +63,7 @@ int main(void)
 #define DFL_RENEGOTIATION       MBEDTLS_SSL_RENEGOTIATION_DISABLED
 #define DFL_ALLOW_LEGACY        -2
 #define DFL_RENEGOTIATE         0
+#define DFL_KEY_UPDATE          0
 #define DFL_EXCHANGES           1
 #define DFL_MIN_VERSION         -1
 #define DFL_MAX_VERSION         -1
@@ -295,6 +296,15 @@ int main(void)
 #define USAGE_REPRODUCIBLE \
     "    reproducible=0/1     default: 0 (disabled)\n"
 
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS)
+#define USAGE_KEY_UPDATE \
+    "    key_update=%%d       default: 0 (disabled)\n"                  \
+    "                        1: send KeyUpdate(update_not_requested)\n" \
+    "                        2: send KeyUpdate(update_requested)\n"
+#else
+#define USAGE_KEY_UPDATE ""
+#endif
+
 #if defined(MBEDTLS_SSL_RENEGOTIATION)
 #define USAGE_RENEGO \
     "    renegotiation=%%d    default: 0 (disabled)\n"      \
@@ -415,6 +425,7 @@ int main(void)
 #define USAGE3 \
     "    allow_legacy=%%d     default: (library default: no)\n"   \
     USAGE_RENEGO                                            \
+    USAGE_KEY_UPDATE                                        \
     "    exchanges=%%d        default: 1\n"                 \
     "    reconnect=%%d        number of reconnections using session resumption\n" \
     "                        default: 0 (disabled)\n"       \
@@ -497,6 +508,7 @@ struct options {
     int allow_legacy;           /* allow legacy renegotiation               */
     int renegotiate;            /* attempt renegotiation?                   */
     int renego_delay;           /* delay before enforcing renegotiation     */
+    int key_update;             /* send DTLS 1.3 KeyUpdate after handshake  */
     int exchanges;              /* number of data exchanges                 */
     int min_version;            /* minimum protocol version accepted        */
     int max_version;            /* maximum protocol version accepted        */
@@ -936,6 +948,7 @@ int main(int argc, char *argv[])
     opt.allow_legacy        = DFL_ALLOW_LEGACY;
     opt.renegotiate         = DFL_RENEGOTIATE;
     opt.renego_delay        = DFL_RENEGO_DELAY;
+    opt.key_update          = DFL_KEY_UPDATE;
     opt.exchanges           = DFL_EXCHANGES;
     opt.min_version         = DFL_MIN_VERSION;
     opt.max_version         = DFL_MAX_VERSION;
@@ -1171,6 +1184,11 @@ usage:
         } else if (strcmp(p, "renegotiate") == 0) {
             opt.renegotiate = atoi(q);
             if (opt.renegotiate < 0 || opt.renegotiate > 1) {
+                goto usage;
+            }
+        } else if (strcmp(p, "key_update") == 0) {
+            opt.key_update = atoi(q);
+            if (opt.key_update < 0 || opt.key_update > 2) {
                 goto usage;
             }
         } else if (strcmp(p, "exchanges") == 0) {
@@ -2495,6 +2513,20 @@ usage:
 
 
 #endif /* MBEDTLS_SSL_RENEGOTIATION */
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS)
+    if (opt.key_update) {
+        mbedtls_printf("  . Sending KeyUpdate...");
+        fflush(stdout);
+        if ((ret = mbedtls_ssl_send_key_update(
+                       &ssl, opt.key_update == 2 ? 1 : 0)) != 0) {
+            mbedtls_printf(" failed\n  ! mbedtls_ssl_send_key_update returned -0x%x\n\n",
+                           (unsigned int) -ret);
+            goto exit;
+        }
+        mbedtls_printf(" ok\n");
+    }
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 && MBEDTLS_SSL_PROTO_DTLS */
 
 #if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
     ret = report_cid_usage(&ssl, "after renegotiation");
