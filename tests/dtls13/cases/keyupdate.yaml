@@ -1,0 +1,75 @@
+family: "DTLS 1.3 KeyUpdate"
+requires:
+  - protocol: dtls13
+
+cases:
+  - name: "client sends KeyUpdate (update_not_requested)"
+    server:
+      debug_level: 2
+    client:
+      debug_level: 2
+      key_update: 1
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - client_key_update_sent
+        - client_key_update_acked
+        - client_key_update_outbound_installed
+        - server_key_update_received
+        - server_key_update_inbound_installed
+
+  - name: "server sends KeyUpdate (update_not_requested)"
+    server:
+      debug_level: 2
+      key_update: 1
+    client:
+      debug_level: 2
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - server_key_update_sent
+        - server_key_update_acked
+        - server_key_update_outbound_installed
+        - client_key_update_received
+        - client_key_update_inbound_installed
+
+  - name: "client sends KeyUpdate (update_requested) — server reciprocates"
+    server:
+      debug_level: 2
+    client:
+      debug_level: 2
+      key_update: 2
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - client_key_update_sent
+        - server_key_update_received
+        - server_key_update_sent
+        - server_key_update_acked
+        - server_key_update_outbound_installed
+        - client_key_update_received
+        - client_key_update_inbound_installed
+
+  - name: "KeyUpdate followed by application data exchange"
+    server:
+      debug_level: 2
+      key_update: 1
+      exchanges: 2
+    client:
+      debug_level: 2
+      exchanges: 2
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - server_key_update_sent
+        - server_key_update_acked
+        - server_read_client_data
+        - client_read_server_data
