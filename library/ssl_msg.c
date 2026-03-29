@@ -28,6 +28,7 @@
 
 #include "psa_util_internal.h"
 #include "psa/crypto.h"
+#include "ssl_tls13_keys.h"
 
 #if defined(MBEDTLS_CHACHA20_C)
 #include "mbedtls/private/chacha20.h"
@@ -2616,10 +2617,20 @@ int mbedtls_ssl_flight_transmit(mbedtls_ssl_context *ssl)
                     /* Restore the saved epoch-0 counter so retransmits continue
                      * from the correct sequence number rather than restarting
                      * at seq=0 (which would look like a replay to the peer). */
+                    /* Check any of the 8 counter bytes to detect a saved
+                     * counter.  The original guard only checked bytes [0..2]
+                     * which are all 0 for seq <= 65535 (all normal handshakes),
+                     * causing both HRR and SH to be retransmitted at seq=0 and
+                     * the SH to be rejected as a replay of the HRR. */
                     if (ssl->handshake != NULL &&
                         (ssl->handshake->dtls13_epoch0_out_ctr[0] != 0 ||
                          ssl->handshake->dtls13_epoch0_out_ctr[1] != 0 ||
-                         ssl->handshake->dtls13_epoch0_out_ctr[2] != 0)) {
+                         ssl->handshake->dtls13_epoch0_out_ctr[2] != 0 ||
+                         ssl->handshake->dtls13_epoch0_out_ctr[3] != 0 ||
+                         ssl->handshake->dtls13_epoch0_out_ctr[4] != 0 ||
+                         ssl->handshake->dtls13_epoch0_out_ctr[5] != 0 ||
+                         ssl->handshake->dtls13_epoch0_out_ctr[6] != 0 ||
+                         ssl->handshake->dtls13_epoch0_out_ctr[7] != 0)) {
                         memcpy(ssl->cur_out_ctr,
                                ssl->handshake->dtls13_epoch0_out_ctr, 8);
                     } else {
@@ -2681,6 +2692,11 @@ int mbedtls_ssl_flight_transmit(mbedtls_ssl_context *ssl)
             if (dtls13_saved_transform != NULL) {
                 if (dtls13_retx_slot != NULL) {
                     memcpy(dtls13_retx_slot->out_ctr, ssl->cur_out_ctr, 8);
+                } else if (ssl->handshake != NULL) {
+                    /* epoch-0 retransmit: persist incremented counter so
+                     * the next retransmit uses the next sequence number. */
+                    memcpy(ssl->handshake->dtls13_epoch0_out_ctr,
+                           ssl->cur_out_ctr, 8);
                 }
                 ssl->transform_out = dtls13_saved_transform;
                 memcpy(ssl->cur_out_ctr, dtls13_saved_ctr, 8);
@@ -2695,6 +2711,11 @@ int mbedtls_ssl_flight_transmit(mbedtls_ssl_context *ssl)
         if (dtls13_saved_transform != NULL) {
             if (dtls13_retx_slot != NULL) {
                 memcpy(dtls13_retx_slot->out_ctr, ssl->cur_out_ctr, 8);
+            } else if (ssl->handshake != NULL) {
+                /* epoch-0 retransmit: persist incremented counter so
+                 * the next retransmit uses the next sequence number. */
+                memcpy(ssl->handshake->dtls13_epoch0_out_ctr,
+                       ssl->cur_out_ctr, 8);
             }
             ssl->transform_out = dtls13_saved_transform;
             memcpy(ssl->cur_out_ctr, dtls13_saved_ctr, 8);
@@ -2831,10 +2852,11 @@ int mbedtls_ssl_write_handshake_msg_ext(mbedtls_ssl_context *ssl,
         return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
     }
 
-    /* Whenever we send anything different from a
-     * HelloRequest we should be in a handshake - double check. */
+    /* Whenever we send anything different from a HelloRequest or a TLS 1.3
+     * post-handshake KeyUpdate we should be in a handshake - double check. */
     if (!(ssl->out_msgtype == MBEDTLS_SSL_MSG_HANDSHAKE &&
-          hs_type          == MBEDTLS_SSL_HS_HELLO_REQUEST) &&
+          (hs_type == MBEDTLS_SSL_HS_HELLO_REQUEST ||
+           hs_type == MBEDTLS_SSL_HS_KEY_UPDATE)) &&
         ssl->handshake == NULL) {
         MBEDTLS_SSL_DEBUG_MSG(1, ("should never happen"));
         return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
@@ -2899,6 +2921,13 @@ int mbedtls_ssl_write_handshake_msg_ext(mbedtls_ssl_context *ssl,
             /* Write message_seq and update it, except for HelloRequest */
             if (hs_type != MBEDTLS_SSL_HS_HELLO_REQUEST) {
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+                /* Post-handshake messages (e.g. KeyUpdate) may be sent when
+                 * ssl->handshake is NULL.  Use the context-level counter. */
+                if (ssl->handshake == NULL) {
+                    MBEDTLS_PUT_UINT16_BE(ssl->dtls13_post_hs_msg_seq,
+                                         ssl->out_msg, 4);
+                    ++(ssl->dtls13_post_hs_msg_seq);
+                } else
                 /* DTLS 1.3 nbio: if this is a retry of a partially-sent
                  * fragmented message, re-stamp the same seq without
                  * incrementing out_msg_seq again. */
@@ -2991,16 +3020,21 @@ int mbedtls_ssl_write_handshake_msg_ext(mbedtls_ssl_context *ssl,
             if ((ssl->transform_out != NULL ||
                  hs_type == MBEDTLS_SSL_HS_CLIENT_HELLO ||
                  hs_type == MBEDTLS_SSL_HS_SERVER_HELLO) &&
-                ssl->handshake->dtls13_frag_off == 0) {
-                /* Skip the flight append on nbio retries — the message was
-                 * already appended on the first attempt (dtls13_frag_off > 0
-                 * means we are resuming a partially-sent fragmented message). */
-                MBEDTLS_SSL_DEBUG_MSG(3, ("DTLS 1.3: appending hs msg type %u "
-                                          "to retransmit flight",
-                                          (unsigned) hs_type));
-                if ((ret = ssl_flight_append(ssl)) != 0) {
-                    MBEDTLS_SSL_DEBUG_RET(1, "ssl_flight_append (DTLS 1.3)", ret);
-                    return ret;
+                (ssl->handshake == NULL ||
+                 ssl->handshake->dtls13_frag_off == 0)) {
+                /* Post-handshake messages (KeyUpdate) are not retransmitted
+                 * by the flight machinery — skip the flight append. */
+                if (ssl->handshake != NULL &&
+                    hs_type != MBEDTLS_SSL_HS_KEY_UPDATE) {
+                    /* Skip the flight append on nbio retries — the message was
+                     * already appended on the first attempt. */
+                    MBEDTLS_SSL_DEBUG_MSG(3, ("DTLS 1.3: appending hs msg type %u "
+                                              "to retransmit flight",
+                                              (unsigned) hs_type));
+                    if ((ret = ssl_flight_append(ssl)) != 0) {
+                        MBEDTLS_SSL_DEBUG_RET(1, "ssl_flight_append (DTLS 1.3)", ret);
+                        return ret;
+                    }
                 }
             }
             /* Fall through to send path below. */
@@ -6355,6 +6389,9 @@ static int ssl_dtls13_write_ack(mbedtls_ssl_context *ssl)
  *
  * On parse errors the record is silently discarded (non-fatal for DTLS).
  */
+/* Forward declaration: defined later, called from ssl_dtls13_process_ack(). */
+static void ssl_dtls13_key_update_install_outbound(mbedtls_ssl_context *ssl);
+
 MBEDTLS_CHECK_RETURN_CRITICAL
 static int ssl_dtls13_process_ack(mbedtls_ssl_context *ssl,
                                   const unsigned char *buf,
@@ -6393,11 +6430,6 @@ static int ssl_dtls13_process_ack(mbedtls_ssl_context *ssl,
     count = list_len / 16;
     MBEDTLS_SSL_DEBUG_MSG(2, ("ACK received: %u record numbers", (unsigned) count));
 
-    if (hs == NULL || hs->flight == NULL) {
-        /* No flight in progress — ACK is a no-op (silently discard). */
-        return 0;
-    }
-
     for (i = 0; i < count; i++) {
         uint64_t epoch = MBEDTLS_GET_UINT64_BE(buf,  0);
         uint64_t seq   = MBEDTLS_GET_UINT64_BE(buf,  8);
@@ -6406,6 +6438,22 @@ static int ssl_dtls13_process_ack(mbedtls_ssl_context *ssl,
         MBEDTLS_SSL_DEBUG_MSG(3, ("ACK: epoch=%llu seq=%llu",
                                   (unsigned long long) epoch,
                                   (unsigned long long) seq));
+
+        /* Check if this ACK record matches a pending KeyUpdate send. */
+        if (ssl->dtls13_ku_ack_pending &&
+            epoch == ssl->dtls13_ku_sent_epoch &&
+            seq   == ssl->dtls13_ku_sent_seq) {
+            MBEDTLS_SSL_DEBUG_MSG(2, ("ACK: KeyUpdate acknowledged "
+                                      "(epoch=%llu seq=%llu) — installing "
+                                      "pending outbound transform",
+                                      (unsigned long long) epoch,
+                                      (unsigned long long) seq));
+            ssl_dtls13_key_update_install_outbound(ssl);
+        }
+
+        if (hs == NULL || hs->flight == NULL) {
+            continue;
+        }
 
         for (item = hs->flight; item != NULL; item = item->next) {
             uint8_t j;
@@ -6427,6 +6475,10 @@ static int ssl_dtls13_process_ack(mbedtls_ssl_context *ssl,
                 }
             }
         }
+    }
+
+    if (hs == NULL || hs->flight == NULL) {
+        return 0;
     }
 
     /* Check if the full flight has been acked. */
@@ -7026,6 +7078,389 @@ static int ssl_check_ctr_renegotiate(mbedtls_ssl_context *ssl)
 
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
 
+/* ---------------------------------------------------------------------------
+ * DTLS 1.3 / TLS 1.3 KeyUpdate (RFC 8446 §4.6.3, RFC 9147 §8)
+ * ---------------------------------------------------------------------------
+ *
+ * Either peer may send a KeyUpdate message to advance the application-data
+ * traffic keys to the next generation.  The body is one byte:
+ *   0 = update_not_requested  (just updating our own write keys)
+ *   1 = update_requested      (peer must send a KeyUpdate in response)
+ *
+ * DTLS 1.3 constraint: the sender MUST NOT use the new epoch for outbound
+ * records until the KeyUpdate has been ACKed by the peer (§8).  We hold the
+ * new outbound transform in ssl->dtls13_transform_pending_out and install it
+ * only when ssl_dtls13_process_ack() sees the matching ACK record.
+ *
+ * For TLS 1.3 (reliable transport) the new outbound transform is installed
+ * immediately after the KeyUpdate record is written.
+ * ---------------------------------------------------------------------------
+ */
+
+/* KeyUpdate body length (after the 4-byte HS header). */
+#define SSL_KEY_UPDATE_BODY_LEN  1
+#define SSL_KEY_UPDATE_NOT_REQUESTED  0
+#define SSL_KEY_UPDATE_REQUESTED      1
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+/*
+ * Install the pending outbound KeyUpdate transform once its ACK has arrived.
+ * Called from ssl_dtls13_process_ack().
+ */
+static void ssl_dtls13_key_update_install_outbound(mbedtls_ssl_context *ssl)
+{
+    const mbedtls_ssl_ciphersuite_t *cs_info;
+    psa_algorithm_t hash_alg;
+    size_t hash_len;
+
+    /* Retire the current outbound transform to the epoch pool so that any
+     * reordered records the peer sends referencing the old epoch can still
+     * be decrypted. */
+    ssl_dtls13_epoch_pool_insert(ssl, ssl->transform_out);
+
+    /* Install the new outbound transform. */
+    mbedtls_ssl_set_outbound_transform(ssl, ssl->dtls13_transform_pending_out);
+    ssl->dtls13_transform_pending_out = NULL; /* ownership transferred */
+
+    /* Update the stored application secret for the outbound direction so that
+     * future KeyUpdates chain correctly. */
+    cs_info = mbedtls_ssl_ciphersuite_from_id(ssl->session->ciphersuite);
+    if (cs_info != NULL) {
+        hash_alg = mbedtls_md_psa_alg_from_type((mbedtls_md_type_t) cs_info->mac);
+        hash_len = PSA_HASH_LENGTH(hash_alg);
+
+        if (ssl->conf->endpoint == MBEDTLS_SSL_IS_CLIENT) {
+            memcpy(ssl->session->app_secrets.client_application_traffic_secret_N,
+                   ssl->dtls13_ku_pending_secret, hash_len);
+        } else {
+            memcpy(ssl->session->app_secrets.server_application_traffic_secret_N,
+                   ssl->dtls13_ku_pending_secret, hash_len);
+        }
+    }
+
+    mbedtls_platform_zeroize(ssl->dtls13_ku_pending_secret,
+                             sizeof(ssl->dtls13_ku_pending_secret));
+    ssl->dtls13_ku_ack_pending = 0;
+
+    MBEDTLS_SSL_DEBUG_MSG(2, ("KeyUpdate: new outbound transform installed "
+                              "(epoch %u)",
+                              (unsigned) ssl->transform_out->dtls13_epoch));
+}
+#endif /* MBEDTLS_SSL_PROTO_DTLS */
+
+/*
+ * Send a KeyUpdate message.
+ *
+ * For DTLS 1.3: derives the new outbound secret+transform and holds them in
+ * dtls13_transform_pending_out / dtls13_ku_pending_secret.  Records the sent
+ * record's (epoch, seq) so that ssl_dtls13_process_ack() can trigger
+ * ssl_dtls13_key_update_install_outbound() when the ACK arrives.
+ *
+ * For TLS 1.3: installs the new outbound transform immediately (reliable
+ * transport; no ACK needed).
+ */
+MBEDTLS_CHECK_RETURN_CRITICAL
+static int ssl_tls13_write_key_update(mbedtls_ssl_context *ssl,
+                                      int update_requested)
+{
+    int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+    unsigned char *buf;
+    size_t buf_len;
+    const mbedtls_ssl_ciphersuite_t *cs_info;
+    psa_algorithm_t hash_alg;
+    size_t hash_len;
+    unsigned char new_secret[MBEDTLS_TLS1_3_MD_MAX_SIZE];
+    mbedtls_ssl_transform *new_transform = NULL;
+    uint16_t new_epoch;
+
+    /* KeyUpdate is only valid post-handshake with TLS 1.3. */
+    if (ssl->session == NULL) {
+        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+    }
+
+    cs_info = mbedtls_ssl_ciphersuite_from_id(ssl->session->ciphersuite);
+    if (cs_info == NULL) {
+        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+    }
+    hash_alg = mbedtls_md_psa_alg_from_type((mbedtls_md_type_t) cs_info->mac);
+    hash_len = PSA_HASH_LENGTH(hash_alg);
+
+    /* Derive the new outbound secret (secret_N → secret_N+1). */
+    {
+        const unsigned char *cur_secret =
+            (ssl->conf->endpoint == MBEDTLS_SSL_IS_CLIENT)
+            ? ssl->session->app_secrets.client_application_traffic_secret_N
+            : ssl->session->app_secrets.server_application_traffic_secret_N;
+
+        ret = mbedtls_ssl_tls13_update_traffic_secret(
+            hash_alg, cur_secret, new_secret, hash_len);
+        if (ret != 0) {
+            MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_tls13_update_traffic_secret",
+                                  ret);
+            goto cleanup;
+        }
+    }
+
+    /* Build the new outbound transform from the updated secret. */
+    new_epoch = (uint16_t)(ssl->transform_out->dtls13_epoch + 1);
+    {
+        const unsigned char *client_secret, *server_secret;
+        if (ssl->conf->endpoint == MBEDTLS_SSL_IS_CLIENT) {
+            client_secret = new_secret;
+            server_secret =
+                ssl->session->app_secrets.server_application_traffic_secret_N;
+        } else {
+            client_secret =
+                ssl->session->app_secrets.client_application_traffic_secret_N;
+            server_secret = new_secret;
+        }
+        ret = mbedtls_ssl_tls13_compute_key_update_transform(
+            ssl, client_secret, server_secret, new_epoch, &new_transform);
+        if (ret != 0) {
+            MBEDTLS_SSL_DEBUG_RET(1,
+                "mbedtls_ssl_tls13_compute_key_update_transform", ret);
+            goto cleanup;
+        }
+    }
+
+    /* Write the KeyUpdate handshake message. */
+    MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_start_handshake_msg(
+                             ssl, MBEDTLS_SSL_HS_KEY_UPDATE, &buf, &buf_len));
+
+    MBEDTLS_SSL_CHK_BUF_PTR(buf, buf + buf_len, SSL_KEY_UPDATE_BODY_LEN);
+    buf[0] = (unsigned char) update_requested;
+
+    MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_finish_handshake_msg(
+                             ssl, buf_len, SSL_KEY_UPDATE_BODY_LEN));
+
+    MBEDTLS_SSL_DEBUG_MSG(2, ("KeyUpdate sent (update_requested=%d, "
+                              "new outbound epoch=%u)",
+                              update_requested, (unsigned) new_epoch));
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+        /* DTLS: must not use the new epoch until ACKed.  Hold the new
+         * transform and stash the sent record's (epoch, seq) for matching. */
+        ssl->dtls13_transform_pending_out = new_transform;
+        new_transform = NULL; /* ownership transferred */
+
+        memcpy(ssl->dtls13_ku_pending_secret, new_secret, hash_len);
+
+        /* cur_out_ctr epoch bytes: bytes [0..1], seq: bytes [2..7] */
+        ssl->dtls13_ku_sent_epoch =
+            MBEDTLS_GET_UINT16_BE(ssl->cur_out_ctr, 0);
+        /* The sequence counter was incremented by write_record; read
+         * the value that was just used (cur_out_ctr - 1). */
+        {
+            uint64_t sent_seq = MBEDTLS_GET_UINT64_BE(ssl->cur_out_ctr, 0)
+                                & UINT64_C(0x0000FFFFFFFFFFFF);
+            if (sent_seq > 0) {
+                sent_seq--;
+            }
+            ssl->dtls13_ku_sent_seq = sent_seq;
+        }
+        ssl->dtls13_ku_ack_pending = 1;
+    } else
+#endif /* MBEDTLS_SSL_PROTO_DTLS */
+    {
+        /* TLS: install immediately and update the stored secret. */
+        mbedtls_ssl_transform *old_out = ssl->transform_out;
+        mbedtls_ssl_set_outbound_transform(ssl, new_transform);
+        new_transform = NULL;
+        mbedtls_ssl_transform_free(old_out);
+        mbedtls_free(old_out);
+
+        if (ssl->conf->endpoint == MBEDTLS_SSL_IS_CLIENT) {
+            memcpy(ssl->session->app_secrets.client_application_traffic_secret_N,
+                   new_secret, hash_len);
+        } else {
+            memcpy(ssl->session->app_secrets.server_application_traffic_secret_N,
+                   new_secret, hash_len);
+        }
+    }
+
+cleanup:
+    mbedtls_platform_zeroize(new_secret, sizeof(new_secret));
+    if (new_transform != NULL) {
+        mbedtls_ssl_transform_free(new_transform);
+        mbedtls_free(new_transform);
+    }
+    return ret;
+}
+
+/*
+ * Handle a received KeyUpdate message (RFC 8446 §4.6.3).
+ *
+ * Updates the inbound transform to the next epoch and, if update_requested=1,
+ * sends a KeyUpdate(update_not_requested) in response.
+ */
+MBEDTLS_CHECK_RETURN_CRITICAL
+static int ssl_tls13_handle_key_update(mbedtls_ssl_context *ssl)
+{
+    int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+    unsigned char update_requested;
+    size_t hs_hdr_len = mbedtls_ssl_hs_hdr_len(ssl);
+    const mbedtls_ssl_ciphersuite_t *cs_info;
+    psa_algorithm_t hash_alg;
+    size_t hash_len;
+    unsigned char new_secret[MBEDTLS_TLS1_3_MD_MAX_SIZE];
+    mbedtls_ssl_transform *new_transform = NULL;
+    uint16_t new_epoch;
+
+    /* Validate length: HS header + 1 body byte. */
+    if (ssl->in_hslen != hs_hdr_len + SSL_KEY_UPDATE_BODY_LEN) {
+        MBEDTLS_SSL_DEBUG_MSG(1, ("KeyUpdate: bad length %u (expected %u)",
+                                  (unsigned) ssl->in_hslen,
+                                  (unsigned)(hs_hdr_len + SSL_KEY_UPDATE_BODY_LEN)));
+        MBEDTLS_SSL_PEND_FATAL_ALERT(MBEDTLS_SSL_ALERT_MSG_DECODE_ERROR,
+                                     MBEDTLS_ERR_SSL_DECODE_ERROR);
+        return MBEDTLS_ERR_SSL_DECODE_ERROR;
+    }
+
+    update_requested = ssl->in_msg[hs_hdr_len];
+    if (update_requested != SSL_KEY_UPDATE_NOT_REQUESTED &&
+        update_requested != SSL_KEY_UPDATE_REQUESTED) {
+        MBEDTLS_SSL_DEBUG_MSG(1, ("KeyUpdate: invalid update_requested value %u",
+                                  (unsigned) update_requested));
+        MBEDTLS_SSL_PEND_FATAL_ALERT(MBEDTLS_SSL_ALERT_MSG_ILLEGAL_PARAMETER,
+                                     MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER);
+        return MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER;
+    }
+
+    MBEDTLS_SSL_DEBUG_MSG(2, ("KeyUpdate received (update_requested=%u)",
+                              (unsigned) update_requested));
+
+    if (ssl->session == NULL) {
+        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+    }
+
+    cs_info = mbedtls_ssl_ciphersuite_from_id(ssl->session->ciphersuite);
+    if (cs_info == NULL) {
+        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+    }
+    hash_alg = mbedtls_md_psa_alg_from_type((mbedtls_md_type_t) cs_info->mac);
+    hash_len = PSA_HASH_LENGTH(hash_alg);
+
+    /* Derive new inbound secret (peer's write secret, generation N+1). */
+    {
+        const unsigned char *peer_secret =
+            (ssl->conf->endpoint == MBEDTLS_SSL_IS_CLIENT)
+            ? ssl->session->app_secrets.server_application_traffic_secret_N
+            : ssl->session->app_secrets.client_application_traffic_secret_N;
+
+        ret = mbedtls_ssl_tls13_update_traffic_secret(
+            hash_alg, peer_secret, new_secret, hash_len);
+        if (ret != 0) {
+            MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_tls13_update_traffic_secret",
+                                  ret);
+            goto cleanup;
+        }
+    }
+
+    /* Build new inbound transform. */
+    new_epoch = (uint16_t)(ssl->transform_in->dtls13_epoch + 1);
+    {
+        const unsigned char *client_secret, *server_secret;
+        if (ssl->conf->endpoint == MBEDTLS_SSL_IS_CLIENT) {
+            client_secret =
+                ssl->session->app_secrets.client_application_traffic_secret_N;
+            server_secret = new_secret;
+        } else {
+            client_secret = new_secret;
+            server_secret =
+                ssl->session->app_secrets.server_application_traffic_secret_N;
+        }
+        ret = mbedtls_ssl_tls13_compute_key_update_transform(
+            ssl, client_secret, server_secret, new_epoch, &new_transform);
+        if (ret != 0) {
+            MBEDTLS_SSL_DEBUG_RET(1,
+                "mbedtls_ssl_tls13_compute_key_update_transform", ret);
+            goto cleanup;
+        }
+    }
+
+    /* Retire old inbound transform. For DTLS, keep it in the epoch pool so
+     * reordered records from the old epoch can still be decrypted.  For TLS,
+     * just free it (reliable, ordered transport; old epoch never needed). */
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+        ssl_dtls13_epoch_pool_insert(ssl, ssl->transform_in);
+    } else
+#endif
+    {
+        mbedtls_ssl_transform_free(ssl->transform_in);
+        mbedtls_free(ssl->transform_in);
+        ssl->transform_in = NULL;
+    }
+
+    /* Install the new inbound transform. */
+    mbedtls_ssl_set_inbound_transform(ssl, new_transform);
+    new_transform = NULL; /* ownership transferred */
+
+    /* Update the stored inbound (peer's) secret. */
+    if (ssl->conf->endpoint == MBEDTLS_SSL_IS_CLIENT) {
+        memcpy(ssl->session->app_secrets.server_application_traffic_secret_N,
+               new_secret, hash_len);
+    } else {
+        memcpy(ssl->session->app_secrets.client_application_traffic_secret_N,
+               new_secret, hash_len);
+    }
+
+    MBEDTLS_SSL_DEBUG_MSG(2, ("KeyUpdate: new inbound transform installed "
+                              "(epoch %u)", (unsigned) new_epoch));
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+    /* ACK the KeyUpdate so the peer knows we processed it. */
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+        ssl->dtls13_ack_pending = 1;
+    }
+#endif
+
+    /* If the peer requested a reciprocal KeyUpdate, send one back. */
+    if (update_requested == SSL_KEY_UPDATE_REQUESTED) {
+        ret = ssl_tls13_write_key_update(ssl, SSL_KEY_UPDATE_NOT_REQUESTED);
+        if (ret != 0) {
+            MBEDTLS_SSL_DEBUG_RET(1, "ssl_tls13_write_key_update", ret);
+            goto cleanup;
+        }
+    }
+
+    ret = 0;
+
+cleanup:
+    mbedtls_platform_zeroize(new_secret, sizeof(new_secret));
+    if (new_transform != NULL) {
+        mbedtls_ssl_transform_free(new_transform);
+        mbedtls_free(new_transform);
+    }
+    return ret;
+}
+
+/* ---------------------------------------------------------------------------
+ * Public KeyUpdate API
+ * ---------------------------------------------------------------------------
+ */
+
+int mbedtls_ssl_send_key_update(mbedtls_ssl_context *ssl, int update_requested)
+{
+    if (ssl == NULL || ssl->session == NULL || ssl->transform_out == NULL) {
+        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+    }
+    if (ssl->state != MBEDTLS_SSL_HANDSHAKE_OVER) {
+        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+    }
+
+    return ssl_tls13_write_key_update(
+        ssl,
+        update_requested ? SSL_KEY_UPDATE_REQUESTED
+                         : SSL_KEY_UPDATE_NOT_REQUESTED);
+}
+
+/* ---------------------------------------------------------------------------
+ * End of KeyUpdate implementation
+ * ---------------------------------------------------------------------------
+ */
+
 #if defined(MBEDTLS_SSL_CLI_C)
 MBEDTLS_CHECK_RETURN_CRITICAL
 static int ssl_tls13_is_new_session_ticket(mbedtls_ssl_context *ssl)
@@ -7045,6 +7480,11 @@ static int ssl_tls13_handle_hs_message_post_handshake(mbedtls_ssl_context *ssl)
 {
 
     MBEDTLS_SSL_DEBUG_MSG(3, ("received post-handshake message"));
+
+    /* KeyUpdate is valid for both client and server (RFC 8446 §4.6.3). */
+    if (ssl->in_msg[0] == MBEDTLS_SSL_HS_KEY_UPDATE) {
+        return ssl_tls13_handle_key_update(ssl);
+    }
 
 #if defined(MBEDTLS_SSL_CLI_C)
     if (ssl->conf->endpoint == MBEDTLS_SSL_IS_CLIENT) {

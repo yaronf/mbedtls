@@ -2286,4 +2286,155 @@ exit:
 }
 #endif /* defined(MBEDTLS_SSL_KEYING_MATERIAL_EXPORT) */
 
+/*
+ * DTLS/TLS 1.3 KeyUpdate key derivation (RFC 8446 §7.2).
+ *
+ * Derives the next-generation application traffic secret:
+ *   secret_N+1 = HKDF-Expand-Label(secret_N, "traffic upd", "", hash_len)
+ *
+ * The caller must supply a buffer of at least hash_len bytes for new_secret.
+ * On success the old secret in new_secret is overwritten.
+ */
+int mbedtls_ssl_tls13_update_traffic_secret(
+    psa_algorithm_t hash_alg,
+    const unsigned char *secret_N,
+    unsigned char *secret_N1,
+    size_t secret_len)
+{
+    return mbedtls_ssl_tls13_derive_secret(
+        hash_alg,
+        secret_N, secret_len,
+        MBEDTLS_SSL_TLS1_3_LBL_WITH_LEN(traffic_upd),
+        NULL, 0,
+        MBEDTLS_SSL_TLS1_3_CONTEXT_UNHASHED,
+        secret_N1, secret_len);
+}
+
+/*
+ * DTLS/TLS 1.3 KeyUpdate: build a new application transform from a
+ * client+server secret pair (RFC 8446 §4.6.3 / RFC 9147 §8).
+ *
+ * This mirrors mbedtls_ssl_tls13_compute_application_transform() but:
+ *   - accepts the secrets directly rather than deriving them from the
+ *     key schedule transcript (they are already stored in app_secrets),
+ *   - uses ssl->session->ciphersuite (int) rather than
+ *     ssl->handshake->ciphersuite_info (which is freed post-handshake),
+ *   - assigns the caller-supplied epoch to transform->dtls13_epoch.
+ *
+ * On success *out_transform is set to a newly-allocated transform.
+ * The caller is responsible for freeing it.
+ */
+int mbedtls_ssl_tls13_compute_key_update_transform(
+    mbedtls_ssl_context *ssl,
+    const unsigned char *client_secret,
+    const unsigned char *server_secret,
+    uint16_t new_epoch,
+    mbedtls_ssl_transform **out_transform)
+{
+    int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+    mbedtls_ssl_key_set traffic_keys;
+    mbedtls_ssl_transform *transform = NULL;
+    const mbedtls_ssl_ciphersuite_t *cs_info;
+    psa_algorithm_t hash_alg;
+    size_t key_len = 0, iv_len = 0, hash_len;
+
+    *out_transform = NULL;
+
+    cs_info = mbedtls_ssl_ciphersuite_from_id(ssl->session->ciphersuite);
+    if (cs_info == NULL) {
+        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+    }
+
+    ret = ssl_tls13_get_cipher_key_info(cs_info, &key_len, &iv_len);
+    if (ret != 0) {
+        MBEDTLS_SSL_DEBUG_RET(1, "ssl_tls13_get_cipher_key_info", ret);
+        return ret;
+    }
+
+    hash_alg = mbedtls_md_psa_alg_from_type((mbedtls_md_type_t) cs_info->mac);
+    hash_len = PSA_HASH_LENGTH(hash_alg);
+
+    ret = mbedtls_ssl_tls13_make_traffic_keys(
+        hash_alg,
+        client_secret, server_secret,
+        hash_len, key_len, iv_len, &traffic_keys,
+        (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM));
+    if (ret != 0) {
+        MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_tls13_make_traffic_keys", ret);
+        goto cleanup;
+    }
+
+    transform = mbedtls_calloc(1, sizeof(mbedtls_ssl_transform));
+    if (transform == NULL) {
+        ret = MBEDTLS_ERR_SSL_ALLOC_FAILED;
+        goto cleanup;
+    }
+
+    ret = mbedtls_ssl_tls13_populate_transform(
+        transform,
+        ssl->conf->endpoint,
+        cs_info->id,
+        &traffic_keys,
+        ssl);
+    if (ret != 0) {
+        MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_tls13_populate_transform", ret);
+        goto cleanup;
+    }
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+        /* Derive inbound sn_key from peer's new write secret. */
+        const unsigned char *inbound_secret =
+            (ssl->conf->endpoint == MBEDTLS_SSL_IS_CLIENT)
+            ? server_secret : client_secret;
+
+        ret = mbedtls_ssl_dtls13_hkdf_expand_label(
+            hash_alg,
+            inbound_secret, hash_len,
+            (const unsigned char *) "sn", 2,
+            NULL, 0,
+            transform->sn_key, key_len);
+        if (ret != 0) {
+            MBEDTLS_SSL_DEBUG_RET(1,
+                "mbedtls_ssl_dtls13_hkdf_expand_label(sn)", ret);
+            goto cleanup;
+        }
+        transform->sn_key_len = key_len;
+
+        /* Derive outbound sn_key_enc from our new write secret. */
+        const unsigned char *outbound_secret =
+            (ssl->conf->endpoint == MBEDTLS_SSL_IS_CLIENT)
+            ? client_secret : server_secret;
+
+        ret = mbedtls_ssl_dtls13_hkdf_expand_label(
+            hash_alg,
+            outbound_secret, hash_len,
+            (const unsigned char *) "sn", 2,
+            NULL, 0,
+            transform->sn_key_enc, key_len);
+        if (ret != 0) {
+            MBEDTLS_SSL_DEBUG_RET(1,
+                "mbedtls_ssl_dtls13_hkdf_expand_label(sn_enc)", ret);
+            goto cleanup;
+        }
+        transform->sn_key_enc_len = key_len;
+
+        transform->dtls13_epoch = new_epoch;
+    }
+#else
+    (void) new_epoch;
+#endif /* MBEDTLS_SSL_PROTO_DTLS */
+
+    *out_transform = transform;
+    transform = NULL; /* ownership transferred */
+
+cleanup:
+    mbedtls_platform_zeroize(&traffic_keys, sizeof(traffic_keys));
+    if (transform != NULL) {
+        mbedtls_ssl_transform_free(transform);
+        mbedtls_free(transform);
+    }
+    return ret;
+}
+
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */

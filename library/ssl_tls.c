@@ -5140,6 +5140,13 @@ void mbedtls_ssl_free(mbedtls_ssl_context *ssl)
      * Must be done after handshake_free (which may null transform_handshake
      * when it was already moved to the pool). */
     ssl_dtls13_epoch_pool_free(ssl);
+
+    /* Free any pending outbound KeyUpdate transform (ACK not yet received). */
+    mbedtls_ssl_transform_free(ssl->dtls13_transform_pending_out);
+    mbedtls_free(ssl->dtls13_transform_pending_out);
+    ssl->dtls13_transform_pending_out = NULL;
+    mbedtls_platform_zeroize(ssl->dtls13_ku_pending_secret,
+                             sizeof(ssl->dtls13_ku_pending_secret));
 #endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 
     if (ssl->session) {

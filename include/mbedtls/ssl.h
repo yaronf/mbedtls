@@ -584,6 +584,7 @@
 #define MBEDTLS_SSL_HS_CERTIFICATE_VERIFY      15
 #define MBEDTLS_SSL_HS_CLIENT_KEY_EXCHANGE     16
 #define MBEDTLS_SSL_HS_FINISHED                20
+#define MBEDTLS_SSL_HS_KEY_UPDATE              24
 #define MBEDTLS_SSL_HS_MESSAGE_HASH           254
 
 /*
@@ -1750,6 +1751,24 @@ struct mbedtls_ssl_context {
     /** Set when an ACK needs to be sent on the next I/O call (§7 of RFC 9147
      *  bis).  Checked at the top of mbedtls_ssl_read_record(). */
     uint8_t MBEDTLS_PRIVATE(dtls13_ack_pending);
+
+    /** DTLS 1.3 post-handshake message sequence number counter.
+     *  Used for KeyUpdate and other post-HS handshake messages when
+     *  ssl->handshake is NULL (handshake context already freed). */
+    uint16_t MBEDTLS_PRIVATE(dtls13_post_hs_msg_seq);
+
+    /** DTLS 1.3 KeyUpdate pending-outbound state (RFC 9147 §8).
+     *
+     * After sending a KeyUpdate message, the new outbound transform MUST NOT
+     * be installed until the peer ACKs the KeyUpdate.  These fields hold the
+     * pending new outbound transform and the record (epoch, seq) of the sent
+     * KeyUpdate so the ACK path can match it.
+     */
+    mbedtls_ssl_transform *MBEDTLS_PRIVATE(dtls13_transform_pending_out);
+    unsigned char MBEDTLS_PRIVATE(dtls13_ku_pending_secret)[MBEDTLS_TLS1_3_MD_MAX_SIZE];
+    uint64_t MBEDTLS_PRIVATE(dtls13_ku_sent_epoch);
+    uint64_t MBEDTLS_PRIVATE(dtls13_ku_sent_seq);
+    uint8_t  MBEDTLS_PRIVATE(dtls13_ku_ack_pending); /* 1 while waiting for ACK */
 
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
@@ -4977,6 +4996,26 @@ int mbedtls_ssl_send_alert_message(mbedtls_ssl_context *ssl,
  *                 for a new connection; the current connection must be closed.
  */
 int mbedtls_ssl_close_notify(mbedtls_ssl_context *ssl);
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+/**
+ * \brief          Send a TLS 1.3 KeyUpdate message to the peer.
+ *
+ * \param ssl           SSL context (must have completed a TLS 1.3 handshake).
+ * \param update_requested  Set to 1 to ask the peer to send a KeyUpdate in
+ *                          response, 0 otherwise.
+ *
+ * \return         0 on success.
+ * \return         MBEDTLS_ERR_SSL_INTERNAL_ERROR if called before the
+ *                 handshake is complete or with an unexpected state.
+ * \return         A negative error code on I/O or crypto failure.
+ *
+ * \note           For DTLS 1.3 the new outbound keys are held pending until
+ *                 the peer ACKs the KeyUpdate record.  Records are still
+ *                 sent with the old epoch until the ACK is received.
+ */
+int mbedtls_ssl_send_key_update(mbedtls_ssl_context *ssl, int update_requested);
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 
 #if defined(MBEDTLS_SSL_EARLY_DATA)
 

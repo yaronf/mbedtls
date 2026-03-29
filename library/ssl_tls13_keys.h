@@ -685,6 +685,44 @@ int mbedtls_ssl_tls13_exporter(const psa_algorithm_t hash_alg,
                                const unsigned char *context_value, const size_t context_len,
                                uint8_t *out, const size_t out_len);
 
+/**
+ * \brief Derive the next-generation application traffic secret (RFC 8446 §7.2).
+ *
+ *   secret_N+1 = HKDF-Expand-Label(secret_N, "traffic upd", "", hash_len)
+ *
+ * \param hash_alg    Hash algorithm for the ciphersuite.
+ * \param secret_N    Current (generation N) traffic secret.
+ * \param secret_N1   Output buffer for generation N+1 secret. May alias secret_N.
+ * \param secret_len  Length of both secrets (= PSA_HASH_LENGTH(hash_alg)).
+ */
+int mbedtls_ssl_tls13_update_traffic_secret(
+    psa_algorithm_t hash_alg,
+    const unsigned char *secret_N,
+    unsigned char *secret_N1,
+    size_t secret_len);
+
+/**
+ * \brief Build a new application-data transform for a KeyUpdate epoch.
+ *
+ * Derives traffic keys from the supplied client+server secrets and
+ * populates a freshly-allocated \c mbedtls_ssl_transform, including
+ * the DTLS 1.3 sn_key / sn_key_enc fields and dtls13_epoch.
+ *
+ * \param ssl             SSL context (read conf, session->ciphersuite).
+ * \param client_secret   Client application traffic secret (new generation).
+ * \param server_secret   Server application traffic secret (new generation).
+ * \param new_epoch       DTLS epoch to assign to the transform (ignored for TLS).
+ * \param[out] out_transform  Set to the new transform on success.
+ *
+ * \return 0 on success, negative error code otherwise.
+ */
+int mbedtls_ssl_tls13_compute_key_update_transform(
+    mbedtls_ssl_context *ssl,
+    const unsigned char *client_secret,
+    const unsigned char *server_secret,
+    uint16_t new_epoch,
+    mbedtls_ssl_transform **out_transform);
+
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 
 #endif /* MBEDTLS_SSL_TLS1_3_KEYS_H */
