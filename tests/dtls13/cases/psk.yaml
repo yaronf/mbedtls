@@ -5,6 +5,9 @@ requires:
 
 cases:
   - name: "external PSK, psk_ephemeral key exchange"
+    # wolfssl: wolfSSL client uses a hardcoded PSK key/identity via --openssl-psk,
+    # incompatible with the test PSK values here. Covered in interop-wolfssl.yaml.
+    skip_runners: [wolfssl]
     server:
       psk: "abc123"
       psk_identity: "Client_identity"
@@ -24,7 +27,10 @@ cases:
   - name: "session resumption via NewSessionTicket PSK"
     # Full flow: cert-based handshake → server issues NST → client saves ticket →
     # client reconnects → server accepts resumed handshake via psk_ephemeral.
-    # Requires MBEDTLS_SSL_SESSION_TICKETS for NewSessionTicket support.
+    # wolfssl: wolfSSL client -r reconnects but performs a full handshake (doesn't
+    # use the ticket as a PSK), so psk_ephemeral assertion would fail.
+    # Covered in interop-wolfssl.yaml.
+    skip_runners: [wolfssl]
     requires:
       - config: MBEDTLS_SSL_SESSION_TICKETS
     server:
@@ -44,9 +50,9 @@ cases:
 
   - name: "PSK with cookie enabled — no HRR/cookie exchange (RFC 9147 §5.1)"
     # RFC 9147 §5.1: server MAY skip address validation when a valid PSK is
-    # available, because the client already proved reachability when the PSK
-    # (ticket) was delivered.  Pure psk_ephemeral with a matching key share
-    # never triggers HRR, so no cookie is required even when cookies=1.
+    # available. wolfSSL PSK uses hardcoded values, not compatible with this
+    # test's psk/psk_identity params.
+    skip_runners: [wolfssl]
     requires:
       - config: MBEDTLS_SSL_DTLS_HELLO_VERIFY
     server:

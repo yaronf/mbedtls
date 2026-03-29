@@ -61,6 +61,7 @@ run_test    "DTLS 1.3: fragmenting — proxy MTU, nbio" \
 
 requires_protocol_version dtls13
 run_test    "DTLS 1.3: full 1-RTT handshake" \
+            -p "" \
             "$P_SRV dtls=1 force_version=dtls13 debug_level=2" \
             "$P_CLI dtls=1 force_version=dtls13 debug_level=2" \
             0 \
@@ -69,6 +70,7 @@ run_test    "DTLS 1.3: full 1-RTT handshake" \
 
 requires_protocol_version dtls13
 run_test    "DTLS 1.3: bidirectional application data (2 exchanges)" \
+            -p "" \
             "$P_SRV dtls=1 force_version=dtls13 exchanges=2" \
             "$P_CLI dtls=1 force_version=dtls13 exchanges=2" \
             0 \
@@ -79,6 +81,7 @@ run_test    "DTLS 1.3: bidirectional application data (2 exchanges)" \
 
 requires_protocol_version dtls13
 run_test    "DTLS 1.3: client ACKs server Finished flight" \
+            -p "" \
             "$P_SRV dtls=1 force_version=dtls13 debug_level=2" \
             "$P_CLI dtls=1 force_version=dtls13 debug_level=2" \
             0 \
@@ -93,6 +96,7 @@ run_test    "DTLS 1.3: client ACKs server Finished flight" \
 requires_protocol_version dtls13
 requires_config_enabled MBEDTLS_SSL_DTLS_HELLO_VERIFY
 run_test    "DTLS 1.3: HRR+cookie exchange (cookie enabled)" \
+            -p "" \
             "$P_SRV dtls=1 force_version=dtls13 groups=secp384r1 debug_level=2" \
             "$P_CLI dtls=1 force_version=dtls13 debug_level=2" \
             0 \
@@ -110,7 +114,7 @@ requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
 run_test    "DTLS 1.3: proxy - 3d, basic handshake" \
             -p "$P_PXY drop=5 delay=5 duplicate=5" \
             "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-20000 debug_level=2" \
-            "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-20000 debug_level=2" \
+            "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-20000 read_timeout=5000 max_resend=5 debug_level=2" \
             0 \
             -s "Protocol is DTLSv1.3" \
             -c "Protocol is DTLSv1.3"
@@ -120,7 +124,7 @@ requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
 run_test    "DTLS 1.3: proxy - 3d, client auth" \
             -p "$P_PXY drop=5 delay=5 duplicate=5" \
             "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-20000 auth_mode=required debug_level=2" \
-            "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-20000 debug_level=2" \
+            "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-20000 read_timeout=5000 max_resend=5 debug_level=2" \
             0 \
             -s "Protocol is DTLSv1.3" \
             -c "Protocol is DTLSv1.3"
@@ -130,7 +134,7 @@ requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
 run_test    "DTLS 1.3: proxy - 3d, nbio" \
             -p "$P_PXY drop=5 delay=5 duplicate=5" \
             "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-20000 nbio=2 debug_level=1" \
-            "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-20000 nbio=2 debug_level=1" \
+            "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-20000 nbio=2 read_timeout=5000 max_resend=5 debug_level=1" \
             0 \
             -s "Protocol is DTLSv1.3" \
             -c "Protocol is DTLSv1.3"
@@ -152,7 +156,7 @@ requires_config_enabled MBEDTLS_SSL_DTLS_HELLO_VERIFY
 run_test    "DTLS 1.3: proxy - 3d, HRR+cookie exchange" \
             -p "$P_PXY drop=8 delay=8 duplicate=8" \
             "$P_SRV dtls=1 force_version=dtls13 groups=secp384r1 dgram_packing=0 hs_timeout=500-20000 debug_level=2" \
-            "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-20000 debug_level=2" \
+            "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 hs_timeout=500-20000 read_timeout=5000 max_resend=5 debug_level=2" \
             0 \
             -s "Protocol is DTLSv1.3" \
             -c "Protocol is DTLSv1.3" \
@@ -225,6 +229,7 @@ run_test    "DTLS 1.3: proxy - inject invalid AD record, default badmac_limit" \
 requires_protocol_version dtls13
 requires_config_enabled MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_PSK_EPHEMERAL_ENABLED
 run_test    "DTLS 1.3 PSK: external PSK, psk_ephemeral key exchange" \
+            -p "" \
             "$P_SRV dtls=1 force_version=dtls13 psk=abc123 psk_identity=Client_identity auth_mode=required debug_level=2" \
             "$P_CLI dtls=1 force_version=dtls13 psk=abc123 psk_identity=Client_identity debug_level=2" \
             0 \
@@ -236,6 +241,7 @@ requires_protocol_version dtls13
 requires_config_enabled MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_PSK_EPHEMERAL_ENABLED
 requires_config_enabled MBEDTLS_SSL_SESSION_TICKETS
 run_test    "DTLS 1.3 PSK: session resumption via NewSessionTicket PSK" \
+            -p "" \
             "$P_SRV dtls=1 force_version=dtls13 debug_level=2" \
             "$P_CLI dtls=1 force_version=dtls13 reconnect=1 skip_close_notify=1 debug_level=2" \
             0 \
@@ -249,6 +255,7 @@ requires_protocol_version dtls13
 requires_config_enabled MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_PSK_EPHEMERAL_ENABLED
 requires_config_enabled MBEDTLS_SSL_DTLS_HELLO_VERIFY
 run_test    "DTLS 1.3 PSK: PSK with cookie enabled — no HRR/cookie exchange (RFC 9147 §5.1)" \
+            -p "" \
             "$P_SRV dtls=1 force_version=dtls13 psk=abc123 psk_identity=Client_identity auth_mode=required cookies=1 debug_level=2" \
             "$P_CLI dtls=1 force_version=dtls13 psk=abc123 psk_identity=Client_identity debug_level=2" \
             0 \
@@ -265,6 +272,7 @@ run_test    "DTLS 1.3 PSK: PSK with cookie enabled — no HRR/cookie exchange (R
 requires_protocol_version dtls13
 requires_protocol_version dtls12
 run_test    "DTLS 1.3 client, DTLS 1.2 server: negotiate down to DTLS 1.2 (no cookie)" \
+            -p "" \
             "$P_SRV dtls=1 force_version=dtls12 cookies=0" \
             "$P_CLI dtls=1 min_version=dtls12 max_version=dtls13" \
             0 \
@@ -274,6 +282,7 @@ run_test    "DTLS 1.3 client, DTLS 1.2 server: negotiate down to DTLS 1.2 (no co
 requires_protocol_version dtls13
 requires_protocol_version dtls12
 run_test    "DTLS 1.3 client, DTLS 1.2 server: negotiate down to DTLS 1.2 (with cookie)" \
+            -p "" \
             "$P_SRV dtls=1 force_version=dtls12" \
             "$P_CLI dtls=1 min_version=dtls12 max_version=dtls13" \
             0 \

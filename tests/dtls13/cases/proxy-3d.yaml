@@ -26,6 +26,9 @@ cases:
         - client_dtls13_negotiated
 
   - name: "proxy - 3d, client auth"
+    # wolfssl: wolfSSL client sends its own cert which mbedtls server can't
+    # verify without wolfSSL's CA configured. Covered in interop-wolfssl.yaml.
+    skip_runners: [wolfssl]
     requires:
       - config: MBEDTLS_SSL_PROTO_DTLS
     client_time_factor: 4
@@ -51,6 +54,10 @@ cases:
         - client_dtls13_negotiated
 
   - name: "proxy - 3d, nbio"
+    # wolfssl: nbio maps to mbedtls nbio={value}; wolfSSL uses -N but param_map
+    # applies to both sides — mbedtls server would receive -N as an invalid flag.
+    # nbio mode isn't meaningful for wolfSSL direction-A testing.
+    skip_runners: [wolfssl]
     requires:
       - config: MBEDTLS_SSL_PROTO_DTLS
     client_time_factor: 4

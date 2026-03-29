@@ -1393,7 +1393,8 @@ analyze_test_commands() {
     # It provides timing info that's useful to debug failures.
     if [ "$DTLS" -eq 1 ] &&
        [ "$THIS_SRV_PORT" = "$SRV_PORT" ] &&
-       [ -z "$PXY_CMD" ]
+       [ -z "$PXY_CMD" ] &&
+       [ "$NO_PROXY" -eq 0 ]
     then
         PXY_CMD="$P_PXY"
         case " $SRV_CMD " in
@@ -1766,9 +1767,16 @@ run_test() {
     fi
 
     # Does this test specify a proxy?
+    # -p ""  explicitly disables the auto-proxy (NO_PROXY=1).
+    # -p CMD sets a specific proxy command.
+    # No -p   leaves PXY_CMD empty; auto-proxy may fire in analyze_test_commands.
+    NO_PROXY=0
     if [ "X$1" = "X-p" ]; then
         PXY_CMD="$2"
         shift 2
+        if [ -z "$PXY_CMD" ]; then
+            NO_PROXY=1
+        fi
     else
         PXY_CMD=""
     fi

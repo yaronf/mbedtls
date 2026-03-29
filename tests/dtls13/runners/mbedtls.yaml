@@ -10,6 +10,11 @@ server_cmd: "$P_SRV dtls=1 force_version=dtls13"
 client_cmd: "$P_CLI dtls=1 force_version=dtls13"
 proxy_cmd:  "$P_PXY"
 
+# Suppress ssl-opt.sh's automatic DTLS proxy insertion for cases that don't
+# explicitly request a proxy.  Proxy cases use an explicit proxy: block and
+# are unaffected by this default.
+default_no_proxy: true
+
 # Overrides for force_version — when the case sets a non-dtls13 force_version,
 # the runner replaces the default in server_cmd / client_cmd.
 force_version_override: true

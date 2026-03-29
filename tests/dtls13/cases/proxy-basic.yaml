@@ -4,6 +4,9 @@ requires:
 
 cases:
   - name: "proxy - duplicate every packet"
+    # wolfssl: assertions (epoch_record, no_resend) are mbedtls debug strings
+    # not emitted by wolfSSL.
+    skip_runners: [wolfssl]
     requires:
       - not_valgrind: true
     proxy:
@@ -26,6 +29,9 @@ cases:
         - client_dtls13_negotiated
 
   - name: "proxy - duplicate every packet, anti-replay off"
+    # wolfssl: anti_replay is an mbedtls-server param; assertions are mbedtls
+    # debug strings.
+    skip_runners: [wolfssl]
     proxy:
       duplicate: 1
     server:
@@ -44,6 +50,8 @@ cases:
         - client_dtls13_negotiated
 
   - name: "proxy - multiple records in same datagram"
+    # wolfssl: next_record_same_datagram is a mbedtls debug string.
+    skip_runners: [wolfssl]
     proxy:
       pack: 50
     server:
@@ -59,6 +67,7 @@ cases:
         - server_next_record_same_datagram
 
   - name: "proxy - multiple records in same datagram, duplicate every packet"
+    skip_runners: [wolfssl]
     proxy:
       pack: 50
       duplicate: 1
@@ -75,6 +84,9 @@ cases:
         - server_next_record_same_datagram
 
   - name: "proxy - inject invalid AD record, default badmac_limit"
+    # wolfssl: bad_mac_discarded and badmac_limit are mbedtls debug strings
+    # not emitted by wolfSSL.
+    skip_runners: [wolfssl]
     client_time_factor: 4
     proxy:
       bad_ad: true

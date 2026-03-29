@@ -5,6 +5,10 @@ requires:
 
 cases:
   - name: "fragmenting \u2014 proxy MTU"
+    # wolfssl: uses mbedtls-specific cert chain files (crt_file/key_file) not
+    # available to wolfSSL. wolfSSL client also gets "record layer version error"
+    # when receiving fragmented DTLS 1.3 records (wolfSSL limitation).
+    skip_runners: [wolfssl]
     proxy:
       mtu: 512
     server:
@@ -32,6 +36,7 @@ cases:
         - client_no_error
 
   - name: "fragmenting \u2014 proxy MTU, nbio"
+    skip_runners: [wolfssl]
     proxy:
       mtu: 512
     server:

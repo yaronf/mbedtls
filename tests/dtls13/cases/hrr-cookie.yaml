@@ -18,4 +18,3 @@ cases:
         - client_dtls13_negotiated
         - client_hrr_received
         - server_cookie_verified
-

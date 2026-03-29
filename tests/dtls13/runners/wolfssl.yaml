@@ -1,44 +1,127 @@
-# wolfSSL interop runner profile for DTLS 1.3 test cases.
+# wolfSSL interop runner — Direction A only: mbedtls server ↔ wolfSSL client.
+#
+# Direction B (wolfSSL server ↔ mbedtls client) is NOT supported: wolfSSL's
+# DTLS 1.3 server silently drops mbedtls ClientHellos without responding,
+# regardless of cookie/HVR settings.  This appears to be a wolfSSL protocol
+# compatibility limitation as of wolfSSL 5.9.0.
 #
 # emit_path: output file when using --emit (relative to tests/dtls13/)
 emit_path: "dtls13-wolfssl-tests.sh"
-# case_glob: only process wolfssl interop case files
-case_glob: "interop-wolfssl.yaml"
-#
-#
-# This runner generates interop tests where one side is mbedtls and the other
-# is wolfSSL.  wolfSSL binaries must be run from WOLFSSL_DIR so they can
-# find ./certs/ at runtime.
+# case_glob: shared non-version-negotiation cases + wolfSSL-specific interop-A.
+case_glob:
+  - "[!iv]*.yaml"
+  - "interop-wolfssl.yaml"
 #
 # Prerequisites:
 #   - requires_wolfssl guard (defined in ssl-opt.sh)
 #   - WOLFSSL_DIR env var pointing to the wolfSSL source tree
 #   - wolfSSL built with --enable-dtls13 --enable-dtls
-#
-# Generates two flavours of test from each case:
-#   server_cmd  = mbedtls ssl_server2   (the mbedtls side is always the server)
-#   client_cmd  = wolfSSL client        (wolfSSL side is always the client)
+
+# Every test in this runner requires wolfssl.
+runner_requires:
+  - wolfssl: true
 
 server_cmd: "$P_SRV dtls=1 force_version=dtls13 auth_mode=none"
 client_cmd: "cd $WOLFSSL_DIR && $WOLFSSL_CLI -u -v 4 -d -p +SRV_PORT"
+proxy_cmd:  "$P_PXY"
 
-# No proxy for wolfSSL interop (wolfSSL uses its own UDP stack).
-# proxy_cmd is not used; leave undefined.
+# Suppress ssl-opt.sh auto-proxy for non-proxy cases.
+default_no_proxy: true
 
 # force_version override not needed — version is fixed by -v 4 / force_version.
 force_version_override: false
 
 param_map:
-  debug_level:   "debug_level={value}"
-  psk:           "psk={value}"
-  psk_identity:  "psk_identity={value}"
-  # wolfssl_psk: true adds -s --openssl-psk to the wolfSSL client command.
-  # -s enables PSK mode; --openssl-psk selects the TLS 1.3 PSK callback.
-  # The mbedtls server side maps psk/psk_identity above; this is client-only.
-  wolfssl_psk:   "-s --openssl-psk"
+  # --- mbedtls server params (passed to $P_SRV) ---
+  debug_level:    "debug_level={value}"
+  auth_mode:      "auth_mode={value}"
+  cookies:        "cookies={value}"
+  anti_replay:    "anti_replay={value}"
+  groups:         "groups={value}"
+  psk:            "psk={value}"
+  psk_identity:   "psk_identity={value}"
+  dgram_packing:  "dgram_packing={0 if not value else 1}"
+  hs_timeout:     "hs_timeout={value[0]}-{value[1]}"
+  mtu:            "mtu={value}"
+  exchanges:      "exchanges={value}"
+  # crt_file/key_file: passed to mbedtls server for client auth cert chains
+  crt_file:       "crt_file=$DATA_FILES_PATH/{value}"
+  key_file:       "key_file=$DATA_FILES_PATH/{value}"
+  # nbio: skip — wolfssl-direction-A cases with nbio are excluded via skip_runners
+  nbio:
+    skip: true
+  # wolfSSL client-specific flags (only valid in client_param_map)
+  wolfssl_psk:    "-s --openssl-psk"
+  wolfssl_hrr:    "-J"
+  wolfssl_resume: "-r"
+  wolfssl_ca:     "ca_file=$WOLFSSL_DIR/certs/ca-cert.pem"
+  # mbedtls client params — not applicable to wolfSSL server params
+  reconnect:
+    skip: true
+  skip_close_notify:
+    skip: true
+  read_timeout:
+    skip: true
+  max_resend:
+    skip: true
 
-# No proxy parameters.
-proxy_param_map: {}
+# client_param_map: overrides param_map for wolfSSL client params.
+# wolfSSL client uses flags (-J, -r, etc.) instead of key=value pairs.
+# mbedtls-specific key=value params (dgram_packing, hs_timeout, debug_level,
+# groups, etc.) must be skipped — wolfSSL client does not accept them.
+client_param_map:
+  # wolfSSL client flags
+  wolfssl_psk:    "-s --openssl-psk"
+  wolfssl_hrr:    "-J"
+  wolfssl_resume: "-r"
+  # wolfssl_ca: not a client-side param (passed to mbedtls server as ca_file)
+  wolfssl_ca:
+    skip: true
+  # mbedtls key=value params not understood by wolfSSL client
+  debug_level:
+    skip: true
+  dgram_packing:
+    skip: true
+  hs_timeout:
+    skip: true
+  mtu:
+    skip: true
+  exchanges:
+    skip: true
+  groups:
+    skip: true
+  psk:
+    skip: true
+  psk_identity:
+    skip: true
+  auth_mode:
+    skip: true
+  cookies:
+    skip: true
+  anti_replay:
+    skip: true
+  crt_file:
+    skip: true
+  key_file:
+    skip: true
+  nbio:
+    skip: true
+  reconnect:
+    skip: true
+  skip_close_notify:
+    skip: true
+  read_timeout:
+    skip: true
+  max_resend:
+    skip: true
+
+proxy_param_map:
+  drop:       "drop={value}"
+  delay:      "delay={value}"
+  duplicate:  "duplicate={value}"
+  bad_ad:     "bad_ad={1 if value else 0}"
+  pack:       "pack={value}"
+  mtu:        "mtu={value}"
 
 assertion_map:
   server_dtls13_negotiated:
@@ -47,29 +130,56 @@ assertion_map:
   wolfssl_dtls13_negotiated:
     flag: "-c"
     string: "SSL version is DTLSv1.3"
-  wolfssl_cipher_aes256:
+  # wolfssl client doesn't emit these mbedtls strings — used in cases that
+  # have skip_runners: [wolfssl] so these entries are for completeness.
+  client_dtls13_negotiated:
     flag: "-c"
-    string: "SSL cipher suite is TLS_AES_256_GCM_SHA384"
-  wolfssl_cipher_aes128:
-    flag: "-c"
-    string: "SSL cipher suite is TLS_AES_128_GCM_SHA256"
+    string: "SSL version is DTLSv1.3"
   server_read_client_data:
     flag: "-s"
     string: "Read from client:"
   server_ack_sent:
     flag: "-s"
     string: "=> write ACK"
-  server_no_error:
-    flag: "-S"
-    string: "error"
-  wolfssl_no_error:
-    flag: "-C"
-    string: "wolfSSL error"
   server_psk_ephemeral:
+    flag: "-s"
+    string: "key exchange mode: psk_ephemeral"
+  server_hrr_sent:
+    flag: "-s"
+    string: "write hello retry request"
+  server_resumed:
+    flag: "-s"
+    string: "key exchange mode: psk_ephemeral"
+  server_ticket_issued:
+    flag: "-s"
+    string: "write new session ticket"
+  server_fragmented_hs:
+    flag: "-s"
+    string: "found fragmented DTLS handshake message"
+  client_read_server_data:
+    flag: "-c"
+    string: "SSL version is DTLSv1.3"
+  server_cookie_verified:
+    flag: "-s"
+    string: "cookie verified"
+  client_hrr_received:
+    flag: "-c"
+    string: "SSL version is DTLSv1.3"
+  client_ack_sent:
+    flag: "-c"
+    string: "SSL version is DTLSv1.3"
+  client_got_ticket:
+    flag: "-s"
+    string: "key exchange mode: psk_ephemeral"
+  client_reconnecting:
     flag: "-s"
     string: "key exchange mode: psk_ephemeral"
 
 requires_map:
   protocol:
     dtls13: "requires_wolfssl"
+    dtls12: "requires_wolfssl"
   wolfssl: "requires_wolfssl"
+  config:  "requires_config_enabled {value}"
+  max_content_len: "requires_max_content_len {value}"
+  not_valgrind: "not_with_valgrind"

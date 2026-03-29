@@ -116,25 +116,32 @@ def render_case(family, case, runner):
     name = case["name"]
     full_name = f"{family}: {name}"
 
-    # Guards
-    all_guards = list(case.get("_file_requires") or [])
+    # Guards: runner_requires are prepended to every case in this runner.
+    all_guards = list(runner.get("runner_requires") or [])
+    all_guards += list(case.get("_file_requires") or [])
     all_guards += list(case.get("requires") or [])
-    # Deduplicate
-    seen, deduped = set(), []
-    for g in all_guards:
-        key = str(sorted(g.items()))
-        if key not in seen:
-            seen.add(key)
-            deduped.append(g)
 
     client_time_factor = case.get("client_time_factor")
     if client_time_factor:
         lines.append(f"client_needs_more_time {client_time_factor}")
 
-    for gl in render_requires(deduped, runner):
-        lines.append(gl)
+    # Render and deduplicate guard lines (multiple guards can emit the same string).
+    seen_guards = set()
+    for gl in render_requires(all_guards, runner):
+        if gl not in seen_guards:
+            seen_guards.add(gl)
+            lines.append(gl)
 
-    proxy_block = dict(case.get("proxy") or {})
+    # no_proxy: true suppresses ssl-opt.sh's automatic DTLS proxy insertion.
+    # Can be set per-case or as a runner-level default (default_no_proxy: true).
+    no_proxy = case.get("no_proxy", runner.get("default_no_proxy", False))
+
+    raw_proxy = case.get("proxy")
+    # proxy: false is equivalent to no_proxy: true
+    if raw_proxy is False:
+        no_proxy = True
+        raw_proxy = None
+    proxy_block = dict(raw_proxy or {})
     server_block = dict(case.get("server") or {})
     client_block = dict(case.get("client") or {})
     param_map = runner.get("param_map") or {}
@@ -150,6 +157,9 @@ def render_case(family, case, runner):
     if "min_version" in server_block or "max_version" in server_block:
         srv_base = re.sub(r"\s*force_version=\S+", "", runner["server_cmd"]).strip()
 
+    # Use client_param_map if provided, falling back to param_map.
+    client_param_map = runner.get("client_param_map") or param_map
+
     srv_params = render_params(server_block, param_map, "server")
     srv_full = (srv_base + " " + " ".join(srv_params)).strip() if srv_params else srv_base
 
@@ -161,7 +171,7 @@ def render_case(family, case, runner):
     if "min_version" in client_block or "max_version" in client_block:
         cli_base = re.sub(r"\s*force_version=\S+", "", runner["client_cmd"]).strip()
 
-    cli_params = render_params(client_block, param_map, "client")
+    cli_params = render_params(client_block, client_param_map, "client")
     cli_full = (cli_base + " " + " ".join(cli_params)).strip() if cli_params else cli_base
 
     # Proxy
@@ -177,6 +187,8 @@ def render_case(family, case, runner):
     if pxy_params:
         pxy_full = runner["proxy_cmd"] + " " + " ".join(pxy_params)
         lines.append(f'            -p "{pxy_full}" \\')
+    elif no_proxy:
+        lines.append(f'            -p "" \\')
     lines.append(f'            "{srv_full}" \\')
     lines.append(f'            "{cli_full}" \\')
     if assertions:
@@ -254,7 +266,11 @@ def generate(case_files, runner_path, emit=False, emit_path=None):
         output.append(f"# {'=' * 70}")
         output.append("")
 
+        runner_stem = Path(runner_path).stem  # e.g. "mbedtls", "wolfssl", "wolfssl-srv"
         for case in (doc.get("cases") or []):
+            skip_runners = case.get("skip_runners") or []
+            if runner_stem in skip_runners:
+                continue
             case["_file_requires"] = file_requires
             try:
                 lines = render_case(family, case, runner)
@@ -296,8 +312,19 @@ def main():
     # Determine which case files to use.
     if args.emit or args.all:
         # Runners can restrict which cases they handle via case_glob.
+        # Accepts a single glob string or a list of glob strings.
         case_glob = runner.get("case_glob", "*.yaml")
-        case_files = sorted(CASES_DIR.glob(case_glob))
+        if isinstance(case_glob, list):
+            seen_paths = set()
+            case_files = []
+            for g in case_glob:
+                for p in sorted(CASES_DIR.glob(g)):
+                    if p not in seen_paths:
+                        seen_paths.add(p)
+                        case_files.append(p)
+            case_files.sort()
+        else:
+            case_files = sorted(CASES_DIR.glob(case_glob))
     else:
         case_files = [Path(f) for f in args.cases]
 
