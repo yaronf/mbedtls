@@ -146,6 +146,7 @@ FILTER='.*'
 EXCLUDE='^$'
 
 SHOW_TEST_NUMBER=0
+NO_RETRY=0
 LIST_TESTS=0
 RUN_TEST_NUMBER=''
 RUN_TEST_SUITE=''
@@ -174,6 +175,7 @@ print_usage() {
     printf "                \t(default: \$MBEDTLS_TEST_OUTCOME_FILE, none if empty)\n"
     printf "     --port     \tTCP/UDP port (default: randomish 1xxxx)\n"
     printf "     --proxy-port\tTCP/UDP proxy port (default: randomish 2xxxx)\n"
+    printf "     --no-retry  \tDisable retries on client-timeout; fail immediately\n"
     printf "     --seed     \tInteger seed value to use for this test run\n"
     printf "     --test-suite\tOnly matching test suites are executed\n"
     printf "                 \t(comma-separated, e.g. 'ssl-opt,tls13-compat')\n\n"
@@ -214,6 +216,9 @@ get_options() {
                 ;;
             --proxy-port)
                 shift; PXY_PORT=$1
+                ;;
+            --no-retry)
+                NO_RETRY=1
                 ;;
             --seed)
                 shift; SEED="$1"
@@ -1832,8 +1837,11 @@ run_test() {
 
     analyze_test_commands "$@"
 
-    # One regular run and two retries
+    # One regular run and two retries (suppressed by --no-retry)
     TIMES_LEFT=3
+    if [ $NO_RETRY -ne 0 ]; then
+        TIMES_LEFT=1
+    fi
     while [ $TIMES_LEFT -gt 0 ]; do
         TIMES_LEFT=$(( $TIMES_LEFT - 1 ))
 

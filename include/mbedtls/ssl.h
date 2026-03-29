@@ -880,6 +880,9 @@ typedef struct mbedtls_ssl_key_cert mbedtls_ssl_key_cert;
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
 typedef struct mbedtls_ssl_flight_item mbedtls_ssl_flight_item;
 #endif
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+struct mbedtls_ssl_dtls13_post_hs_ack;
+#endif
 
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_SESSION_TICKETS)
 #define MBEDTLS_SSL_TLS1_3_TICKET_ALLOW_PSK_RESUMPTION                          \
@@ -1558,6 +1561,12 @@ struct mbedtls_ssl_config {
                                                         retransmission timeout (ms)        */
     uint32_t MBEDTLS_PRIVATE(hs_timeout_max);        /*!< maximum value of the handshake
                                                         retransmission timeout (ms)        */
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    uint64_t MBEDTLS_PRIVATE(dtls13_aead_limit);     /*!< max records per outbound epoch
+                                                        before forcing a KeyUpdate         */
+    uint32_t MBEDTLS_PRIVATE(dtls13_auth_fail_limit);/*!< max consecutive inbound auth
+                                                        failures before closing            */
+#endif
 #endif
 
 #if defined(MBEDTLS_SSL_RENEGOTIATION)
@@ -1585,6 +1594,20 @@ struct mbedtls_ssl_config {
 };
 
 #if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+
+/** Default DTLS 1.3 AEAD limit: maximum records per outbound epoch before
+ *  an automatic KeyUpdate is triggered (RFC 8446 §5.5).
+ *  2^23 is the recommended limit for AES-128-GCM and AES-256-GCM.
+ *  ChaCha20-Poly1305 has a much higher theoretical limit but we use the
+ *  same value for simplicity. Override at runtime via
+ *  mbedtls_ssl_conf_dtls13_aead_limit(). */
+#define MBEDTLS_SSL_DTLS13_DEFAULT_AEAD_LIMIT       (1ULL << 23)
+
+/** Default DTLS 1.3 limit on consecutive inbound authentication failures
+ *  per epoch before the connection is terminated (RFC 9147 §4.5.2).
+ *  Override at runtime via mbedtls_ssl_conf_dtls13_auth_fail_limit(). */
+#define MBEDTLS_SSL_DTLS13_DEFAULT_AUTH_FAIL_LIMIT  128
+
 /** DTLS 1.3 epoch pool entry (§4.2.1 of RFC 9147 bis). */
 #define MBEDTLS_SSL_DTLS13_EPOCH_POOL_SIZE 4
 typedef struct {
@@ -1752,10 +1775,16 @@ struct mbedtls_ssl_context {
      *  bis).  Checked at the top of mbedtls_ssl_read_record(). */
     uint8_t MBEDTLS_PRIVATE(dtls13_ack_pending);
 
-    /** DTLS 1.3 post-handshake message sequence number counter.
+    /** DTLS 1.3 post-handshake outbound message sequence number counter.
      *  Used for KeyUpdate and other post-HS handshake messages when
      *  ssl->handshake is NULL (handshake context already freed). */
     uint16_t MBEDTLS_PRIVATE(dtls13_post_hs_msg_seq);
+
+    /** DTLS 1.3 post-handshake inbound message sequence number counter.
+     *  Tracks the next expected message_seq from the peer for post-HS messages
+     *  (KeyUpdate, NewSessionTicket, post-HS auth).  Independent of the
+     *  handshake in_msg_seq which tracks the peer's handshake flight seq. */
+    uint16_t MBEDTLS_PRIVATE(dtls13_post_hs_in_msg_seq);
 
     /** DTLS 1.3 KeyUpdate pending-outbound state (RFC 9147 §8).
      *
@@ -1769,6 +1798,11 @@ struct mbedtls_ssl_context {
     uint64_t MBEDTLS_PRIVATE(dtls13_ku_sent_epoch);
     uint64_t MBEDTLS_PRIVATE(dtls13_ku_sent_seq);
     uint8_t  MBEDTLS_PRIVATE(dtls13_ku_ack_pending); /* 1 while waiting for ACK */
+
+    /** Lazily-allocated post-handshake ACK record list.
+     *  NULL until the first post-handshake record requiring an ACK arrives.
+     *  Freed in mbedtls_ssl_free() and session reset. */
+    struct mbedtls_ssl_dtls13_post_hs_ack *MBEDTLS_PRIVATE(dtls13_post_hs_ack);
 
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
@@ -3051,6 +3085,42 @@ void mbedtls_ssl_conf_dtls_anti_replay(mbedtls_ssl_config *conf, char mode);
  *                 many bogus packets.
  */
 void mbedtls_ssl_conf_dtls_badmac_limit(mbedtls_ssl_config *conf, unsigned limit);
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+
+/**
+ * \brief          Set the maximum number of records that may be encrypted
+ *                 with a single DTLS 1.3 outbound epoch key before a
+ *                 KeyUpdate is automatically initiated (RFC 8446 §5.5).
+ *
+ * \param conf     SSL configuration
+ * \param limit    Record limit per epoch.  When the outbound record count
+ *                 reaches this value, \c mbedtls_ssl_write() will trigger
+ *                 a KeyUpdate before sending the next record.
+ *                 Pass \c 0 to use the default (2^23, suitable for
+ *                 AES-128-GCM and AES-256-GCM per RFC 8446 §5.5).
+ *
+ * \note           For testing, pass a small value such as 5 to exercise
+ *                 the auto-rekey path without sending millions of records.
+ */
+void mbedtls_ssl_conf_dtls13_aead_limit(mbedtls_ssl_config *conf,
+                                        uint64_t limit);
+
+/**
+ * \brief          Set the maximum number of consecutive DTLS 1.3 inbound
+ *                 records that fail authentication before the connection is
+ *                 terminated with a bad_record_mac alert (RFC 9147 §4.5.2).
+ *
+ * \param conf     SSL configuration
+ * \param limit    Failure limit per epoch.  The counter is reset to zero
+ *                 each time the inbound epoch advances (i.e. on KeyUpdate).
+ *                 Pass \c 0 to disable (not recommended for production).
+ *                 The default is \c MBEDTLS_SSL_DTLS13_DEFAULT_AUTH_FAIL_LIMIT.
+ */
+void mbedtls_ssl_conf_dtls13_auth_fail_limit(mbedtls_ssl_config *conf,
+                                             uint32_t limit);
+
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
 

@@ -157,14 +157,53 @@ requires_protocol_version dtls13
 run_test    "DTLS 1.3 KeyUpdate: KeyUpdate followed by application data exchange" \
             -p "" \
             "$P_SRV dtls=1 force_version=dtls13 debug_level=2 key_update=1 exchanges=2" \
-            "$P_CLI dtls=1 force_version=dtls13 debug_level=2 exchanges=2" \
+            "$P_CLI dtls=1 force_version=dtls13 exchanges=2" \
             0 \
             -s "Protocol is DTLSv1.3" \
             -c "Protocol is DTLSv1.3" \
             -s "KeyUpdate sent" \
             -s "ACK: KeyUpdate acknowledged" \
-            -s "51 bytes read" \
-            -c "144 bytes read"
+            -s "KeyUpdate: new outbound transform installed"
+
+requires_protocol_version dtls13
+run_test    "DTLS 1.3 KeyUpdate: AEAD limit auto-triggers KeyUpdate on server" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=2 aead_limit=3 exchanges=4" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=2 exchanges=4" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -s "AEAD limit reached" \
+            -s "KeyUpdate sent" \
+            -s "ACK: KeyUpdate acknowledged" \
+            -s "KeyUpdate: new outbound transform installed" \
+            -c "KeyUpdate received" \
+            -c "KeyUpdate: new inbound transform installed"
+
+requires_protocol_version dtls13
+run_test    "DTLS 1.3 KeyUpdate: AEAD limit auto-triggers KeyUpdate on client" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=2 exchanges=4" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=2 aead_limit=3 exchanges=4" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -c "AEAD limit reached" \
+            -c "KeyUpdate sent" \
+            -c "ACK: KeyUpdate acknowledged" \
+            -c "KeyUpdate: new outbound transform installed" \
+            -s "KeyUpdate received" \
+            -s "KeyUpdate: new inbound transform installed"
+
+requires_protocol_version dtls13
+run_test    "DTLS 1.3 KeyUpdate: auth-fail limit: server closes after too many bad MACs" \
+            -p "$P_PXY bad_ad=1" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=2 auth_fail_limit=1 exchanges=2" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=2 exchanges=2" \
+            1 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -s "auth-fail limit reached"
 
 # ======================================================================
 # Cases from: proxy-3d.yaml

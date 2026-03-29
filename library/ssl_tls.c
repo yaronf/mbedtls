@@ -1299,6 +1299,8 @@ void mbedtls_ssl_session_reset_msg_layer(mbedtls_ssl_context *ssl,
     mbedtls_platform_zeroize(ssl->dtls13_ku_pending_secret,
                              sizeof(ssl->dtls13_ku_pending_secret));
     ssl->dtls13_ku_ack_pending = 0;
+    mbedtls_free(ssl->dtls13_post_hs_ack);
+    ssl->dtls13_post_hs_ack = NULL;
 #endif
 
     ssl->transform_in  = NULL;
@@ -1441,6 +1443,23 @@ void mbedtls_ssl_conf_dtls_badmac_limit(mbedtls_ssl_config *conf, unsigned limit
 {
     conf->badmac_limit = limit;
 }
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+
+void mbedtls_ssl_conf_dtls13_aead_limit(mbedtls_ssl_config *conf,
+                                        uint64_t limit)
+{
+    conf->dtls13_aead_limit = (limit != 0) ? limit
+                                           : MBEDTLS_SSL_DTLS13_DEFAULT_AEAD_LIMIT;
+}
+
+void mbedtls_ssl_conf_dtls13_auth_fail_limit(mbedtls_ssl_config *conf,
+                                             uint32_t limit)
+{
+    conf->dtls13_auth_fail_limit = limit;
+}
+
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
 
@@ -5196,6 +5215,8 @@ void mbedtls_ssl_free(mbedtls_ssl_context *ssl)
     ssl->dtls13_transform_pending_out = NULL;
     mbedtls_platform_zeroize(ssl->dtls13_ku_pending_secret,
                              sizeof(ssl->dtls13_ku_pending_secret));
+    mbedtls_free(ssl->dtls13_post_hs_ack);
+    ssl->dtls13_post_hs_ack = NULL;
 #endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 
     if (ssl->session) {
@@ -5525,6 +5546,10 @@ int mbedtls_ssl_config_defaults(mbedtls_ssl_config *conf,
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
     conf->hs_timeout_min = MBEDTLS_SSL_DTLS_TIMEOUT_DFL_MIN;
     conf->hs_timeout_max = MBEDTLS_SSL_DTLS_TIMEOUT_DFL_MAX;
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    conf->dtls13_aead_limit      = MBEDTLS_SSL_DTLS13_DEFAULT_AEAD_LIMIT;
+    conf->dtls13_auth_fail_limit = MBEDTLS_SSL_DTLS13_DEFAULT_AUTH_FAIL_LIMIT;
+#endif
 #endif
 
 #if defined(MBEDTLS_SSL_RENEGOTIATION)

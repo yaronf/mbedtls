@@ -1137,6 +1137,13 @@ hmac_failed_etm_disabled:
         /* Account for authentication tag. */
         post_avail -= transform->taglen;
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+        /* Track outbound record count for AEAD limit enforcement. */
+        if (transform->dtls13_epoch != 0) {
+            transform->out_record_count++;
+        }
+#endif
+
         /*
          * Prefix record content with dynamic IV in case it is explicit.
          */
@@ -2923,9 +2930,19 @@ int mbedtls_ssl_write_handshake_msg_ext(mbedtls_ssl_context *ssl,
             /* Write message_seq and update it, except for HelloRequest */
             if (hs_type != MBEDTLS_SSL_HS_HELLO_REQUEST) {
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
-                /* Post-handshake messages (e.g. KeyUpdate) may be sent when
-                 * ssl->handshake is NULL.  Use the context-level counter. */
-                if (ssl->handshake == NULL) {
+                /* RFC 9147 §5.2: post-handshake messages use an independent
+                 * message_seq space starting at 0.  Use the context-level
+                 * counter when we are truly post-handshake (state ==
+                 * HANDSHAKE_OVER) OR when handshake is NULL. */
+                /* RFC 9147 §5.2: post-handshake messages use an independent
+                 * message_seq space starting at 0.  Use the context-level
+                 * counter for KeyUpdate (always post-hs) and for any message
+                 * when handshake is NULL.  NST and other handshake-flight
+                 * messages continue to use handshake->out_msg_seq. */
+                if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+                    ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+                    (ssl->handshake == NULL ||
+                     hs_type == MBEDTLS_SSL_HS_KEY_UPDATE)) {
                     MBEDTLS_PUT_UINT16_BE(ssl->dtls13_post_hs_msg_seq,
                                          ssl->out_msg, 4);
                     ++(ssl->dtls13_post_hs_msg_seq);
@@ -3103,7 +3120,8 @@ int mbedtls_ssl_write_handshake_msg_ext(mbedtls_ssl_context *ssl,
             }
 
             if (ssl->out_msglen > (size_t) ret ||
-                ssl->handshake->dtls13_frag_off > 0) {
+                (ssl->handshake != NULL &&
+                 ssl->handshake->dtls13_frag_off > 0)) {
                 /* Message exceeds remaining datagram space — fragment it.
                  * Also re-enter here on nbio retries (dtls13_frag_off > 0).
                  *
@@ -3744,16 +3762,37 @@ int mbedtls_ssl_prepare_handshake_record(mbedtls_ssl_context *ssl)
               recv_msg_seq != ssl->handshake->in_msg_seq) ||
              (mbedtls_ssl_is_handshake_over(ssl) == 1 &&
               ssl->in_msg[0] != MBEDTLS_SSL_HS_CLIENT_HELLO &&
-              /* DTLS 1.3: post-handshake messages (e.g. NewSessionTicket) arrive
-               * after HANDSHAKE_OVER with the expected in_msg_seq; allow them. */
-              recv_msg_seq != ssl->handshake->in_msg_seq))) {
-            if (recv_msg_seq > ssl->handshake->in_msg_seq) {
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+              /* RFC 9147 §5.2: KeyUpdate is a truly post-handshake message
+               * and uses an independent sequence number space starting at 0.
+               * All other messages (NST, Certificate, etc.) are part of the
+               * handshake flight and use the sequential handshake counter. */
+              (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+               ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+               ssl->in_msg[0] == MBEDTLS_SSL_HS_KEY_UPDATE
+               ? recv_msg_seq != ssl->dtls13_post_hs_in_msg_seq
+               : recv_msg_seq != ssl->handshake->in_msg_seq)
+#else
+              recv_msg_seq != ssl->handshake->in_msg_seq
+#endif
+             ))) {
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+            uint16_t expected_seq =
+                (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+                 ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+                 ssl->in_msg[0] == MBEDTLS_SSL_HS_KEY_UPDATE)
+                ? ssl->dtls13_post_hs_in_msg_seq
+                : ssl->handshake->in_msg_seq;
+#else
+            uint16_t expected_seq = ssl->handshake->in_msg_seq;
+#endif
+            if (recv_msg_seq > expected_seq) {
                 MBEDTLS_SSL_DEBUG_MSG(2,
                                       ("received future %s (type=%u) seq=%u (next expected=%u)",
                                        mbedtls_ssl_hs_type_name(ssl->in_msg[0]),
                                        (unsigned) ssl->in_msg[0],
                                        recv_msg_seq,
-                                       ssl->handshake->in_msg_seq));
+                                       expected_seq));
                 return MBEDTLS_ERR_SSL_EARLY_MESSAGE;
             }
 
@@ -3787,7 +3826,7 @@ int mbedtls_ssl_prepare_handshake_record(mbedtls_ssl_context *ssl)
                                           mbedtls_ssl_hs_type_name(ssl->in_msg[0]),
                                           (unsigned) ssl->in_msg[0],
                                           recv_msg_seq,
-                                          ssl->handshake->in_msg_seq));
+                                          expected_seq));
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
                 /* RFC 9147 §7.3: when a receiver drops a duplicate/old message
                  * while waiting for a later one from the same flight, send an
@@ -3955,17 +3994,7 @@ int mbedtls_ssl_update_handshake_status(mbedtls_ssl_context *ssl)
         unsigned offset;
         mbedtls_ssl_hs_buffer *hs_buf;
 
-        /* Increment handshake sequence number.
-         * DTLS 1.3 post-handshake messages (NST etc.) arrive via the
-         * ssl_read() loop which calls read_record(update_hs_digest=1),
-         * but their in_msg_seq is managed by fetch_hs_msg() in the TLS 1.3
-         * post-handshake handler.  Skip the increment here to avoid
-         * double-counting. */
-#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
-        if (!(ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
-              ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
-              mbedtls_ssl_is_handshake_over(ssl) == 1))
-#endif
+        /* Increment handshake sequence number. */
         hs->in_msg_seq++;
 
         /*
@@ -5309,27 +5338,45 @@ static int ssl_prepare_record_content(mbedtls_ssl_context *ssl,
      * accurate ACK (RFC 9147 §7).  Only for encrypted records (epoch >= 2).
      */
     if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
-        ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
-        ssl->handshake != NULL) {
+        ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3) {
         uint16_t rec_epoch = MBEDTLS_GET_UINT16_BE(rec->ctr, 0);
         if (rec_epoch >= 2) {
-            mbedtls_ssl_handshake_params *hs = ssl->handshake;
-            uint8_t idx = hs->dtls13_received_record_count;
-            if (idx < MBEDTLS_SSL_DTLS13_MAX_ACK_RECORDS) {
-                /* Reconstruct full 64-bit seq from the epoch-specific counter.
-                 * rec->ctr[2..7] holds the 6-byte sequence number field. */
-                uint64_t seq = ((uint64_t) rec->ctr[2] << 40) |
-                               ((uint64_t) rec->ctr[3] << 32) |
-                               ((uint64_t) rec->ctr[4] << 24) |
-                               ((uint64_t) rec->ctr[5] << 16) |
-                               ((uint64_t) rec->ctr[6] <<  8) |
-                               ((uint64_t) rec->ctr[7]);
-                hs->dtls13_received_records[idx].epoch = (uint64_t) rec_epoch;
-                hs->dtls13_received_records[idx].seq   = seq;
-                hs->dtls13_received_record_count = idx + 1;
-                MBEDTLS_SSL_DEBUG_MSG(4, ("DTLS 1.3: recorded epoch=%u seq=%llu for ACK",
-                                          (unsigned) rec_epoch,
-                                          (unsigned long long) seq));
+            uint64_t seq = ((uint64_t) rec->ctr[2] << 40) |
+                           ((uint64_t) rec->ctr[3] << 32) |
+                           ((uint64_t) rec->ctr[4] << 24) |
+                           ((uint64_t) rec->ctr[5] << 16) |
+                           ((uint64_t) rec->ctr[6] <<  8) |
+                           ((uint64_t) rec->ctr[7]);
+
+            if (ssl->handshake != NULL) {
+                mbedtls_ssl_handshake_params *hs = ssl->handshake;
+                uint8_t idx = hs->dtls13_received_record_count;
+                if (idx < MBEDTLS_SSL_DTLS13_MAX_ACK_RECORDS) {
+                    hs->dtls13_received_records[idx].epoch = (uint64_t) rec_epoch;
+                    hs->dtls13_received_records[idx].seq   = seq;
+                    hs->dtls13_received_record_count = idx + 1;
+                    MBEDTLS_SSL_DEBUG_MSG(4, ("DTLS 1.3: recorded epoch=%u seq=%llu for ACK",
+                                              (unsigned) rec_epoch,
+                                              (unsigned long long) seq));
+                }
+            } else {
+                /* Post-handshake: use the lazily-allocated post-hs ACK buffer. */
+                if (ssl->dtls13_post_hs_ack == NULL) {
+                    ssl->dtls13_post_hs_ack = mbedtls_calloc(
+                        1, sizeof(mbedtls_ssl_dtls13_post_hs_ack));
+                }
+                if (ssl->dtls13_post_hs_ack != NULL) {
+                    mbedtls_ssl_dtls13_post_hs_ack *pa = ssl->dtls13_post_hs_ack;
+                    if (pa->count < MBEDTLS_SSL_DTLS13_MAX_ACK_RECORDS) {
+                        pa->records[pa->count].epoch = (uint64_t) rec_epoch;
+                        pa->records[pa->count].seq   = seq;
+                        pa->count++;
+                        MBEDTLS_SSL_DEBUG_MSG(4, ("DTLS 1.3: post-hs recorded "
+                                                  "epoch=%u seq=%llu for ACK",
+                                                  (unsigned) rec_epoch,
+                                                  (unsigned long long) seq));
+                    }
+                }
             }
         }
     }
@@ -6257,6 +6304,30 @@ static int ssl_get_next_record(mbedtls_ssl_context *ssl)
                     return MBEDTLS_ERR_SSL_INVALID_MAC;
                 }
 
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+                /* DTLS 1.3 per-epoch auth-failure limit (RFC 9147 §4.5.2).
+                 * Count failures against the current inbound epoch's transform
+                 * and close the connection when the limit is reached. */
+                if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+                    ssl->state == MBEDTLS_SSL_HANDSHAKE_OVER &&
+                    ssl->transform_in != NULL &&
+                    ssl->conf->dtls13_auth_fail_limit != 0 &&
+                    ++ssl->transform_in->in_auth_fail_count
+                        >= ssl->conf->dtls13_auth_fail_limit) {
+                    MBEDTLS_SSL_DEBUG_MSG(1, ("DTLS 1.3: auth-fail limit reached "
+                                              "(%" MBEDTLS_PRINTF_LONGLONG
+                                              " failures on epoch %u) — closing",
+                                              (unsigned long long)
+                                                  ssl->transform_in->in_auth_fail_count,
+                                              (unsigned) ssl->transform_in->dtls13_epoch));
+                    mbedtls_ssl_send_alert_message(
+                        ssl,
+                        MBEDTLS_SSL_ALERT_LEVEL_FATAL,
+                        MBEDTLS_SSL_ALERT_MSG_BAD_RECORD_MAC);
+                    return MBEDTLS_ERR_SSL_INVALID_MAC;
+                }
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
+
                 /* As above, invalid records cause
                  * dismissal of the whole datagram. */
 
@@ -6343,11 +6414,13 @@ static int ssl_dtls13_write_ack(mbedtls_ssl_context *ssl)
 {
     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
     mbedtls_ssl_handshake_params *hs = ssl->handshake;
+    mbedtls_ssl_dtls13_post_hs_ack *pa = ssl->dtls13_post_hs_ack;
     unsigned char *p;
     size_t count;
     size_t i;
 
-    if (hs == NULL) {
+    /* Need either the handshake record list or the post-hs buffer. */
+    if (hs == NULL && pa == NULL) {
         return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
     }
 
@@ -6362,7 +6435,7 @@ static int ssl_dtls13_write_ack(mbedtls_ssl_context *ssl)
         return MBEDTLS_ERR_SSL_WANT_WRITE;
     }
 
-    count = hs->dtls13_received_record_count;
+    count = (hs != NULL) ? hs->dtls13_received_record_count : pa->count;
 
     /* 2-byte length field + 16 bytes per RecordNumber */
     ssl->out_msglen = 2 + count * 16;
@@ -6374,9 +6447,13 @@ static int ssl_dtls13_write_ack(mbedtls_ssl_context *ssl)
     p += 2;
 
     for (i = 0; i < count; i++) {
-        MBEDTLS_PUT_UINT64_BE(hs->dtls13_received_records[i].epoch, p, 0);
+        uint64_t epoch = (hs != NULL) ? hs->dtls13_received_records[i].epoch
+                                      : pa->records[i].epoch;
+        uint64_t seq   = (hs != NULL) ? hs->dtls13_received_records[i].seq
+                                      : pa->records[i].seq;
+        MBEDTLS_PUT_UINT64_BE(epoch, p, 0);
         p += 8;
-        MBEDTLS_PUT_UINT64_BE(hs->dtls13_received_records[i].seq, p, 0);
+        MBEDTLS_PUT_UINT64_BE(seq, p, 0);
         p += 8;
     }
 
@@ -6397,6 +6474,10 @@ static int ssl_dtls13_write_ack(mbedtls_ssl_context *ssl)
     }
 
     ssl->dtls13_ack_pending = 0;
+    /* Clear post-hs buffer so it's ready for the next batch of records. */
+    if (hs == NULL && pa != NULL) {
+        pa->count = 0;
+    }
     MBEDTLS_SSL_DEBUG_MSG(2, ("<= write ACK"));
     return 0;
 }
@@ -7648,7 +7729,20 @@ static int ssl_handle_hs_message_post_handshake(mbedtls_ssl_context *ssl)
     /* Check protocol version and dispatch accordingly. */
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
     if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3) {
-        return ssl_tls13_handle_hs_message_post_handshake(ssl);
+        int ret = ssl_tls13_handle_hs_message_post_handshake(ssl);
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+        /* RFC 9147 §5.2: post-hs messages use an independent seq number space.
+         * Advance the counter after successfully consuming the message so that
+         * the next post-hs message is accepted.  Only advance when handshake
+         * is NULL (truly post-handshake, not still-finishing states like
+         * TLS1_3_CLIENT_FINISHED_WAIT_ACK). */
+        if (ret == 0 &&
+            ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+            mbedtls_ssl_is_handshake_over(ssl)) {
+            ssl->dtls13_post_hs_in_msg_seq++;
+        }
+#endif /* MBEDTLS_SSL_PROTO_DTLS */
+        return ret;
     }
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 
@@ -7997,6 +8091,26 @@ int mbedtls_ssl_write(mbedtls_ssl_context *ssl, const unsigned char *buf, size_t
         }
     }
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    /* DTLS 1.3 AEAD limit (RFC 8446 §5.5 / RFC 9147 §4.5.3): if the
+     * outbound epoch has reached the configured record limit, trigger a
+     * KeyUpdate before writing so the new epoch is used for this record. */
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+        ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+        ssl->transform_out != NULL &&
+        !ssl->dtls13_ku_ack_pending &&
+        ssl->transform_out->out_record_count >= ssl->conf->dtls13_aead_limit) {
+        MBEDTLS_SSL_DEBUG_MSG(2, ("AEAD limit reached (%" MBEDTLS_PRINTF_LONGLONG
+                                  " records on epoch %u) — triggering KeyUpdate",
+                                  (unsigned long long) ssl->transform_out->out_record_count,
+                                  (unsigned) ssl->transform_out->dtls13_epoch));
+        if ((ret = mbedtls_ssl_send_key_update(ssl, 0)) != 0) {
+            MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_send_key_update", ret);
+            return ret;
+        }
+    }
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
+
     ret = ssl_write_real(ssl, buf, len);
 
     MBEDTLS_SSL_DEBUG_MSG(2, ("<= write"));
@@ -8284,6 +8398,8 @@ void mbedtls_ssl_set_inbound_transform(mbedtls_ssl_context *ssl,
         /* Reset the anti-replay window for the new epoch. */
         mbedtls_ssl_dtls_replay_reset(ssl);
 #endif
+        /* Reset the per-epoch auth-failure counter. */
+        transform->in_auth_fail_count = 0;
     }
 #endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 }

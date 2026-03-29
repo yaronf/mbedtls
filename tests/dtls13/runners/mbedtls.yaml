@@ -38,7 +38,9 @@ param_map:
   psk:            "psk={value}"
   psk_identity:   "psk_identity={value}"
   reconnect:      "reconnect={value}"
-  key_update:     "key_update={value}"
+  key_update:       "key_update={value}"
+  aead_limit:       "aead_limit={value}"
+  auth_fail_limit:  "auth_fail_limit={value}"
   skip_close_notify: "skip_close_notify={1 if value else 0}"
   read_timeout:   "read_timeout={value}"
   max_resend:     "max_resend={value}"
@@ -160,6 +162,18 @@ assertion_map:
   server_key_update_acked:
     flag: "-s"
     string: "ACK: KeyUpdate acknowledged"
+  server_aead_limit_triggered:
+    flag: "-s"
+    string: "AEAD limit reached"
+  client_aead_limit_triggered:
+    flag: "-c"
+    string: "AEAD limit reached"
+  server_auth_fail_limit_reached:
+    flag: "-s"
+    string: "auth-fail limit reached"
+  client_auth_fail_limit_reached:
+    flag: "-c"
+    string: "auth-fail limit reached"
 
 requires_map:
   protocol:

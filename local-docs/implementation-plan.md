@@ -598,8 +598,15 @@ have been drilled down in `local-docs/design-drilldown.md`:
          at each epoch; old epoch keys correctly evicted from pool.
          **DONE** (commit b95dc3126b): all 4 tests passing — client KU, server KU,
          update_requested reciprocal KU, KU + app data exchange.
-- [ ] 3. AEAD limit tracking: count authenticated records per epoch; trigger KeyUpdate.
-- [ ] 4. Count failed authentication attempts per epoch; close on limit.
+- [x] 3. AEAD limit tracking: count authenticated records per epoch; trigger KeyUpdate.
+         Configurable via `mbedtls_ssl_conf_dtls13_aead_limit()`; auto-triggers KeyUpdate
+         when `out_record_count >= limit`. Tests: server-triggered and client-triggered.
+         RFC 9147 §5.2 post-hs msg_seq space also fixed here (independent seq starting at 0).
+         **DONE**: all tests passing.
+- [x] 4. Count failed authentication attempts per epoch; close on limit.
+         Configurable via `mbedtls_ssl_conf_dtls13_auth_fail_limit()`; closes with
+         bad_record_mac when consecutive decryption failures reach limit (post-hs only).
+         **DONE**: all tests passing.
 - [ ] 5. NewConnectionId (type 10) and RequestConnectionId (type 9): parse, send, ACK.
          Implement `cid_immediate` vs `cid_spare` semantics.
          Add `too_many_cids_requested` alert (value 52).

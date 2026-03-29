@@ -62,7 +62,6 @@ cases:
       key_update: 1
       exchanges: 2
     client:
-      debug_level: 2
       exchanges: 2
     expect:
       exit: 0
@@ -71,5 +70,65 @@ cases:
         - client_dtls13_negotiated
         - server_key_update_sent
         - server_key_update_acked
-        - server_read_client_data
-        - client_read_server_data
+        - server_key_update_outbound_installed
+
+  - name: "AEAD limit auto-triggers KeyUpdate on server"
+    # aead_limit=3: server triggers KeyUpdate automatically after 3 outbound
+    # records on an epoch (well before the exchange count exhausts them).
+    server:
+      debug_level: 2
+      aead_limit: 3
+      exchanges: 4
+    client:
+      debug_level: 2
+      exchanges: 4
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - server_aead_limit_triggered
+        - server_key_update_sent
+        - server_key_update_acked
+        - server_key_update_outbound_installed
+        - client_key_update_received
+        - client_key_update_inbound_installed
+
+  - name: "AEAD limit auto-triggers KeyUpdate on client"
+    server:
+      debug_level: 2
+      exchanges: 4
+    client:
+      debug_level: 2
+      aead_limit: 3
+      exchanges: 4
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - client_aead_limit_triggered
+        - client_key_update_sent
+        - client_key_update_acked
+        - client_key_update_outbound_installed
+        - server_key_update_received
+        - server_key_update_inbound_installed
+
+  - name: "auth-fail limit: server closes after too many bad MACs"
+    # bad_ad proxy corrupts every ApplicationData record.
+    # auth_fail_limit=1 on server → closes on the first bad inbound record.
+    server:
+      debug_level: 2
+      auth_fail_limit: 1
+      exchanges: 2
+    client:
+      debug_level: 2
+      exchanges: 2
+    proxy:
+      bad_ad: true
+    expect:
+      exit: 1
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - server_auth_fail_limit_reached

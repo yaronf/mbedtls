@@ -1088,6 +1088,25 @@ struct mbedtls_ssl_handshake_params {
 #endif /* MBEDTLS_SSL_SERVER_NAME_INDICATION */
 };
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+/**
+ * Post-handshake ACK record list (DTLS 1.3).
+ *
+ * After the handshake completes, ssl->handshake is freed.  Any post-handshake
+ * message that requires an ACK (KeyUpdate, NewSessionTicket, post-hs auth)
+ * stores the received record numbers here instead.  Allocated lazily on the
+ * first post-handshake record that needs ACKing; freed in ssl_free() and
+ * session reset.
+ */
+typedef struct mbedtls_ssl_dtls13_post_hs_ack {
+    struct {
+        uint64_t epoch;
+        uint64_t seq;
+    } records[MBEDTLS_SSL_DTLS13_MAX_ACK_RECORDS];
+    uint8_t count;
+} mbedtls_ssl_dtls13_post_hs_ack;
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
+
 typedef struct mbedtls_ssl_hs_buffer mbedtls_ssl_hs_buffer;
 
 /*
@@ -1229,6 +1248,16 @@ struct mbedtls_ssl_transform {
      * Set during transform construction; used by set_inbound/outbound_transform
      * to sync ssl->in_epoch / ssl->cur_out_ctr epoch bytes. */
     uint16_t      dtls13_epoch;
+
+    /* DTLS 1.3 AEAD usage counters (RFC 8446 §5.5 / RFC 9147 §4.5.2–4.5.3).
+     * out_record_count: number of records encrypted with this transform's
+     *   outbound key.  Checked against conf->dtls13_aead_limit before each
+     *   write; triggers automatic KeyUpdate when the limit is reached.
+     * in_auth_fail_count: number of consecutive inbound decryption failures
+     *   for this epoch.  Reset to zero on epoch advance.  When it reaches
+     *   conf->dtls13_auth_fail_limit the connection is terminated. */
+    uint64_t      out_record_count;
+    uint32_t      in_auth_fail_count;
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
 

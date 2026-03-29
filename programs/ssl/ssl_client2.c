@@ -64,6 +64,8 @@ int main(void)
 #define DFL_ALLOW_LEGACY        -2
 #define DFL_RENEGOTIATE         0
 #define DFL_KEY_UPDATE          0
+#define DFL_AEAD_LIMIT          0
+#define DFL_AUTH_FAIL_LIMIT     0
 #define DFL_EXCHANGES           1
 #define DFL_MIN_VERSION         -1
 #define DFL_MAX_VERSION         -1
@@ -300,7 +302,9 @@ int main(void)
 #define USAGE_KEY_UPDATE \
     "    key_update=%%d       default: 0 (disabled)\n"                  \
     "                        1: send KeyUpdate(update_not_requested)\n" \
-    "                        2: send KeyUpdate(update_requested)\n"
+    "                        2: send KeyUpdate(update_requested)\n"     \
+    "    aead_limit=%%d       default: 0 (use RFC default 2^23)\n"      \
+    "    auth_fail_limit=%%d  default: 0 (use built-in default)\n"
 #else
 #define USAGE_KEY_UPDATE ""
 #endif
@@ -509,6 +513,8 @@ struct options {
     int renegotiate;            /* attempt renegotiation?                   */
     int renego_delay;           /* delay before enforcing renegotiation     */
     int key_update;             /* send DTLS 1.3 KeyUpdate after handshake  */
+    uint64_t aead_limit;        /* DTLS 1.3 AEAD record limit (0=default)   */
+    uint32_t auth_fail_limit;   /* DTLS 1.3 auth-fail limit (0=default)     */
     int exchanges;              /* number of data exchanges                 */
     int min_version;            /* minimum protocol version accepted        */
     int max_version;            /* maximum protocol version accepted        */
@@ -949,6 +955,8 @@ int main(int argc, char *argv[])
     opt.renegotiate         = DFL_RENEGOTIATE;
     opt.renego_delay        = DFL_RENEGO_DELAY;
     opt.key_update          = DFL_KEY_UPDATE;
+    opt.aead_limit          = DFL_AEAD_LIMIT;
+    opt.auth_fail_limit     = DFL_AUTH_FAIL_LIMIT;
     opt.exchanges           = DFL_EXCHANGES;
     opt.min_version         = DFL_MIN_VERSION;
     opt.max_version         = DFL_MAX_VERSION;
@@ -1191,6 +1199,10 @@ usage:
             if (opt.key_update < 0 || opt.key_update > 2) {
                 goto usage;
             }
+        } else if (strcmp(p, "aead_limit") == 0) {
+            opt.aead_limit = (uint64_t) strtoull(q, NULL, 10);
+        } else if (strcmp(p, "auth_fail_limit") == 0) {
+            opt.auth_fail_limit = (uint32_t) atoi(q);
         } else if (strcmp(p, "exchanges") == 0) {
             opt.exchanges = atoi(q);
             if (opt.exchanges < 1) {
@@ -1865,6 +1877,15 @@ usage:
     if (opt.dgram_packing != DFL_DGRAM_PACKING) {
         mbedtls_ssl_set_datagram_packing(&ssl, opt.dgram_packing);
     }
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    if (opt.aead_limit != DFL_AEAD_LIMIT) {
+        mbedtls_ssl_conf_dtls13_aead_limit(&conf, opt.aead_limit);
+    }
+    if (opt.auth_fail_limit != DFL_AUTH_FAIL_LIMIT) {
+        mbedtls_ssl_conf_dtls13_auth_fail_limit(&conf, opt.auth_fail_limit);
+    }
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
 
 #if defined(MBEDTLS_SSL_MAX_FRAGMENT_LENGTH)
