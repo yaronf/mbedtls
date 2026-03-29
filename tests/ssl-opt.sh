@@ -29,7 +29,7 @@ if ! cd "$(dirname "$0")"; then
     exit 125
 fi
 
-DATA_FILES_PATH=../framework/data_files
+: ${DATA_FILES_PATH:=../framework/data_files}
 
 # default values, can be overridden by the environment
 : ${P_SRV:=../programs/ssl/ssl_server2}

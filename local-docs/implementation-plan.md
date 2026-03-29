@@ -590,12 +590,14 @@ have been drilled down in `local-docs/design-drilldown.md`:
 
 - [ ] 1. Implement `mbedtls_ssl_dtls13_hs_fsm` linked list on `mbedtls_ssl_context`.
          See drilldown §3 for full struct definition and lookup semantics.
-- [ ] 2. KeyUpdate: ACK required; new epoch (4+); retain old keys until new-epoch traffic received.
+- [x] 2. KeyUpdate: ACK required; new epoch (4+); retain old keys until new-epoch traffic received.
          See drilldown §2: epoch pool retains pre-update inbound transform until first
          successful decrypt with new keys.
          Tests: (a) single KeyUpdate — both sides advance epoch to 4, app data flows;
          (b) three sequential KeyUpdates — epoch advances to 4, 5, 6; app data flows
          at each epoch; old epoch keys correctly evicted from pool.
+         **DONE** (commit b95dc3126b): all 4 tests passing — client KU, server KU,
+         update_requested reciprocal KU, KU + app data exchange.
 - [ ] 3. AEAD limit tracking: count authenticated records per epoch; trigger KeyUpdate.
 - [ ] 4. Count failed authentication attempts per epoch; close on limit.
 - [ ] 5. NewConnectionId (type 10) and RequestConnectionId (type 9): parse, send, ACK.
