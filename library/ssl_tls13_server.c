@@ -3820,6 +3820,16 @@ int mbedtls_ssl_tls13_handshake_server_step(mbedtls_ssl_context *ssl)
             /* Try to read an incoming ACK record.  The ACK handler updates
              * retransmit_state; we return WANT_READ so the caller retries. */
             ret = mbedtls_ssl_read_record(ssl, 0);
+            /* Check RETRANS_FINISHED unconditionally: the ACK handler sets it
+             * inside read_record's internal NON_FATAL loop; read_record never
+             * returns NON_FATAL to callers, so we must check here regardless of
+             * the return code. */
+            if (ssl->handshake->retransmit_state ==
+                MBEDTLS_SSL_RETRANS_FINISHED) {
+                mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_HANDSHAKE_OVER);
+                ret = 0;
+                break;
+            }
             if (ret == MBEDTLS_ERR_SSL_WANT_READ ||
                 ret == MBEDTLS_ERR_SSL_NON_FATAL) {
                 ret = MBEDTLS_ERR_SSL_WANT_READ;

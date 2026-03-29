@@ -311,6 +311,12 @@ static const char *msg_type(unsigned char *msg, size_t len)
     if (len < 1) {
         return "Invalid";
     }
+    /* DTLS 1.3 DTLSCiphertext unified header: top 3 bits = 0b001 (§4.3.3 RFC 9147).
+     * All DTLS 1.3 encrypted records use this format regardless of inner content type,
+     * so classify them as ApplicationData for proxy decision-making purposes. */
+    if ((msg[0] & 0xE0) == 0x20) {
+        return "ApplicationData";
+    }
     switch (msg[0]) {
         case MBEDTLS_SSL_MSG_CHANGE_CIPHER_SPEC:    return "ChangeCipherSpec";
         case MBEDTLS_SSL_MSG_ALERT:                 return "Alert";

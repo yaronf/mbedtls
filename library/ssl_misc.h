@@ -340,8 +340,14 @@ uint32_t mbedtls_ssl_get_extension_mask(unsigned int extension_type);
 #define MBEDTLS_SSL_OUT_PAYLOAD_LEN (MBEDTLS_SSL_PAYLOAD_OVERHEAD + \
                                      (MBEDTLS_SSL_OUT_CONTENT_LEN))
 
-/* The maximum number of buffered handshake messages. */
-#define MBEDTLS_SSL_MAX_BUFFERED_HS 4
+/* The maximum number of buffered handshake messages.
+ * In DTLS 1.3 with client auth, the server flight has 6 messages
+ * (SH, EE, CertReq, Cert, CertVerify, Finished).  When the client
+ * is waiting for EE (in_msg_seq=1) and all later messages arrive
+ * out-of-order, the Finished (hs_seq=5) has offset=4 from in_msg_seq.
+ * We need the window [in_msg_seq .. in_msg_seq + MAX - 1] to include
+ * all 5 remaining messages, so MAX must be ≥ 5.  Use 6 for headroom. */
+#define MBEDTLS_SSL_MAX_BUFFERED_HS 6
 
 /* Maximum length we can advertise as our max content length for
    RFC 6066 max_fragment_length extension negotiation purposes
@@ -903,6 +909,14 @@ struct mbedtls_ssl_handshake_params {
     unsigned char alt_out_ctr[MBEDTLS_SSL_SEQUENCE_NUMBER_LEN]; /*!<  Alternative record epoch/counter
                                                                       for resending messages         */
 
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    /* DTLS 1.3: saved epoch-0 output counter.  When the active outbound epoch
+     * advances to epoch 2+, the epoch-0 sequence counter is lost.  We save it
+     * here so epoch-0 flight items (HRR, ServerHello) can be retransmitted at
+     * the correct sequence number rather than restarting from 0 each time. */
+    unsigned char dtls13_epoch0_out_ctr[MBEDTLS_SSL_SEQUENCE_NUMBER_LEN];
+#endif
+
 #if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
     /* The state of CID configuration in this handshake. */
 
@@ -1257,6 +1271,7 @@ mbedtls_ssl_transform *ssl_dtls13_epoch_pool_lookup(
     const mbedtls_ssl_context *ssl,
     uint64_t epoch);
 
+
 /**
  * \brief  Free all transforms in the pool.  Called from mbedtls_ssl_free().
  */
@@ -1341,14 +1356,22 @@ struct mbedtls_ssl_flight_item {
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
     /* DTLS 1.3: record numbers of each transmission of this message.
      * A message may be retransmitted with a different record number each time.
-     * We track the last MBEDTLS_SSL_DTLS13_MAX_RECORDS_PER_FLIGHT_ITEM
-     * transmissions in a ring buffer so that incoming ACKs can be matched.
+     *
+     * Index 0: the original (first) send — never overwritten, so an ACK
+     *          arriving long after many retransmits can still be matched.
+     * Indices 1..MAX-1: ring buffer for recent retransmits (newest-only).
+     *
+     * Matching rule: check all entries with index < sent_record_count.
      * sent_record_epoch[i] holds the low byte of the epoch for entry i. */
 #define MBEDTLS_SSL_DTLS13_MAX_RECORDS_PER_FLIGHT_ITEM 4
     uint64_t sent_records[MBEDTLS_SSL_DTLS13_MAX_RECORDS_PER_FLIGHT_ITEM];
     uint8_t  sent_record_epoch[MBEDTLS_SSL_DTLS13_MAX_RECORDS_PER_FLIGHT_ITEM];
-    uint8_t  sent_record_count;  /*!< number of valid entries (ring head) */
+    uint8_t  sent_record_count;  /*!< number of valid entries; capped at MAX */
     uint8_t  acked;              /*!< true if any sent_records[] was ACKed */
+    /* Epoch at which this item was originally sent.  Retransmits use this
+     * epoch even if a newer one (e.g. application epoch) is now active,
+     * in compliance with RFC 9147 §7.2 ("same key material"). */
+    uint16_t dtls13_send_epoch;
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 };
 #endif /* MBEDTLS_SSL_PROTO_DTLS */

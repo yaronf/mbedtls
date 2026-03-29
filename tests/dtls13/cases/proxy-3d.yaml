@@ -16,6 +16,8 @@ cases:
     client:
       dgram_packing: false
       hs_timeout: [500, 20000]
+      read_timeout: 5000
+      max_resend: 5
       debug_level: 2
     expect:
       exit: 0
@@ -39,6 +41,8 @@ cases:
     client:
       dgram_packing: false
       hs_timeout: [500, 20000]
+      read_timeout: 5000
+      max_resend: 5
       debug_level: 2
     expect:
       exit: 0
@@ -63,6 +67,8 @@ cases:
       dgram_packing: false
       hs_timeout: [500, 20000]
       nbio: 2
+      read_timeout: 5000
+      max_resend: 5
       debug_level: 1
     expect:
       exit: 0
@@ -108,6 +114,8 @@ cases:
     client:
       dgram_packing: false
       hs_timeout: [500, 20000]
+      read_timeout: 5000
+      max_resend: 5
       debug_level: 2
     expect:
       exit: 0

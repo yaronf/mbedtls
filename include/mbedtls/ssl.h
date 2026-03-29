@@ -1590,6 +1590,7 @@ typedef struct {
     uint64_t epoch;                   /*!< full 64-bit epoch value; 0=empty  */
     mbedtls_ssl_transform *transform; /*!< NULL when slot is empty           */
     uint64_t retired_at_ms;           /*!< monotonic ms when superseded      */
+    unsigned char out_ctr[8];         /*!< outbound counter for this epoch   */
 } mbedtls_ssl_dtls13_epoch_slot;
 #endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 

@@ -2241,6 +2241,10 @@ int mbedtls_ssl_flush_output(mbedtls_ssl_context *ssl)
 /*
  * Append current handshake message to current outgoing flight
  */
+/* Forward declaration — defined later in this file (after epoch-pool helpers). */
+static mbedtls_ssl_dtls13_epoch_slot *ssl_dtls13_epoch_pool_lookup_slot(
+    mbedtls_ssl_context *ssl, uint64_t epoch);
+
 MBEDTLS_CHECK_RETURN_CRITICAL
 static int ssl_flight_append(mbedtls_ssl_context *ssl)
 {
@@ -2268,6 +2272,25 @@ static int ssl_flight_append(mbedtls_ssl_context *ssl)
     msg->len = ssl->out_msglen;
     msg->type = ssl->out_msgtype;
     msg->next = NULL;
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+        ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3) {
+        /* Record the epoch so retransmits use the same epoch even if a
+         * newer one is installed later (RFC 9147 §7.2: "same key material"). */
+        msg->dtls13_send_epoch = (uint16_t) ssl->cur_out_ctr[1] |
+                                 ((uint16_t) ssl->cur_out_ctr[0] << 8);
+        /* Sync the current counter into the epoch pool slot so that
+         * retransmits from WAIT_ACK (when a newer epoch is active) can
+         * continue from where we left off. */
+        if (msg->dtls13_send_epoch != 0) {
+            mbedtls_ssl_dtls13_epoch_slot *slot =
+                ssl_dtls13_epoch_pool_lookup_slot(ssl, msg->dtls13_send_epoch);
+            if (slot != NULL) {
+                memcpy(slot->out_ctr, ssl->cur_out_ctr, 8);
+            }
+        }
+    }
+#endif
 
     /* Append to the current flight */
     if (ssl->handshake->flight == NULL) {
@@ -2413,6 +2436,45 @@ int mbedtls_ssl_flight_transmit(mbedtls_ssl_context *ssl)
             }
             continue;
         }
+
+        /* DTLS 1.3: skip epoch-0 retransmits once the peer has confirmed
+         * receipt of epoch-2 content by ACKing at least one epoch-2 flight
+         * item.  At that point, the peer has epoch-2 keys (and therefore
+         * already processed epoch-0 content, e.g. the ServerHello).
+         * Re-sending epoch-0 records then is pointless and can cause the
+         * retransmit loop to be dominated by an un-ackable item, deadlocking
+         * the partial-ACK logic (RFC 9147 §7.3).
+         *
+         * Only skip if the flight also contains epoch-2+ items (otherwise
+         * it's a pure epoch-0 flight and SH must still be retransmitted). */
+        if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+            ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+            cur->dtls13_send_epoch == 0) {
+            /* Check if any epoch-2+ flight item has been explicitly acked. */
+            int epoch2_acked = 0;
+            {
+                const mbedtls_ssl_flight_item *chk;
+                for (chk = ssl->handshake->flight;
+                     chk != NULL; chk = chk->next) {
+                    if (chk->dtls13_send_epoch >= 2 && chk->acked) {
+                        epoch2_acked = 1;
+                        break;
+                    }
+                }
+            }
+            if (epoch2_acked) {
+                MBEDTLS_SSL_DEBUG_MSG(2, ("DTLS 1.3: skip epoch-0 retransmit "
+                                          "(epoch-2+ items already acked)"));
+                if (cur->next != NULL) {
+                    ssl->handshake->cur_msg = cur->next;
+                    ssl->handshake->cur_msg_p = cur->next->p + 12;
+                } else {
+                    ssl->handshake->cur_msg = NULL;
+                    ssl->handshake->cur_msg_p = NULL;
+                }
+                continue;
+            }
+        }
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 
         int const is_finished =
@@ -2532,22 +2594,55 @@ int mbedtls_ssl_flight_transmit(mbedtls_ssl_context *ssl)
 
         /* Actually send the message out */
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
-        /* DTLS 1.3: plaintext epoch-0 flight items (ServerHello) must be
-         * written with transform_out == NULL even though the current outbound
-         * epoch may be 2+.  Save and restore around the write. */
+        /* DTLS 1.3: flight items must be retransmitted at the epoch they were
+         * originally sent at (RFC 9147 §7.2: "same key material"), even if a
+         * newer epoch is now active (e.g. app keys installed while WAIT_ACK).
+         * Save/restore the active epoch transform and counter around the write.
+         * For epoch 0 (ServerHello): transform_out = NULL, counter = 0.
+         * For other epochs: look up the epoch pool and use the stored counter. */
         mbedtls_ssl_transform *dtls13_saved_transform = NULL;
         unsigned char dtls13_saved_ctr[8];
+        mbedtls_ssl_dtls13_epoch_slot *dtls13_retx_slot = NULL;
         if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
-            ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
-            cur->type == MBEDTLS_SSL_MSG_HANDSHAKE &&
-            cur->len >= 1 &&
-            cur->p[0] == MBEDTLS_SSL_HS_SERVER_HELLO &&
-            ssl->transform_out != NULL) {
-            dtls13_saved_transform = ssl->transform_out;
-            memcpy(dtls13_saved_ctr, ssl->cur_out_ctr, 8);
-            ssl->transform_out = NULL;
-            memset(ssl->cur_out_ctr, 0, 8); /* epoch 0, seq 0 (client hasn't seen it) */
-            mbedtls_ssl_update_out_pointers(ssl, NULL);
+            ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+            uint16_t active_epoch =
+                (uint16_t) ssl->cur_out_ctr[1] |
+                ((uint16_t) ssl->cur_out_ctr[0] << 8);
+            if (cur->dtls13_send_epoch != active_epoch) {
+                dtls13_saved_transform = ssl->transform_out;
+                memcpy(dtls13_saved_ctr, ssl->cur_out_ctr, 8);
+                if (cur->dtls13_send_epoch == 0) {
+                    ssl->transform_out = NULL;
+                    /* Restore the saved epoch-0 counter so retransmits continue
+                     * from the correct sequence number rather than restarting
+                     * at seq=0 (which would look like a replay to the peer). */
+                    if (ssl->handshake != NULL &&
+                        (ssl->handshake->dtls13_epoch0_out_ctr[0] != 0 ||
+                         ssl->handshake->dtls13_epoch0_out_ctr[1] != 0 ||
+                         ssl->handshake->dtls13_epoch0_out_ctr[2] != 0)) {
+                        memcpy(ssl->cur_out_ctr,
+                               ssl->handshake->dtls13_epoch0_out_ctr, 8);
+                    } else {
+                        memset(ssl->cur_out_ctr, 0, 8);
+                    }
+                } else {
+                    dtls13_retx_slot = ssl_dtls13_epoch_pool_lookup_slot(
+                        ssl, (uint64_t) cur->dtls13_send_epoch);
+                    if (dtls13_retx_slot != NULL) {
+                        ssl->transform_out = dtls13_retx_slot->transform;
+                        memcpy(ssl->cur_out_ctr, dtls13_retx_slot->out_ctr, 8);
+                    } else {
+                        /* Epoch no longer in pool: fall back to active epoch. */
+                        dtls13_saved_transform = NULL;
+                    }
+                }
+                if (dtls13_saved_transform != NULL) {
+                    mbedtls_ssl_update_out_pointers(ssl, ssl->transform_out);
+                    MBEDTLS_SSL_DEBUG_MSG(2, (
+                        "DTLS 1.3: retransmit epoch switch %u -> %u",
+                        active_epoch, cur->dtls13_send_epoch));
+                }
+            }
         }
 
         /* DTLS 1.3: record the outbound epoch+seq before the write so we can
@@ -2557,32 +2652,50 @@ int mbedtls_ssl_flight_transmit(mbedtls_ssl_context *ssl)
          * snapshot it before the call. */
         if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
             ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
-            uint8_t idx = cur->sent_record_count %
-                          MBEDTLS_SSL_DTLS13_MAX_RECORDS_PER_FLIGHT_ITEM;
-            cur->sent_record_epoch[idx] = ssl->cur_out_ctr[1]; /* low epoch byte */
-            cur->sent_records[idx] =
-                ((uint64_t) ssl->cur_out_ctr[2] << 40) |
-                ((uint64_t) ssl->cur_out_ctr[3] << 32) |
-                ((uint64_t) ssl->cur_out_ctr[4] << 24) |
-                ((uint64_t) ssl->cur_out_ctr[5] << 16) |
-                ((uint64_t) ssl->cur_out_ctr[6] <<  8) |
-                ((uint64_t) ssl->cur_out_ctr[7]);
-            if (cur->sent_record_count < MBEDTLS_SSL_DTLS13_MAX_RECORDS_PER_FLIGHT_ITEM) {
+            {
+                uint8_t cnt = cur->sent_record_count;
+                /* Slot 0: original send — never overwritten.
+                 * Slots 1..MAX-1: ring for retransmits. */
+                uint8_t idx = (cnt == 0) ? 0 :
+                    (uint8_t)(1 + (cnt - 1) %
+                     (MBEDTLS_SSL_DTLS13_MAX_RECORDS_PER_FLIGHT_ITEM - 1));
+                cur->sent_record_epoch[idx] = ssl->cur_out_ctr[1]; /* low epoch byte */
+                cur->sent_records[idx] =
+                    ((uint64_t) ssl->cur_out_ctr[2] << 40) |
+                    ((uint64_t) ssl->cur_out_ctr[3] << 32) |
+                    ((uint64_t) ssl->cur_out_ctr[4] << 24) |
+                    ((uint64_t) ssl->cur_out_ctr[5] << 16) |
+                    ((uint64_t) ssl->cur_out_ctr[6] <<  8) |
+                    ((uint64_t) ssl->cur_out_ctr[7]);
                 cur->sent_record_count++;
+                MBEDTLS_SSL_DEBUG_MSG(2, ("DTLS 1.3: flight retransmit type=%u epoch=%u seq=%llu",
+                                          (unsigned) cur->type,
+                                          (unsigned) cur->sent_record_epoch[idx],
+                                          (unsigned long long) cur->sent_records[idx]));
             }
-            MBEDTLS_SSL_DEBUG_MSG(2, ("DTLS 1.3: flight retransmit type=%u epoch=%u seq=%llu",
-                                      (unsigned) cur->type,
-                                      (unsigned) cur->sent_record_epoch[idx],
-                                      (unsigned long long) cur->sent_records[idx]));
         }
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
         if ((ret = mbedtls_ssl_write_record(ssl, force_flush)) != 0) {
             MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_write_record", ret);
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+            if (dtls13_saved_transform != NULL) {
+                if (dtls13_retx_slot != NULL) {
+                    memcpy(dtls13_retx_slot->out_ctr, ssl->cur_out_ctr, 8);
+                }
+                ssl->transform_out = dtls13_saved_transform;
+                memcpy(ssl->cur_out_ctr, dtls13_saved_ctr, 8);
+                mbedtls_ssl_update_out_pointers(ssl, ssl->transform_out);
+            }
+#endif
             return ret;
         }
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
-        /* Restore epoch-2 transform after a plaintext ServerHello retransmit. */
+        /* Restore active epoch after a cross-epoch retransmit, saving the
+         * updated counter for the retransmit epoch back to its pool slot. */
         if (dtls13_saved_transform != NULL) {
+            if (dtls13_retx_slot != NULL) {
+                memcpy(dtls13_retx_slot->out_ctr, ssl->cur_out_ctr, 8);
+            }
             ssl->transform_out = dtls13_saved_transform;
             memcpy(ssl->cur_out_ctr, dtls13_saved_ctr, 8);
             mbedtls_ssl_update_out_pointers(ssl, ssl->transform_out);
@@ -3103,24 +3216,33 @@ int mbedtls_ssl_write_handshake_msg_ext(mbedtls_ssl_context *ssl,
                     while (tail->next != NULL) {
                         tail = tail->next;
                     }
-                    uint8_t idx = tail->sent_record_count %
-                                  MBEDTLS_SSL_DTLS13_MAX_RECORDS_PER_FLIGHT_ITEM;
-                    tail->sent_record_epoch[idx] = ssl->cur_out_ctr[1];
-                    tail->sent_records[idx] =
-                        ((uint64_t) ssl->cur_out_ctr[2] << 40) |
-                        ((uint64_t) ssl->cur_out_ctr[3] << 32) |
-                        ((uint64_t) ssl->cur_out_ctr[4] << 24) |
-                        ((uint64_t) ssl->cur_out_ctr[5] << 16) |
-                        ((uint64_t) ssl->cur_out_ctr[6] <<  8) |
-                        ((uint64_t) ssl->cur_out_ctr[7]);
-                    if (tail->sent_record_count <
-                        MBEDTLS_SSL_DTLS13_MAX_RECORDS_PER_FLIGHT_ITEM) {
+                    {
+                        uint8_t cnt = tail->sent_record_count;
+                        /* Slot 0: original send — never overwritten.
+                         * Slots 1..MAX-1: ring for retransmits.
+                         * 'cnt' is an unbounded counter: 0 = never sent,
+                         * 1 = sent once (slot 0 is the original),
+                         * >1 = retransmit ring at slots 1..MAX-1. */
+                        uint8_t idx = (cnt == 0) ? 0 :
+                            (uint8_t)(1 + (cnt - 1) %
+                             (MBEDTLS_SSL_DTLS13_MAX_RECORDS_PER_FLIGHT_ITEM - 1));
+                        tail->sent_record_epoch[idx] = ssl->cur_out_ctr[1];
+                        tail->sent_records[idx] =
+                            ((uint64_t) ssl->cur_out_ctr[2] << 40) |
+                            ((uint64_t) ssl->cur_out_ctr[3] << 32) |
+                            ((uint64_t) ssl->cur_out_ctr[4] << 24) |
+                            ((uint64_t) ssl->cur_out_ctr[5] << 16) |
+                            ((uint64_t) ssl->cur_out_ctr[6] <<  8) |
+                            ((uint64_t) ssl->cur_out_ctr[7]);
+                        /* Always increment cnt — it wraps at 255→0 but
+                         * that's fine (255 retransmits means timeout has
+                         * fired long before). */
                         tail->sent_record_count++;
+                        MBEDTLS_SSL_DEBUG_MSG(2, (
+                            "DTLS 1.3: initial send epoch=%u seq=%llu",
+                            (unsigned) tail->sent_record_epoch[idx],
+                            (unsigned long long) tail->sent_records[idx]));
                     }
-                    MBEDTLS_SSL_DEBUG_MSG(2, (
-                        "DTLS 1.3: initial send epoch=%u seq=%llu",
-                        (unsigned) tail->sent_record_epoch[idx],
-                        (unsigned long long) tail->sent_records[idx]));
                 }
             }
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
@@ -3600,9 +3722,19 @@ int mbedtls_ssl_prepare_handshake_record(mbedtls_ssl_context *ssl)
 
             /* Retransmit only on last message from previous flight, to avoid
              * too many retransmissions.
-             * Besides, No sane server ever retransmits HelloVerifyRequest */
+             * Besides, No sane server ever retransmits HelloVerifyRequest.
+             *
+             * DTLS 1.3: retransmits are ACK-driven, not triggered by receiving
+             * duplicates of the peer's previous flight.  Skip this path for
+             * DTLS 1.3; the else-branch below schedules an ACK instead. */
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+            if (ssl->tls_version != MBEDTLS_SSL_VERSION_TLS1_3 &&
+                recv_msg_seq == ssl->handshake->in_flight_start_seq - 1 &&
+                ssl->in_msg[0] != MBEDTLS_SSL_HS_HELLO_VERIFY_REQUEST) {
+#else
             if (recv_msg_seq == ssl->handshake->in_flight_start_seq - 1 &&
                 ssl->in_msg[0] != MBEDTLS_SSL_HS_HELLO_VERIFY_REQUEST) {
+#endif
                 MBEDTLS_SSL_DEBUG_MSG(2, ("received message from last flight, "
                                           "message_seq = %u, start_of_flight = %u",
                                           recv_msg_seq,
@@ -6277,7 +6409,11 @@ static int ssl_dtls13_process_ack(mbedtls_ssl_context *ssl,
 
         for (item = hs->flight; item != NULL; item = item->next) {
             uint8_t j;
-            for (j = 0; j < item->sent_record_count; j++) {
+            uint8_t nslots = item->sent_record_count <
+                             MBEDTLS_SSL_DTLS13_MAX_RECORDS_PER_FLIGHT_ITEM ?
+                             item->sent_record_count :
+                             MBEDTLS_SSL_DTLS13_MAX_RECORDS_PER_FLIGHT_ITEM;
+            for (j = 0; j < nslots; j++) {
                 if (item->sent_records[j] == seq &&
                     item->sent_record_epoch[j] == (uint8_t)(epoch & 0xFF)) {
                     if (!item->acked) {
@@ -6294,11 +6430,14 @@ static int ssl_dtls13_process_ack(mbedtls_ssl_context *ssl,
     }
 
     /* Check if the full flight has been acked. */
-    all_acked = 1;
-    for (item = hs->flight; item != NULL; item = item->next) {
-        if (!item->acked) {
-            all_acked = 0;
-            break;
+    all_acked = 0;
+    if (newly_acked) {
+        all_acked = 1;
+        for (item = hs->flight; item != NULL; item = item->next) {
+            if (!item->acked) {
+                all_acked = 0;
+                break;
+            }
         }
     }
 
@@ -7540,39 +7679,46 @@ void ssl_dtls13_epoch_pool_insert(mbedtls_ssl_context *ssl,
     int evict;
     uint64_t oldest_ts;
     mbedtls_ssl_dtls13_epoch_slot *pool = ssl->dtls13_epoch_pool;
+    mbedtls_ssl_dtls13_epoch_slot *target;
 
     if (transform == NULL) {
         return;
     }
 
     /* Find an empty slot first. */
+    target = NULL;
     for (i = 0; i < MBEDTLS_SSL_DTLS13_EPOCH_POOL_SIZE; i++) {
         if (pool[i].transform == NULL) {
-            pool[i].epoch         = transform->dtls13_epoch;
-            pool[i].transform     = transform;
-            /* Use epoch number as ordering key: lower epoch = older. */
-            pool[i].retired_at_ms = (uint64_t) transform->dtls13_epoch;
-            return;
+            target = &pool[i];
+            break;
         }
     }
 
-    /* All slots occupied — evict the slot with the lowest retired_at_ms
-     * (i.e. the oldest epoch, least likely to be needed for decryption). */
-    evict     = 0;
-    oldest_ts = pool[0].retired_at_ms;
-    for (i = 1; i < MBEDTLS_SSL_DTLS13_EPOCH_POOL_SIZE; i++) {
-        if (pool[i].retired_at_ms < oldest_ts) {
-            oldest_ts = pool[i].retired_at_ms;
-            evict     = i;
+    if (target == NULL) {
+        /* All slots occupied — evict the slot with the lowest retired_at_ms
+         * (i.e. the oldest epoch, least likely to be needed for decryption). */
+        evict     = 0;
+        oldest_ts = pool[0].retired_at_ms;
+        for (i = 1; i < MBEDTLS_SSL_DTLS13_EPOCH_POOL_SIZE; i++) {
+            if (pool[i].retired_at_ms < oldest_ts) {
+                oldest_ts = pool[i].retired_at_ms;
+                evict     = i;
+            }
         }
+
+        mbedtls_ssl_transform_free(pool[evict].transform);
+        mbedtls_free(pool[evict].transform);
+        target = &pool[evict];
     }
 
-    mbedtls_ssl_transform_free(pool[evict].transform);
-    mbedtls_free(pool[evict].transform);
-
-    pool[evict].epoch         = transform->dtls13_epoch;
-    pool[evict].transform     = transform;
-    pool[evict].retired_at_ms = (uint64_t) transform->dtls13_epoch;
+    target->epoch         = transform->dtls13_epoch;
+    target->transform     = transform;
+    /* Use epoch number as ordering key: lower epoch = older. */
+    target->retired_at_ms = (uint64_t) transform->dtls13_epoch;
+    /* Save the current outbound counter for this epoch so that retransmits
+     * from a later epoch (e.g. WAIT_ACK with epoch=3 active) can continue
+     * from where we left off rather than resetting to sequence 0. */
+    memcpy(target->out_ctr, ssl->cur_out_ctr, sizeof(target->out_ctr));
 }
 
 mbedtls_ssl_transform *ssl_dtls13_epoch_pool_lookup(
@@ -7585,6 +7731,23 @@ mbedtls_ssl_transform *ssl_dtls13_epoch_pool_lookup(
     for (i = 0; i < MBEDTLS_SSL_DTLS13_EPOCH_POOL_SIZE; i++) {
         if (pool[i].transform != NULL && pool[i].epoch == epoch) {
             return pool[i].transform;
+        }
+    }
+    return NULL;
+}
+
+/* Look up an epoch pool slot (mutable) by epoch number.
+ * Returns NULL if not found. */
+static mbedtls_ssl_dtls13_epoch_slot *ssl_dtls13_epoch_pool_lookup_slot(
+    mbedtls_ssl_context *ssl,
+    uint64_t epoch)
+{
+    int i;
+    mbedtls_ssl_dtls13_epoch_slot *pool = ssl->dtls13_epoch_pool;
+
+    for (i = 0; i < MBEDTLS_SSL_DTLS13_EPOCH_POOL_SIZE; i++) {
+        if (pool[i].transform != NULL && pool[i].epoch == epoch) {
+            return &pool[i];
         }
     }
     return NULL;
@@ -7651,6 +7814,22 @@ void mbedtls_ssl_set_inbound_transform(mbedtls_ssl_context *ssl,
 void mbedtls_ssl_set_outbound_transform(mbedtls_ssl_context *ssl,
                                         mbedtls_ssl_transform *transform)
 {
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    /* DTLS 1.3: before clearing cur_out_ctr, save the epoch-0 counter so
+     * epoch-0 flight items (HRR, ServerHello) can be retransmitted at the
+     * correct sequence number rather than restarting from seq=0 each time.
+     * Only save when we're actually leaving epoch 0 (cur_out_ctr epoch = 0). */
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+        ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+        ssl->handshake != NULL &&
+        transform != NULL && transform->dtls13_epoch != 0 &&
+        ssl->cur_out_ctr[0] == 0 && ssl->cur_out_ctr[1] == 0) {
+        memcpy(ssl->handshake->dtls13_epoch0_out_ctr,
+               ssl->cur_out_ctr,
+               sizeof(ssl->handshake->dtls13_epoch0_out_ctr));
+    }
+#endif
+
     ssl->transform_out = transform;
     memset(ssl->cur_out_ctr, 0, sizeof(ssl->cur_out_ctr));
 

@@ -34,6 +34,8 @@ param_map:
   psk_identity:   "psk_identity={value}"
   reconnect:      "reconnect={value}"
   skip_close_notify: "skip_close_notify={1 if value else 0}"
+  read_timeout:   "read_timeout={value}"
+  max_resend:     "max_resend={value}"
 
 proxy_param_map:
   drop:       "drop={value}"
