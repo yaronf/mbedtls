@@ -1178,6 +1178,17 @@ int mbedtls_ssl_tls13_write_client_hello_exts(mbedtls_ssl_context *ssl,
     p += ext_len;
 #endif
 
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+        ssl->negotiate_cid == MBEDTLS_SSL_CID_ENABLED) {
+        ret = mbedtls_ssl_write_cid_ext(ssl, p, end, &ext_len);
+        if (ret != 0) {
+            return ret;
+        }
+        p += ext_len;
+    }
+#endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
+
 #if defined(MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_SOME_EPHEMERAL_ENABLED)
     if (mbedtls_ssl_conf_tls13_is_some_ephemeral_enabled(ssl)) {
         ret = ssl_tls13_write_key_share_ext(ssl, p, end, &ext_len);
@@ -2324,6 +2335,21 @@ static int ssl_tls13_parse_encrypted_extensions(mbedtls_ssl_context *ssl,
                 }
                 break;
 #endif /* MBEDTLS_SSL_RECORD_SIZE_LIMIT */
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+            case MBEDTLS_TLS_EXT_CID:
+                MBEDTLS_SSL_DEBUG_MSG(3, ("found CID extension in EncryptedExtensions"));
+
+                if (ssl->conf->transport != MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+                    break; /* Ignore in TLS */
+                }
+                ret = mbedtls_ssl_parse_cid_ext(ssl, p, p + extension_data_len);
+                if (ret != 0) {
+                    MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_parse_cid_ext", ret);
+                    return ret;
+                }
+                break;
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_DTLS_CONNECTION_ID */
 
             default:
                 MBEDTLS_SSL_PRINT_EXT(

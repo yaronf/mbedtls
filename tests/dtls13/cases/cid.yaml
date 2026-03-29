@@ -1,0 +1,60 @@
+family: "DTLS 1.3 CID"
+requires:
+  - protocol: dtls13
+  - config: MBEDTLS_SSL_DTLS_CONNECTION_ID
+
+cases:
+  - name: "CID: both endpoints offer CID — negotiated"
+    # Server and client both offer a CID.  Expect CID to be negotiated.
+    server:
+      debug_level: 3
+      cid: 1
+      cid_val: "deadbeef"
+    client:
+      debug_level: 3
+      cid: 1
+      cid_val: "cafebabe"
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - server_cid_negotiated
+        - client_cid_negotiated
+
+  - name: "CID: only client offers CID — not negotiated (server disabled)"
+    # Client offers CID but server has CID disabled.
+    # RFC 9147 §9: CID is only used if both sides agree.
+    server:
+      debug_level: 3
+    client:
+      debug_level: 3
+      cid: 1
+      cid_val: "cafebabe"
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - server_cid_not_negotiated
+        - client_cid_not_negotiated
+
+  - name: "CID: basic exchange with CID enabled"
+    # Verify application data exchange works with CID active.
+    server:
+      debug_level: 3
+      cid: 1
+      cid_val: "aabbccdd"
+      exchanges: 2
+    client:
+      debug_level: 3
+      cid: 1
+      cid_val: "11223344"
+      exchanges: 2
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - server_cid_negotiated
+        - client_cid_negotiated

@@ -588,8 +588,9 @@ have been drilled down in `local-docs/design-drilldown.md`:
 *Goal: KeyUpdate, CID management, post-handshake auth all work with ACK reliability.*
 *Design detail: see `design-drilldown.md` §3 (post-handshake FSM linked list).*
 
-- [ ] 1. Implement `mbedtls_ssl_dtls13_hs_fsm` linked list on `mbedtls_ssl_context`.
-         See drilldown §3 for full struct definition and lookup semantics.
+- [N/A] 1. Implement `mbedtls_ssl_dtls13_hs_fsm` linked list on `mbedtls_ssl_context`.
+         Not needed: KeyUpdate uses direct per-context state; CID will do the same.
+         Post-hs auth is prohibited by RFC 9147 §5.4 (see item 6 below).
 - [x] 2. KeyUpdate: ACK required; new epoch (4+); retain old keys until new-epoch traffic received.
          See drilldown §2: epoch pool retains pre-update inbound transform until first
          successful decrypt with new keys.
@@ -620,10 +621,9 @@ have been drilled down in `local-docs/design-drilldown.md`:
              retire_prior_to field; both ends use new CID; old CID silently dropped.
          (d) Excessive CID requests: server returns too_many_cids_requested alert when
              RequestConnectionId count exceeds limit.
-- [ ] 6. Post-handshake client authentication: CertificateRequest → Certificate →
-         CertificateVerify → Finished exchange with ACK wrapping for DTLS reliability.
-- [ ] 7. Self-test: KeyUpdate exchange, CID negotiation and update, post-handshake auth,
-         limit enforcement.
+- [N/A] 6. Post-handshake client authentication: explicitly prohibited by RFC 9147 §5.4.
+         "Post-handshake authentication is not supported in DTLS 1.3."
+- [ ] 7. Self-test: KeyUpdate exchange, CID negotiation and update, limit enforcement.
 - [ ] 8. Interop: wolfSSL for KeyUpdate and CID update scenarios.
          See `reference-implementations.md`.
 

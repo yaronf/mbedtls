@@ -1798,4 +1798,95 @@ int mbedtls_ssl_tls13_write_record_size_limit_ext(mbedtls_ssl_context *ssl,
 
 #endif /* MBEDTLS_SSL_RECORD_SIZE_LIMIT */
 
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+/*
+ * Parse connection_id extension from a ClientHello or EncryptedExtensions.
+ * Records the peer's CID into ssl->handshake (peer_cid / peer_cid_len /
+ * cid_in_use).
+ *
+ *   struct { opaque cid<0..2^8-1>; } ConnectionId;
+ */
+MBEDTLS_CHECK_RETURN_CRITICAL
+int mbedtls_ssl_parse_cid_ext(mbedtls_ssl_context *ssl,
+                               const unsigned char *buf,
+                               const unsigned char *end)
+{
+    size_t peer_cid_len;
+
+    if (buf >= end) {
+        MBEDTLS_SSL_PEND_FATAL_ALERT(MBEDTLS_SSL_ALERT_MSG_DECODE_ERROR,
+                                     MBEDTLS_ERR_SSL_DECODE_ERROR);
+        return MBEDTLS_ERR_SSL_DECODE_ERROR;
+    }
+
+    peer_cid_len = *buf++;
+
+    if ((size_t) (end - buf) != peer_cid_len) {
+        MBEDTLS_SSL_PEND_FATAL_ALERT(MBEDTLS_SSL_ALERT_MSG_DECODE_ERROR,
+                                     MBEDTLS_ERR_SSL_DECODE_ERROR);
+        return MBEDTLS_ERR_SSL_DECODE_ERROR;
+    }
+
+    /* If CID use is disabled locally, acknowledge but don't activate. */
+    if (ssl->negotiate_cid == MBEDTLS_SSL_CID_DISABLED) {
+        MBEDTLS_SSL_DEBUG_MSG(3, ("peer sent CID extension, but CID disabled"));
+        return 0;
+    }
+
+    if (peer_cid_len > MBEDTLS_SSL_CID_OUT_LEN_MAX) {
+        MBEDTLS_SSL_PEND_FATAL_ALERT(MBEDTLS_SSL_ALERT_MSG_ILLEGAL_PARAMETER,
+                                     MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER);
+        return MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER;
+    }
+
+    ssl->handshake->cid_in_use = MBEDTLS_SSL_CID_ENABLED;
+    ssl->handshake->peer_cid_len = (uint8_t) peer_cid_len;
+    memcpy(ssl->handshake->peer_cid, buf, peer_cid_len);
+
+    MBEDTLS_SSL_DEBUG_MSG(3, ("CID extension negotiated, peer CID len=%u",
+                              (unsigned) peer_cid_len));
+    MBEDTLS_SSL_DEBUG_BUF(3, "Peer CID", buf, peer_cid_len);
+
+    return 0;
+}
+
+/*
+ * Write connection_id extension (RFC 9146 §3.1 / RFC 9147 §9).
+ * Shared between DTLS 1.2 ClientHello and DTLS 1.3 ClientHello /
+ * EncryptedExtensions.
+ *
+ *   struct { opaque cid<0..2^8-1>; } ConnectionId;
+ */
+MBEDTLS_CHECK_RETURN_CRITICAL
+int mbedtls_ssl_write_cid_ext(mbedtls_ssl_context *ssl,
+                               unsigned char *buf,
+                               const unsigned char *end,
+                               size_t *out_len)
+{
+    unsigned char *p = buf;
+
+    *out_len = 0;
+
+    /* Only offer CID when DATAGRAM and the caller already checked negotiate_cid */
+    MBEDTLS_SSL_CHK_BUF_PTR(p, end, (size_t) ssl->own_cid_len + 5);
+
+    MBEDTLS_PUT_UINT16_BE(MBEDTLS_TLS_EXT_CID, p, 0);
+    p += 2;
+    /* Extension data length: 1 (length byte) + cid bytes */
+    MBEDTLS_PUT_UINT16_BE((uint16_t) (ssl->own_cid_len + 1), p, 0);
+    p += 2;
+    *p++ = (uint8_t) ssl->own_cid_len;
+    memcpy(p, ssl->own_cid, ssl->own_cid_len);
+
+    *out_len = (size_t) ssl->own_cid_len + 5;
+
+    MBEDTLS_SSL_DEBUG_MSG(3, ("client hello, adding CID extension (len=%u)",
+                              (unsigned) ssl->own_cid_len));
+
+    mbedtls_ssl_tls13_set_hs_sent_ext_mask(ssl, MBEDTLS_TLS_EXT_CID);
+
+    return 0;
+}
+#endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
+
 #endif /* MBEDTLS_SSL_TLS_C && MBEDTLS_SSL_PROTO_TLS1_3 */

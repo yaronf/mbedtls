@@ -115,6 +115,7 @@ typedef enum {
 #define MBEDTLS_SSL_EXT_ID_EXTENDED_MASTER_SECRET     26
 #define MBEDTLS_SSL_EXT_ID_SESSION_TICKET             27
 #define MBEDTLS_SSL_EXT_ID_RECORD_SIZE_LIMIT          28
+#define MBEDTLS_SSL_EXT_ID_CID                        29 /* RFC 9146 / RFC 9147 */
 
 /* Utility for translating IANA extension type. */
 uint32_t mbedtls_ssl_get_extension_id(unsigned int extension_type);
@@ -176,6 +177,7 @@ uint32_t mbedtls_ssl_get_extension_mask(unsigned int extension_type);
      MBEDTLS_SSL_EXT_MASK(POST_HANDSHAKE_AUTH)                    | \
      MBEDTLS_SSL_EXT_MASK(SIG_ALG_CERT)                           | \
      MBEDTLS_SSL_EXT_MASK(RECORD_SIZE_LIMIT)                      | \
+     MBEDTLS_SSL_EXT_MASK(CID)                                    | \
      MBEDTLS_SSL_TLS1_3_EXT_MASK_UNRECOGNIZED)
 
 /* RFC 8446 section 4.2. Allowed extensions for EncryptedExtensions */
@@ -189,6 +191,7 @@ uint32_t mbedtls_ssl_get_extension_mask(unsigned int extension_type);
      MBEDTLS_SSL_EXT_MASK(CLI_CERT_TYPE)                          | \
      MBEDTLS_SSL_EXT_MASK(SERV_CERT_TYPE)                         | \
      MBEDTLS_SSL_EXT_MASK(EARLY_DATA)                             | \
+     MBEDTLS_SSL_EXT_MASK(CID)                                    | \
      MBEDTLS_SSL_EXT_MASK(RECORD_SIZE_LIMIT))
 
 /* RFC 8446 section 4.2. Allowed extensions for CertificateRequest */
@@ -2962,6 +2965,24 @@ int mbedtls_ssl_write_alpn_ext(mbedtls_ssl_context *ssl,
                                unsigned char *end,
                                size_t *out_len);
 #endif /* MBEDTLS_SSL_ALPN */
+
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+/* Parse connection_id extension from ClientHello or EncryptedExtensions.
+ * buf..end spans the extension data (after the 4-byte type+length header). */
+MBEDTLS_CHECK_RETURN_CRITICAL
+int mbedtls_ssl_parse_cid_ext(mbedtls_ssl_context *ssl,
+                               const unsigned char *buf,
+                               const unsigned char *end);
+
+/* Write connection_id extension (RFC 9146 §3.1 / RFC 9147 §9).
+ * Shared between DTLS 1.2 and DTLS 1.3 ClientHello / EncryptedExtensions.
+ * Caller must check negotiate_cid == MBEDTLS_SSL_CID_ENABLED before calling. */
+MBEDTLS_CHECK_RETURN_CRITICAL
+int mbedtls_ssl_write_cid_ext(mbedtls_ssl_context *ssl,
+                               unsigned char *buf,
+                               const unsigned char *end,
+                               size_t *out_len);
+#endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
 
 #if defined(MBEDTLS_TEST_HOOKS)
 int mbedtls_ssl_check_dtls_clihlo_cookie(

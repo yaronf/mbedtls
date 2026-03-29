@@ -41,6 +41,8 @@ param_map:
   key_update:       "key_update={value}"
   aead_limit:       "aead_limit={value}"
   auth_fail_limit:  "auth_fail_limit={value}"
+  cid:              "cid={value}"
+  cid_val:          "cid_val={value}"
   skip_close_notify: "skip_close_notify={1 if value else 0}"
   read_timeout:   "read_timeout={value}"
   max_resend:     "max_resend={value}"
@@ -174,6 +176,18 @@ assertion_map:
   client_auth_fail_limit_reached:
     flag: "-c"
     string: "auth-fail limit reached"
+  server_cid_negotiated:
+    flag: "-s"
+    string: "Use of Connection ID has been negotiated."
+  client_cid_negotiated:
+    flag: "-c"
+    string: "Use of Connection ID has been negotiated."
+  server_cid_not_negotiated:
+    flag: "-S"
+    string: "Use of Connection ID has been negotiated."
+  client_cid_not_negotiated:
+    flag: "-C"
+    string: "Use of Connection ID has been negotiated."
 
 requires_map:
   protocol:

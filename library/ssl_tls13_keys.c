@@ -2205,6 +2205,28 @@ int mbedtls_ssl_tls13_compute_application_transform(mbedtls_ssl_context *ssl)
     }
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+    /* RFC 9147 §9: copy negotiated CIDs into the application transform so
+     * the record layer can read/write the C bit correctly.
+     * in_cid  = our own CID (what we expect to receive)
+     * out_cid = peer's CID (what we put in outbound records) */
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+        ssl->handshake->cid_in_use == MBEDTLS_SSL_CID_ENABLED) {
+        transform_application->in_cid_len = ssl->own_cid_len;
+        memcpy(transform_application->in_cid, ssl->own_cid, ssl->own_cid_len);
+        transform_application->out_cid_len = ssl->handshake->peer_cid_len;
+        memcpy(transform_application->out_cid,
+               ssl->handshake->peer_cid,
+               ssl->handshake->peer_cid_len);
+        MBEDTLS_SSL_DEBUG_BUF(3, "DTLS 1.3 app transform in_cid",
+                              transform_application->in_cid,
+                              transform_application->in_cid_len);
+        MBEDTLS_SSL_DEBUG_BUF(3, "DTLS 1.3 app transform out_cid",
+                              transform_application->out_cid,
+                              transform_application->out_cid_len);
+    }
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_DTLS_CONNECTION_ID */
+
     ssl->transform_application = transform_application;
 
 cleanup:
@@ -2420,6 +2442,18 @@ int mbedtls_ssl_tls13_compute_key_update_transform(
         transform->sn_key_enc_len = key_len;
 
         transform->dtls13_epoch = new_epoch;
+
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+        /* RFC 9147 §9: CIDs are stable across KeyUpdate — copy them. */
+        if (ssl->transform_application != NULL) {
+            transform->in_cid_len  = ssl->transform_application->in_cid_len;
+            memcpy(transform->in_cid, ssl->transform_application->in_cid,
+                   transform->in_cid_len);
+            transform->out_cid_len = ssl->transform_application->out_cid_len;
+            memcpy(transform->out_cid, ssl->transform_application->out_cid,
+                   transform->out_cid_len);
+        }
+#endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
     }
 #else
     (void) new_epoch;

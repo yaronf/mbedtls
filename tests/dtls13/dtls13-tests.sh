@@ -26,6 +26,46 @@ export SSL_OPT_SOURCE_ONLY
 . ./ssl-opt.sh "$@"
 
 # ======================================================================
+# Cases from: cid.yaml
+# ======================================================================
+
+requires_protocol_version dtls13
+requires_config_enabled MBEDTLS_SSL_DTLS_CONNECTION_ID
+run_test    "DTLS 1.3 CID: CID: both endpoints offer CID — negotiated" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=3 cid=1 cid_val=deadbeef" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=3 cid=1 cid_val=cafebabe" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -s "Use of Connection ID has been negotiated." \
+            -c "Use of Connection ID has been negotiated."
+
+requires_protocol_version dtls13
+requires_config_enabled MBEDTLS_SSL_DTLS_CONNECTION_ID
+run_test    "DTLS 1.3 CID: CID: only client offers CID — not negotiated (server disabled)" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=3" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=3 cid=1 cid_val=cafebabe" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -S "Use of Connection ID has been negotiated." \
+            -C "Use of Connection ID has been negotiated."
+
+requires_protocol_version dtls13
+requires_config_enabled MBEDTLS_SSL_DTLS_CONNECTION_ID
+run_test    "DTLS 1.3 CID: CID: basic exchange with CID enabled" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=3 cid=1 cid_val=aabbccdd exchanges=2" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=3 cid=1 cid_val=11223344 exchanges=2" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -s "Use of Connection ID has been negotiated." \
+            -c "Use of Connection ID has been negotiated."
+
+# ======================================================================
 # Cases from: fragmentation.yaml
 # ======================================================================
 

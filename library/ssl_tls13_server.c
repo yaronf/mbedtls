@@ -1673,6 +1673,21 @@ static int ssl_tls13_parse_client_hello(mbedtls_ssl_context *ssl,
                 break;
 #endif /* MBEDTLS_SSL_RECORD_SIZE_LIMIT */
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+            case MBEDTLS_TLS_EXT_CID:
+                MBEDTLS_SSL_DEBUG_MSG(3, ("found CID extension"));
+
+                if (ssl->conf->transport != MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+                    break; /* Ignore in TLS — should not appear */
+                }
+                ret = mbedtls_ssl_parse_cid_ext(ssl, p, extension_data_end);
+                if (ret != 0) {
+                    MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_parse_cid_ext", ret);
+                    return ret;
+                }
+                break;
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_DTLS_CONNECTION_ID */
+
 #if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_DTLS_HELLO_VERIFY)
             case MBEDTLS_TLS_EXT_COOKIE:
                 /*
@@ -2723,6 +2738,20 @@ static int ssl_tls13_write_encrypted_extensions_body(mbedtls_ssl_context *ssl,
         p += output_len;
     }
 #endif
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+    /* RFC 9147 §9: respond with our own CID if the client offered CID and
+     * CID use is enabled locally. */
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+        ssl->handshake->cid_in_use == MBEDTLS_SSL_CID_ENABLED &&
+        ssl->negotiate_cid == MBEDTLS_SSL_CID_ENABLED) {
+        ret = mbedtls_ssl_write_cid_ext(ssl, p, end, &output_len);
+        if (ret != 0) {
+            return ret;
+        }
+        p += output_len;
+    }
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_DTLS_CONNECTION_ID */
 
     extensions_len = (p - p_extensions_len) - 2;
     MBEDTLS_PUT_UINT16_BE(extensions_len, p_extensions_len, 0);

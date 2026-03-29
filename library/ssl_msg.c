@@ -1077,20 +1077,47 @@ hmac_failed_etm_disabled:
          *   byte[4]: ciphertext length low byte
          * ciphertext length = plaintext (inner) length + AEAD tag length.
          */
+        /* 5 bytes base + up to MBEDTLS_SSL_CID_OUT_LEN_MAX CID bytes */
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+        unsigned char dtls13_unified_hdr[5 + MBEDTLS_SSL_CID_OUT_LEN_MAX];
+#else
         unsigned char dtls13_unified_hdr[5];
+#endif
         const unsigned char *dtls13_hdr_enc = NULL;
         size_t dtls13_hdr_enc_len = 0;
         if (transform->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
             rec->ver[0] == 0xfe) {
             uint8_t epoch_bits = rec->ctr[1] & 0x03;
             size_t ct_len = rec->data_len + transform->taglen;
-            dtls13_unified_hdr[0] = 0x2C | epoch_bits; /* 001 C=0 S=1 L=1 EE */
-            dtls13_unified_hdr[1] = rec->ctr[6];       /* seq high */
-            dtls13_unified_hdr[2] = rec->ctr[7];       /* seq low  */
-            dtls13_unified_hdr[3] = (unsigned char) (ct_len >> 8);
-            dtls13_unified_hdr[4] = (unsigned char) (ct_len);
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+            uint8_t cid_len = transform->out_cid_len;
+#else
+            uint8_t cid_len = 0;
+#endif
+            /*
+             * AAD header (RFC 9147 §4.3.3):
+             *   byte[0]:       001 C S=1 L=1 EE  (C=1 when CID present)
+             *   byte[1]:       seq high (plaintext, before SNE)
+             *   byte[2]:       seq low
+             *   byte[3..2+cid]: CID (if C=1, length negotiated)
+             *   byte[3+cid]:   ciphertext length high
+             *   byte[4+cid]:   ciphertext length low
+             */
+            dtls13_unified_hdr[0] = (unsigned char) (0x2C | epoch_bits
+                                                     | (cid_len > 0 ? 0x10 : 0));
+            dtls13_unified_hdr[1] = rec->ctr[6]; /* seq high */
+            dtls13_unified_hdr[2] = rec->ctr[7]; /* seq low  */
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+            if (cid_len > 0) {
+                memcpy(dtls13_unified_hdr + 3, transform->out_cid, cid_len);
+            }
+#endif
+            dtls13_unified_hdr[3 + cid_len] = (unsigned char) (ct_len >> 8);
+            dtls13_unified_hdr[4 + cid_len] = (unsigned char) (ct_len);
             dtls13_hdr_enc     = dtls13_unified_hdr;
-            dtls13_hdr_enc_len = sizeof(dtls13_unified_hdr);
+            dtls13_hdr_enc_len = 5 + cid_len;
+            MBEDTLS_SSL_DEBUG_BUF(3, "DTLS 1.3 encrypt AAD header",
+                                  dtls13_unified_hdr, dtls13_hdr_enc_len);
         }
         ssl_extract_add_data_from_record(add_data, &add_data_len, rec,
                                          transform->tls_version,
@@ -1401,6 +1428,11 @@ int mbedtls_ssl_decrypt_buf(mbedtls_ssl_context const *ssl,
      */
     if (rec->cid_len != transform->in_cid_len ||
         memcmp(rec->cid, transform->in_cid, rec->cid_len) != 0) {
+        MBEDTLS_SSL_DEBUG_MSG(1, ("CID mismatch: rec_cid_len=%u in_cid_len=%u",
+                                  (unsigned) rec->cid_len,
+                                  (unsigned) transform->in_cid_len));
+        MBEDTLS_SSL_DEBUG_BUF(3, "rec->cid", rec->cid, rec->cid_len);
+        MBEDTLS_SSL_DEBUG_BUF(3, "in_cid", transform->in_cid, transform->in_cid_len);
         return MBEDTLS_ERR_SSL_UNEXPECTED_CID;
     }
 #endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
@@ -1508,6 +1540,8 @@ int mbedtls_ssl_decrypt_buf(mbedtls_ssl_context const *ssl,
             (rec->buf[0] & 0xE0) == 0x20) {
             dtls13_hdr_dec = rec->buf;
             dtls13_hdr_dec_len = rec->data_offset;
+            MBEDTLS_SSL_DEBUG_BUF(3, "DTLS 1.3 decrypt AAD header",
+                                  dtls13_hdr_dec, dtls13_hdr_dec_len);
         }
         ssl_extract_add_data_from_record(add_data, &add_data_len, rec,
                                          transform->tls_version,
@@ -1531,7 +1565,6 @@ int mbedtls_ssl_decrypt_buf(mbedtls_ssl_context const *ssl,
         MBEDTLS_SSL_DEBUG_BUF(4, "IV used", iv, transform->ivlen);
         MBEDTLS_SSL_DEBUG_BUF(4, "TAG used", data + rec->data_len,
                               transform->taglen);
-
         /*
          * Decrypt and authenticate
          */
@@ -3443,16 +3476,38 @@ int mbedtls_ssl_write_record(mbedtls_ssl_context *ssl, int force_flush)
                 /* seq low 16 bits: cur_out_ctr[6..7] (incremented above) */
                 uint8_t seq_hi = ssl->cur_out_ctr[6];
                 uint8_t seq_lo = ssl->cur_out_ctr[7];
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+                uint8_t cid_len = ssl->transform_out->out_cid_len;
+#else
+                uint8_t cid_len = 0;
+#endif
+                size_t hdr_len = 5 + cid_len; /* 1 byte flags + cid + 2 seq + 2 len */
 
-                /* Build 5-byte unified header at ssl->out_hdr */
-                ssl->out_hdr[0] = (unsigned char) (0x2C | epoch_bits);
+                /*
+                 * Build unified header at ssl->out_hdr
+                 * Format (RFC 9147 §4.3.3):
+                 *   byte[0]:          001 C S=1 L=1 EE  (C=1 when CID present)
+                 *   byte[1]:          seq high
+                 *   byte[2]:          seq low
+                 *   byte[3..2+cid]:   CID (if C=1, length negotiated)
+                 *   byte[3+cid]:      length high
+                 *   byte[4+cid]:      length low
+                 */
+                ssl->out_hdr[0] = (unsigned char) (0x2C | epoch_bits
+                                                   | (cid_len > 0 ? 0x10 : 0));
                 ssl->out_hdr[1] = seq_hi;
                 ssl->out_hdr[2] = seq_lo;
-                ssl->out_hdr[3] = (unsigned char) (len >> 8);
-                ssl->out_hdr[4] = (unsigned char) (len);
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+                if (cid_len > 0) {
+                    memcpy(ssl->out_hdr + 3,
+                           ssl->transform_out->out_cid, cid_len);
+                }
+#endif
+                ssl->out_hdr[3 + cid_len] = (unsigned char) (len >> 8);
+                ssl->out_hdr[4 + cid_len] = (unsigned char) (len);
 
-                /* Shift ciphertext from out_iv (out_hdr+13) to out_hdr+5 */
-                memmove(ssl->out_hdr + 5, ssl->out_iv, len);
+                /* Shift ciphertext from out_iv to after header */
+                memmove(ssl->out_hdr + hdr_len, ssl->out_iv, len);
 
                 /*
                  * Apply outbound SNE (RFC 9147 §4.2.3): encrypt the seq
@@ -3473,7 +3528,7 @@ int mbedtls_ssl_write_record(mbedtls_ssl_context *ssl, int force_flush)
                            ssl->transform_out->sn_key_enc_len);
                     ret = ssl_dtls13_sne_apply(&tmp_transform,
                                               ssl->out_hdr + 1, 2,
-                                              ssl->out_hdr + 5, len);
+                                              ssl->out_hdr + hdr_len, len);
                     mbedtls_platform_zeroize(&tmp_transform,
                                             sizeof(tmp_transform));
                     if (ret != 0) {
@@ -3482,7 +3537,7 @@ int mbedtls_ssl_write_record(mbedtls_ssl_context *ssl, int force_flush)
                     }
                 }
 
-                protected_record_size = 5 + len;
+                protected_record_size = hdr_len + len;
             } else
 #endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
             {
@@ -8438,6 +8493,12 @@ void mbedtls_ssl_set_outbound_transform(mbedtls_ssl_context *ssl,
         ssl->cur_out_ctr[1] = (unsigned char) (transform->dtls13_epoch);
     }
 #endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
+
+    /* Update output buffer pointers to reflect the new transform's CID length.
+     * ssl->out_iv (and derived pointers) depend on out_cid_len; without this
+     * call the memmove in ssl_write_real would copy from the wrong offset when
+     * CID is newly enabled (e.g. when the application transform is installed). */
+    mbedtls_ssl_update_out_pointers(ssl, transform);
 }
 
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
