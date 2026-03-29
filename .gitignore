@@ -74,3 +74,6 @@ compile_commands.json
 
 # VScode folder to store local debug files and configurations
 .vscode
+
+# macOS metadata
+.DS_Store
