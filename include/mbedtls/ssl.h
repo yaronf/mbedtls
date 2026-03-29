@@ -4997,25 +4997,26 @@ int mbedtls_ssl_send_alert_message(mbedtls_ssl_context *ssl,
  */
 int mbedtls_ssl_close_notify(mbedtls_ssl_context *ssl);
 
-#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS)
 /**
- * \brief          Send a TLS 1.3 KeyUpdate message to the peer.
+ * \brief          Send a DTLS 1.3 KeyUpdate message to the peer.
  *
- * \param ssl           SSL context (must have completed a TLS 1.3 handshake).
+ * \param ssl           SSL context (must have completed a DTLS 1.3 handshake).
  * \param update_requested  Set to 1 to ask the peer to send a KeyUpdate in
  *                          response, 0 otherwise.
  *
  * \return         0 on success.
  * \return         MBEDTLS_ERR_SSL_INTERNAL_ERROR if called before the
- *                 handshake is complete or with an unexpected state.
+ *                 handshake is complete, with an unexpected state, or on
+ *                 a TLS (non-datagram) connection.
  * \return         A negative error code on I/O or crypto failure.
  *
- * \note           For DTLS 1.3 the new outbound keys are held pending until
- *                 the peer ACKs the KeyUpdate record.  Records are still
- *                 sent with the old epoch until the ACK is received.
+ * \note           The new outbound keys are held pending until the peer ACKs
+ *                 the KeyUpdate record.  Records are still sent with the old
+ *                 epoch until the ACK is received (RFC 9147 §8).
  */
 int mbedtls_ssl_send_key_update(mbedtls_ssl_context *ssl, int update_requested);
-#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 && MBEDTLS_SSL_PROTO_DTLS */
 
 #if defined(MBEDTLS_SSL_EARLY_DATA)
 

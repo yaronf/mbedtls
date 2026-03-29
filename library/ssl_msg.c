@@ -7079,7 +7079,7 @@ static int ssl_check_ctr_renegotiate(mbedtls_ssl_context *ssl)
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
 
 /* ---------------------------------------------------------------------------
- * DTLS 1.3 / TLS 1.3 KeyUpdate (RFC 8446 §4.6.3, RFC 9147 §8)
+ * DTLS 1.3 KeyUpdate (RFC 9147 §8)
  * ---------------------------------------------------------------------------
  *
  * Either peer may send a KeyUpdate message to advance the application-data
@@ -7091,9 +7091,6 @@ static int ssl_check_ctr_renegotiate(mbedtls_ssl_context *ssl)
  * records until the KeyUpdate has been ACKed by the peer (§8).  We hold the
  * new outbound transform in ssl->dtls13_transform_pending_out and install it
  * only when ssl_dtls13_process_ack() sees the matching ACK record.
- *
- * For TLS 1.3 (reliable transport) the new outbound transform is installed
- * immediately after the KeyUpdate record is written.
  * ---------------------------------------------------------------------------
  */
 
@@ -7146,18 +7143,16 @@ static void ssl_dtls13_key_update_install_outbound(mbedtls_ssl_context *ssl)
                               "(epoch %u)",
                               (unsigned) ssl->transform_out->dtls13_epoch));
 }
-#endif /* MBEDTLS_SSL_PROTO_DTLS */
+#endif /* MBEDTLS_SSL_PROTO_DTLS - ssl_dtls13_key_update_install_outbound */
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
 /*
- * Send a KeyUpdate message.
+ * Send a KeyUpdate message (DTLS 1.3 only).
  *
- * For DTLS 1.3: derives the new outbound secret+transform and holds them in
+ * Derives the new outbound secret+transform and holds them in
  * dtls13_transform_pending_out / dtls13_ku_pending_secret.  Records the sent
  * record's (epoch, seq) so that ssl_dtls13_process_ack() can trigger
  * ssl_dtls13_key_update_install_outbound() when the ACK arrives.
- *
- * For TLS 1.3: installs the new outbound transform immediately (reliable
- * transport; no ACK needed).
  */
 MBEDTLS_CHECK_RETURN_CRITICAL
 static int ssl_tls13_write_key_update(mbedtls_ssl_context *ssl,
@@ -7173,8 +7168,9 @@ static int ssl_tls13_write_key_update(mbedtls_ssl_context *ssl,
     mbedtls_ssl_transform *new_transform = NULL;
     uint16_t new_epoch;
 
-    /* KeyUpdate is only valid post-handshake with TLS 1.3. */
-    if (ssl->session == NULL) {
+    /* KeyUpdate is only valid post-handshake on DTLS 1.3. */
+    if (ssl->session == NULL ||
+        ssl->conf->transport != MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
         return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
     }
 
@@ -7260,24 +7256,8 @@ static int ssl_tls13_write_key_update(mbedtls_ssl_context *ssl,
             ssl->dtls13_ku_sent_seq = sent_seq;
         }
         ssl->dtls13_ku_ack_pending = 1;
-    } else
-#endif /* MBEDTLS_SSL_PROTO_DTLS */
-    {
-        /* TLS: install immediately and update the stored secret. */
-        mbedtls_ssl_transform *old_out = ssl->transform_out;
-        mbedtls_ssl_set_outbound_transform(ssl, new_transform);
-        new_transform = NULL;
-        mbedtls_ssl_transform_free(old_out);
-        mbedtls_free(old_out);
-
-        if (ssl->conf->endpoint == MBEDTLS_SSL_IS_CLIENT) {
-            memcpy(ssl->session->app_secrets.client_application_traffic_secret_N,
-                   new_secret, hash_len);
-        } else {
-            memcpy(ssl->session->app_secrets.server_application_traffic_secret_N,
-                   new_secret, hash_len);
-        }
     }
+#endif /* MBEDTLS_SSL_PROTO_DTLS */
 
 cleanup:
     mbedtls_platform_zeroize(new_secret, sizeof(new_secret));
@@ -7379,19 +7359,9 @@ static int ssl_tls13_handle_key_update(mbedtls_ssl_context *ssl)
         }
     }
 
-    /* Retire old inbound transform. For DTLS, keep it in the epoch pool so
-     * reordered records from the old epoch can still be decrypted.  For TLS,
-     * just free it (reliable, ordered transport; old epoch never needed). */
-#if defined(MBEDTLS_SSL_PROTO_DTLS)
-    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
-        ssl_dtls13_epoch_pool_insert(ssl, ssl->transform_in);
-    } else
-#endif
-    {
-        mbedtls_ssl_transform_free(ssl->transform_in);
-        mbedtls_free(ssl->transform_in);
-        ssl->transform_in = NULL;
-    }
+    /* Retire old inbound transform to the epoch pool so reordered records
+     * from the old epoch can still be decrypted. */
+    ssl_dtls13_epoch_pool_insert(ssl, ssl->transform_in);
 
     /* Install the new inbound transform. */
     mbedtls_ssl_set_inbound_transform(ssl, new_transform);
@@ -7409,12 +7379,8 @@ static int ssl_tls13_handle_key_update(mbedtls_ssl_context *ssl)
     MBEDTLS_SSL_DEBUG_MSG(2, ("KeyUpdate: new inbound transform installed "
                               "(epoch %u)", (unsigned) new_epoch));
 
-#if defined(MBEDTLS_SSL_PROTO_DTLS)
     /* ACK the KeyUpdate so the peer knows we processed it. */
-    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
-        ssl->dtls13_ack_pending = 1;
-    }
-#endif
+    ssl->dtls13_ack_pending = 1;
 
     /* If the peer requested a reciprocal KeyUpdate, send one back. */
     if (update_requested == SSL_KEY_UPDATE_REQUESTED) {
@@ -7456,6 +7422,8 @@ int mbedtls_ssl_send_key_update(mbedtls_ssl_context *ssl, int update_requested)
                          : SSL_KEY_UPDATE_NOT_REQUESTED);
 }
 
+#endif /* MBEDTLS_SSL_PROTO_DTLS - KeyUpdate */
+
 /* ---------------------------------------------------------------------------
  * End of KeyUpdate implementation
  * ---------------------------------------------------------------------------
@@ -7481,10 +7449,12 @@ static int ssl_tls13_handle_hs_message_post_handshake(mbedtls_ssl_context *ssl)
 
     MBEDTLS_SSL_DEBUG_MSG(3, ("received post-handshake message"));
 
-    /* KeyUpdate is valid for both client and server (RFC 8446 §4.6.3). */
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+    /* KeyUpdate (RFC 9147 §8) — DTLS 1.3 only in this implementation. */
     if (ssl->in_msg[0] == MBEDTLS_SSL_HS_KEY_UPDATE) {
         return ssl_tls13_handle_key_update(ssl);
     }
+#endif /* MBEDTLS_SSL_PROTO_DTLS */
 
 #if defined(MBEDTLS_SSL_CLI_C)
     if (ssl->conf->endpoint == MBEDTLS_SSL_IS_CLIENT) {
