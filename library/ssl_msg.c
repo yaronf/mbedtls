@@ -2415,6 +2415,28 @@ int mbedtls_ssl_resend(mbedtls_ssl_context *ssl)
     return ret;
 }
 
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS)
+/* Restore the active epoch after a cross-epoch retransmit and persist the
+ * updated counter for the retransmit epoch back to its storage location. */
+static void ssl_dtls13_retx_epoch_restore(
+    mbedtls_ssl_context *ssl,
+    mbedtls_ssl_transform *saved_transform,
+    const unsigned char saved_ctr[8],
+    mbedtls_ssl_dtls13_epoch_slot *retx_slot)
+{
+    if (retx_slot != NULL) {
+        memcpy(retx_slot->out_ctr, ssl->cur_out_ctr, 8);
+    } else if (ssl->handshake != NULL) {
+        /* epoch-0 retransmit: persist incremented counter so the next
+         * retransmit uses the next sequence number. */
+        memcpy(ssl->handshake->dtls13_epoch0_out_ctr, ssl->cur_out_ctr, 8);
+    }
+    ssl->transform_out = saved_transform;
+    memcpy(ssl->cur_out_ctr, saved_ctr, 8);
+    mbedtls_ssl_update_out_pointers(ssl, ssl->transform_out);
+}
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 && MBEDTLS_SSL_PROTO_DTLS */
+
 /*
  * Transmit or retransmit the current flight of messages.
  *
@@ -2704,12 +2726,8 @@ int mbedtls_ssl_flight_transmit(mbedtls_ssl_context *ssl)
                      (MBEDTLS_SSL_DTLS13_MAX_RECORDS_PER_FLIGHT_ITEM - 1));
                 cur->sent_record_epoch[idx] = ssl->cur_out_ctr[1]; /* low epoch byte */
                 cur->sent_records[idx] =
-                    ((uint64_t) ssl->cur_out_ctr[2] << 40) |
-                    ((uint64_t) ssl->cur_out_ctr[3] << 32) |
-                    ((uint64_t) ssl->cur_out_ctr[4] << 24) |
-                    ((uint64_t) ssl->cur_out_ctr[5] << 16) |
-                    ((uint64_t) ssl->cur_out_ctr[6] <<  8) |
-                    ((uint64_t) ssl->cur_out_ctr[7]);
+                    MBEDTLS_GET_UINT64_BE(ssl->cur_out_ctr, 0)
+                    & UINT64_C(0x0000FFFFFFFFFFFF);
                 cur->sent_record_count++;
                 MBEDTLS_SSL_DEBUG_MSG(2, ("DTLS 1.3: flight retransmit type=%u epoch=%u seq=%llu",
                                           (unsigned) cur->type,
@@ -2722,36 +2740,17 @@ int mbedtls_ssl_flight_transmit(mbedtls_ssl_context *ssl)
             MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_write_record", ret);
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
             if (dtls13_saved_transform != NULL) {
-                if (dtls13_retx_slot != NULL) {
-                    memcpy(dtls13_retx_slot->out_ctr, ssl->cur_out_ctr, 8);
-                } else if (ssl->handshake != NULL) {
-                    /* epoch-0 retransmit: persist incremented counter so
-                     * the next retransmit uses the next sequence number. */
-                    memcpy(ssl->handshake->dtls13_epoch0_out_ctr,
-                           ssl->cur_out_ctr, 8);
-                }
-                ssl->transform_out = dtls13_saved_transform;
-                memcpy(ssl->cur_out_ctr, dtls13_saved_ctr, 8);
-                mbedtls_ssl_update_out_pointers(ssl, ssl->transform_out);
+                ssl_dtls13_retx_epoch_restore(ssl, dtls13_saved_transform,
+                                              dtls13_saved_ctr, dtls13_retx_slot);
             }
 #endif
             return ret;
         }
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
-        /* Restore active epoch after a cross-epoch retransmit, saving the
-         * updated counter for the retransmit epoch back to its pool slot. */
+        /* Restore active epoch after a cross-epoch retransmit. */
         if (dtls13_saved_transform != NULL) {
-            if (dtls13_retx_slot != NULL) {
-                memcpy(dtls13_retx_slot->out_ctr, ssl->cur_out_ctr, 8);
-            } else if (ssl->handshake != NULL) {
-                /* epoch-0 retransmit: persist incremented counter so
-                 * the next retransmit uses the next sequence number. */
-                memcpy(ssl->handshake->dtls13_epoch0_out_ctr,
-                       ssl->cur_out_ctr, 8);
-            }
-            ssl->transform_out = dtls13_saved_transform;
-            memcpy(ssl->cur_out_ctr, dtls13_saved_ctr, 8);
-            mbedtls_ssl_update_out_pointers(ssl, ssl->transform_out);
+            ssl_dtls13_retx_epoch_restore(ssl, dtls13_saved_transform,
+                                          dtls13_saved_ctr, dtls13_retx_slot);
         }
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
     }
@@ -5470,7 +5469,21 @@ static int ssl_record_is_in_progress(mbedtls_ssl_context *ssl);
 #if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
 MBEDTLS_CHECK_RETURN_CRITICAL
 static int ssl_dtls13_write_ack(mbedtls_ssl_context *ssl);
-#endif
+
+/* Send a pending DTLS 1.3 ACK if one is scheduled.  Non-fatal: ACK send
+ * failures are logged but do not abort the connection. */
+static void ssl_dtls13_flush_ack_if_pending(mbedtls_ssl_context *ssl)
+{
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+        ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+        ssl->dtls13_ack_pending) {
+        int ack_ret = ssl_dtls13_write_ack(ssl);
+        if (ack_ret != 0) {
+            MBEDTLS_SSL_DEBUG_RET(1, "ssl_dtls13_write_ack", ack_ret);
+        }
+    }
+}
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 
 int mbedtls_ssl_read_record(mbedtls_ssl_context *ssl,
                             unsigned update_hs_digest)
@@ -5481,17 +5494,8 @@ int mbedtls_ssl_read_record(mbedtls_ssl_context *ssl,
 
 #if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
     /* Send any pending ACK before reading new data (RFC 9147 §7).
-     * This must happen before ssl_consume_current_message() discards
-     * the record we want to ACK. */
-    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
-        ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
-        ssl->dtls13_ack_pending) {
-        int ack_ret = ssl_dtls13_write_ack(ssl);
-        if (ack_ret != 0) {
-            MBEDTLS_SSL_DEBUG_RET(1, "ssl_dtls13_write_ack", ack_ret);
-            /* ACK send failure is non-fatal for the connection. */
-        }
-    }
+     * Must happen before ssl_consume_current_message() discards the record. */
+    ssl_dtls13_flush_ack_if_pending(ssl);
 #endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 
     if (ssl->keep_current_message == 0) {
@@ -5520,17 +5524,9 @@ int mbedtls_ssl_read_record(mbedtls_ssl_context *ssl,
                     ret = ssl_get_next_record(ssl);
                     if (ret == MBEDTLS_ERR_SSL_CONTINUE_PROCESSING) {
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
-                        /* Send any ACK that was scheduled while processing
-                         * the discarded record (e.g. empty ACK on future-epoch
-                         * record) before looping to fetch the next one. */
-                        if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
-                            ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
-                            ssl->dtls13_ack_pending) {
-                            int ack_ret = ssl_dtls13_write_ack(ssl);
-                            if (ack_ret != 0) {
-                                MBEDTLS_SSL_DEBUG_RET(1, "ssl_dtls13_write_ack", ack_ret);
-                            }
-                        }
+                        /* Send any ACK scheduled while processing the
+                         * discarded record before looping to fetch the next. */
+                        ssl_dtls13_flush_ack_if_pending(ssl);
 #endif
                         continue;
                     }
@@ -5555,19 +5551,8 @@ int mbedtls_ssl_read_record(mbedtls_ssl_context *ssl,
                 ret = MBEDTLS_ERR_SSL_CONTINUE_PROCESSING;
 
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
-                /* Send any ACK scheduled by ssl_buffer_message (RFC 9147 §7.1:
-                 * ACK on partial flight receipt) before fetching the next
-                 * record.  Early delivery of the ACK tells the sender which
-                 * messages are still missing, enabling prompt selective
-                 * retransmit rather than waiting for the full retransmit
-                 * timer. */
-                if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
-                    ssl->dtls13_ack_pending) {
-                    int ack_ret = ssl_dtls13_write_ack(ssl);
-                    if (ack_ret != 0) {
-                        MBEDTLS_SSL_DEBUG_RET(1, "ssl_dtls13_write_ack", ack_ret);
-                    }
-                }
+                /* ACK on partial flight receipt (RFC 9147 §7.1). */
+                ssl_dtls13_flush_ack_if_pending(ssl);
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
             }
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
