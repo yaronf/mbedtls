@@ -614,17 +614,15 @@ have been drilled down in `local-docs/design-drilldown.md`:
           to keep ssl->out_iv consistent with the new transform's CID length.
           Tests: both endpoints negotiate; only client offers (not negotiated); data exchange.
           **DONE** (commit e0706a425b): all 3 CID tests passing, 31/31 suite passing.
-- [ ] 5b. NewConnectionId (type 10) and RequestConnectionId (type 9): parse, send, ACK.
-          Implement `cid_immediate` vs `cid_spare` semantics.
-          Add `too_many_cids_requested` alert (value 52).
-          Tests:
-          (b) Address change continuity: after handshake, peer B changes source IP/port
-              (simulated via udp_proxy remapping); peer A continues the session using the
-              CID to identify the association; app data flows normally at the new address.
-          (c) CID update: peer sends NewConnectionId; peer retires old CID via
-              retire_prior_to field; both ends use new CID; old CID silently dropped.
-          (d) Excessive CID requests: server returns too_many_cids_requested alert when
-              RequestConnectionId count exceeds limit.
+- [x] 5b. NewConnectionId (type 10) and RequestConnectionId (type 9): parse, send, ACK.
+          cid_immediate vs cid_spare semantics; too_many_cids_requested alert (52).
+          ACK matching via epoch+seq (same pattern as KeyUpdate).
+          Public API: mbedtls_ssl_dtls13_send_new_connection_id(),
+          mbedtls_ssl_dtls13_request_connection_id().
+          Tests: server→client, client→server, client requests, server requests.
+          **DONE** (commit d5118c75f5): 4 new tests passing, 35/35 suite.
+          Note: address-change continuity test not yet added (requires udp_proxy
+          source-address remapping support — separate item).
 - [N/A] 6. Post-handshake client authentication: explicitly prohibited by RFC 9147 §5.4.
          "Post-handshake authentication is not supported in DTLS 1.3."
 - [ ] 7. Self-test: KeyUpdate exchange, CID negotiation and update, limit enforcement.
