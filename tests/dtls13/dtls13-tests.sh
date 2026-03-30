@@ -60,6 +60,74 @@ export SSL_OPT_SOURCE_ONLY
 . ./ssl-opt.sh "$@"
 
 # ======================================================================
+# Cases from: cid-update.yaml
+# ======================================================================
+
+requires_protocol_version dtls13
+requires_config_enabled MBEDTLS_SSL_DTLS_CONNECTION_ID
+run_test    "DTLS 1.3 CID update: CID update: server sends NewConnectionId, client receives and ACKs" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=3 cid=1 cid_val=deadbeef send_new_cid=1 exchanges=2" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=3 cid=1 cid_val=cafebabe exchanges=2" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -s "Use of Connection ID has been negotiated." \
+            -c "Use of Connection ID has been negotiated." \
+            -s "NewConnectionId sent" \
+            -c "NewConnectionId received" \
+            -s "ACK: NewConnectionId acknowledged"
+
+requires_protocol_version dtls13
+requires_config_enabled MBEDTLS_SSL_DTLS_CONNECTION_ID
+run_test    "DTLS 1.3 CID update: CID update: client sends NewConnectionId, server receives and ACKs" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=3 cid=1 cid_val=deadbeef exchanges=2" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=3 cid=1 cid_val=cafebabe send_new_cid=1 exchanges=2" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -s "Use of Connection ID has been negotiated." \
+            -c "Use of Connection ID has been negotiated." \
+            -c "NewConnectionId sent" \
+            -s "NewConnectionId received" \
+            -c "ACK: NewConnectionId acknowledged"
+
+requires_protocol_version dtls13
+requires_config_enabled MBEDTLS_SSL_DTLS_CONNECTION_ID
+run_test    "DTLS 1.3 CID update: CID update: client requests new CID from server" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=3 cid=1 cid_val=deadbeef exchanges=2" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=3 cid=1 cid_val=cafebabe request_cid=1 exchanges=2" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -s "Use of Connection ID has been negotiated." \
+            -c "Use of Connection ID has been negotiated." \
+            -c "RequestConnectionId sent" \
+            -s "RequestConnectionId received" \
+            -s "NewConnectionId sent" \
+            -c "NewConnectionId received" \
+            -s "ACK: NewConnectionId acknowledged"
+
+requires_protocol_version dtls13
+requires_config_enabled MBEDTLS_SSL_DTLS_CONNECTION_ID
+run_test    "DTLS 1.3 CID update: CID update: server requests new CID from client" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=3 cid=1 cid_val=deadbeef request_cid=1 exchanges=2" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=3 cid=1 cid_val=cafebabe exchanges=2" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -s "Use of Connection ID has been negotiated." \
+            -c "Use of Connection ID has been negotiated." \
+            -s "RequestConnectionId sent" \
+            -c "RequestConnectionId received" \
+            -c "NewConnectionId sent" \
+            -s "NewConnectionId received" \
+            -c "ACK: NewConnectionId acknowledged"
+
+# ======================================================================
 # Cases from: cid.yaml
 # ======================================================================
 

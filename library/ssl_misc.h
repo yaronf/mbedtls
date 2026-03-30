@@ -489,8 +489,10 @@ static inline const char *mbedtls_ssl_hs_type_name(unsigned hs_type)
         case MBEDTLS_SSL_HS_CERTIFICATE_REQUEST:  return "CertificateRequest";
         case MBEDTLS_SSL_HS_CERTIFICATE_VERIFY:   return "CertificateVerify";
         case MBEDTLS_SSL_HS_FINISHED:             return "Finished";
-        case MBEDTLS_SSL_HS_KEY_UPDATE:           return "KeyUpdate";
-        case MBEDTLS_SSL_HS_HELLO_VERIFY_REQUEST: return "HelloVerifyRequest";
+        case MBEDTLS_SSL_HS_KEY_UPDATE:              return "KeyUpdate";
+        case MBEDTLS_SSL_HS_REQUEST_CONNECTION_ID:   return "RequestConnectionId";
+        case MBEDTLS_SSL_HS_NEW_CONNECTION_ID:       return "NewConnectionId";
+        case MBEDTLS_SSL_HS_HELLO_VERIFY_REQUEST:    return "HelloVerifyRequest";
         case MBEDTLS_SSL_HS_ENCRYPTED_EXTENSIONS: return "EncryptedExtensions";
         default:                                  return "unknown";
     }

@@ -556,6 +556,7 @@
 #define MBEDTLS_SSL_ALERT_MSG_ACCESS_DENIED         49  /* 0x31 */
 #define MBEDTLS_SSL_ALERT_MSG_DECODE_ERROR          50  /* 0x32 */
 #define MBEDTLS_SSL_ALERT_MSG_DECRYPT_ERROR         51  /* 0x33 */
+#define MBEDTLS_SSL_ALERT_MSG_TOO_MANY_CIDS_REQUESTED 52  /* 0x34 — RFC 9147 §9 */
 #define MBEDTLS_SSL_ALERT_MSG_EXPORT_RESTRICTION    60  /* 0x3C */
 #define MBEDTLS_SSL_ALERT_MSG_PROTOCOL_VERSION      70  /* 0x46 */
 #define MBEDTLS_SSL_ALERT_MSG_INSUFFICIENT_SECURITY 71  /* 0x47 */
@@ -585,6 +586,8 @@
 #define MBEDTLS_SSL_HS_CLIENT_KEY_EXCHANGE     16
 #define MBEDTLS_SSL_HS_FINISHED                20
 #define MBEDTLS_SSL_HS_KEY_UPDATE              24
+#define MBEDTLS_SSL_HS_REQUEST_CONNECTION_ID    9  /**< DTLS 1.3 RequestConnectionId (RFC 9147 §9) */
+#define MBEDTLS_SSL_HS_NEW_CONNECTION_ID       10  /**< DTLS 1.3 NewConnectionId (RFC 9147 §9) */
 #define MBEDTLS_SSL_HS_MESSAGE_HASH           254
 
 /*
@@ -1799,6 +1802,20 @@ struct mbedtls_ssl_context {
     uint64_t MBEDTLS_PRIVATE(dtls13_ku_sent_seq);
     uint8_t  MBEDTLS_PRIVATE(dtls13_ku_ack_pending); /* 1 while waiting for ACK */
 
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+    /** DTLS 1.3 NewConnectionId pending-outbound state (RFC 9147 §9).
+     *
+     * Set while waiting for peer to ACK our NewConnectionId message.
+     * The RFC forbids having more than one NewConnectionId outstanding. */
+    uint8_t  MBEDTLS_PRIVATE(dtls13_cid_update_ack_pending);
+    uint64_t MBEDTLS_PRIVATE(dtls13_cid_sent_epoch);
+    uint64_t MBEDTLS_PRIVATE(dtls13_cid_sent_seq);
+
+    /** Number of consecutive unanswered RequestConnectionId messages received.
+     *  Used to enforce the too_many_cids_requested limit. */
+    uint8_t  MBEDTLS_PRIVATE(dtls13_req_cid_count);
+#endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
+
     /** Lazily-allocated post-handshake ACK record list.
      *  NULL until the first post-handshake record requiring an ACK arrives.
      *  Freed in mbedtls_ssl_free() and session reset. */
@@ -2411,6 +2428,35 @@ int mbedtls_ssl_get_peer_cid(mbedtls_ssl_context *ssl,
                              int *enabled,
                              unsigned char peer_cid[MBEDTLS_SSL_CID_OUT_LEN_MAX],
                              size_t *peer_cid_len);
+
+/**
+ * \brief          Send a NewConnectionId message to the peer (DTLS 1.3 §9).
+ *
+ *                 Advertises the current own CID (set via mbedtls_ssl_set_cid())
+ *                 as the new inbound CID the peer should use.  Call after
+ *                 updating the own CID with mbedtls_ssl_set_cid().
+ *
+ *                 Only valid post-handshake on DTLS 1.3 connections with CID
+ *                 negotiated.  The RFC forbids having more than one
+ *                 NewConnectionId outstanding at a time.
+ *
+ * \param ssl      The SSL context.
+ * \return         0 on success, or a negative error code.
+ */
+int mbedtls_ssl_dtls13_send_new_connection_id(mbedtls_ssl_context *ssl);
+
+/**
+ * \brief          Send a RequestConnectionId message to the peer (DTLS 1.3 §9).
+ *
+ *                 Requests that the peer send \p num_cids new spare CIDs via
+ *                 a NewConnectionId response.
+ *
+ * \param ssl      The SSL context.
+ * \param num_cids The number of new CIDs requested (typically 1).
+ * \return         0 on success, or a negative error code.
+ */
+int mbedtls_ssl_dtls13_request_connection_id(mbedtls_ssl_context *ssl,
+                                             uint8_t num_cids);
 
 #endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
 

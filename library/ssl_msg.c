@@ -2895,10 +2895,15 @@ int mbedtls_ssl_write_handshake_msg_ext(mbedtls_ssl_context *ssl,
     }
 
     /* Whenever we send anything different from a HelloRequest or a TLS 1.3
-     * post-handshake KeyUpdate we should be in a handshake - double check. */
+     * post-handshake message we should be in a handshake - double check. */
     if (!(ssl->out_msgtype == MBEDTLS_SSL_MSG_HANDSHAKE &&
           (hs_type == MBEDTLS_SSL_HS_HELLO_REQUEST ||
-           hs_type == MBEDTLS_SSL_HS_KEY_UPDATE)) &&
+           hs_type == MBEDTLS_SSL_HS_KEY_UPDATE
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+           || hs_type == MBEDTLS_SSL_HS_NEW_CONNECTION_ID
+           || hs_type == MBEDTLS_SSL_HS_REQUEST_CONNECTION_ID
+#endif
+          )) &&
         ssl->handshake == NULL) {
         MBEDTLS_SSL_DEBUG_MSG(1, ("should never happen"));
         return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
@@ -2975,7 +2980,12 @@ int mbedtls_ssl_write_handshake_msg_ext(mbedtls_ssl_context *ssl,
                 if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
                     ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
                     (ssl->handshake == NULL ||
-                     hs_type == MBEDTLS_SSL_HS_KEY_UPDATE)) {
+                     hs_type == MBEDTLS_SSL_HS_KEY_UPDATE
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+                     || hs_type == MBEDTLS_SSL_HS_NEW_CONNECTION_ID
+                     || hs_type == MBEDTLS_SSL_HS_REQUEST_CONNECTION_ID
+#endif
+                    )) {
                     MBEDTLS_PUT_UINT16_BE(ssl->dtls13_post_hs_msg_seq,
                                          ssl->out_msg, 4);
                     ++(ssl->dtls13_post_hs_msg_seq);
@@ -3824,7 +3834,12 @@ int mbedtls_ssl_prepare_handshake_record(mbedtls_ssl_context *ssl)
                * handshake flight and use the sequential handshake counter. */
               (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
                ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
-               ssl->in_msg[0] == MBEDTLS_SSL_HS_KEY_UPDATE
+               (ssl->in_msg[0] == MBEDTLS_SSL_HS_KEY_UPDATE
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+                || ssl->in_msg[0] == MBEDTLS_SSL_HS_NEW_CONNECTION_ID
+                || ssl->in_msg[0] == MBEDTLS_SSL_HS_REQUEST_CONNECTION_ID
+#endif
+               )
                ? recv_msg_seq != ssl->dtls13_post_hs_in_msg_seq
                : recv_msg_seq != ssl->handshake->in_msg_seq)
 #else
@@ -3835,7 +3850,12 @@ int mbedtls_ssl_prepare_handshake_record(mbedtls_ssl_context *ssl)
             uint16_t expected_seq =
                 (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
                  ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
-                 ssl->in_msg[0] == MBEDTLS_SSL_HS_KEY_UPDATE)
+                 (ssl->in_msg[0] == MBEDTLS_SSL_HS_KEY_UPDATE
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+                  || ssl->in_msg[0] == MBEDTLS_SSL_HS_NEW_CONNECTION_ID
+                  || ssl->in_msg[0] == MBEDTLS_SSL_HS_REQUEST_CONNECTION_ID
+#endif
+                 ))
                 ? ssl->dtls13_post_hs_in_msg_seq
                 : ssl->handshake->in_msg_seq;
 #else
@@ -6608,6 +6628,20 @@ static int ssl_dtls13_process_ack(mbedtls_ssl_context *ssl,
             ssl_dtls13_key_update_install_outbound(ssl);
         }
 
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+        /* Check if this ACK matches a pending NewConnectionId send. */
+        if (ssl->dtls13_cid_update_ack_pending &&
+            epoch == ssl->dtls13_cid_sent_epoch &&
+            seq   == ssl->dtls13_cid_sent_seq) {
+            MBEDTLS_SSL_DEBUG_MSG(2, ("ACK: NewConnectionId acknowledged "
+                                      "(epoch=%llu seq=%llu)",
+                                      (unsigned long long) epoch,
+                                      (unsigned long long) seq));
+            ssl->dtls13_cid_update_ack_pending = 0;
+            ssl->dtls13_req_cid_count = 0;
+        }
+#endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
+
         if (hs == NULL || hs->flight == NULL) {
             continue;
         }
@@ -7632,6 +7666,286 @@ int mbedtls_ssl_send_key_update(mbedtls_ssl_context *ssl, int update_requested)
  * ---------------------------------------------------------------------------
  */
 
+/* ---------------------------------------------------------------------------
+ * NewConnectionId / RequestConnectionId (RFC 9147 §9)
+ *
+ * Wire formats:
+ *   NewConnectionId:
+ *     cids<0..2^16-1>   — 2-byte list byte-length, then each CID as
+ *                         1-byte length + bytes (opaque<0..2^8-1>)
+ *     ConnectionIdUsage — 1 byte: 0=cid_immediate, 1=cid_spare
+ *
+ *   RequestConnectionId:
+ *     num_cids — 1 byte: number of new CIDs requested
+ *
+ * Both messages require an ACK from the peer (same as KeyUpdate).
+ * The RFC prohibits having more than one NewConnectionId outstanding.
+ * ---------------------------------------------------------------------------
+ */
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+
+#define SSL_CID_USAGE_IMMEDIATE 0
+#define SSL_CID_USAGE_SPARE     1
+
+/* Maximum consecutive unanswered RequestConnectionId messages before
+ * sending too_many_cids_requested.  Not mandated by RFC; we use 4. */
+#define SSL_MAX_REQ_CID_COUNT   4
+
+/*
+ * Write a NewConnectionId message containing our current own_cid.
+ *
+ * usage: SSL_CID_USAGE_IMMEDIATE or SSL_CID_USAGE_SPARE
+ */
+MBEDTLS_CHECK_RETURN_CRITICAL
+static int ssl_tls13_write_new_connection_id(mbedtls_ssl_context *ssl,
+                                             int usage)
+{
+    int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+    unsigned char *buf;
+    size_t buf_len;
+    size_t cid_len = ssl->own_cid_len;
+    /* Body: 2-byte list length + (1-byte CID len + CID bytes) + 1-byte usage */
+    size_t body_len = 2 + 1 + cid_len + 1;
+
+    if (ssl->conf->transport != MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+    }
+
+    /* RFC 9147 §9: MUST NOT send if CID was not negotiated or if own CID
+     * is empty (would require the peer to send empty-CID records). */
+    if (ssl->session == NULL ||
+        ssl->transform_out == NULL ||
+        ssl->transform_out->out_cid_len == 0) {
+        MBEDTLS_SSL_DEBUG_MSG(2, ("NewConnectionId: CID not negotiated, skip"));
+        return 0;
+    }
+
+    /* RFC 9147 §9: MUST NOT have more than one NewConnectionId outstanding. */
+    if (ssl->dtls13_cid_update_ack_pending) {
+        MBEDTLS_SSL_DEBUG_MSG(1, ("NewConnectionId: already pending ACK"));
+        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+    }
+
+    MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_start_handshake_msg(
+                             ssl, MBEDTLS_SSL_HS_NEW_CONNECTION_ID,
+                             &buf, &buf_len));
+
+    MBEDTLS_SSL_CHK_BUF_PTR(buf, buf + buf_len, body_len);
+
+    /* cids list length (2 bytes): covers one CID entry */
+    MBEDTLS_PUT_UINT16_BE(1 + cid_len, buf, 0);
+    buf[2] = (unsigned char) cid_len;   /* CID length prefix */
+    memcpy(buf + 3, ssl->own_cid, cid_len);
+    buf[3 + cid_len] = (unsigned char) usage;
+
+    MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_finish_handshake_msg(ssl, buf_len, body_len));
+
+    MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_flush_output(ssl));
+
+    MBEDTLS_SSL_DEBUG_MSG(2, ("NewConnectionId sent (usage=%d, cid_len=%u)",
+                              usage, (unsigned) cid_len));
+
+    /* Record the (epoch, seq) of the sent message for ACK matching. */
+    ssl->dtls13_cid_sent_epoch = MBEDTLS_GET_UINT16_BE(ssl->cur_out_ctr, 0);
+    {
+        uint64_t sent_seq = MBEDTLS_GET_UINT64_BE(ssl->cur_out_ctr, 0)
+                            & UINT64_C(0x0000FFFFFFFFFFFF);
+        if (sent_seq > 0) {
+            sent_seq--;
+        }
+        ssl->dtls13_cid_sent_seq = sent_seq;
+    }
+    ssl->dtls13_cid_update_ack_pending = 1;
+
+cleanup:
+    return ret;
+}
+
+/*
+ * Handle an incoming NewConnectionId message: update our outbound CID and ACK.
+ */
+MBEDTLS_CHECK_RETURN_CRITICAL
+static int ssl_tls13_handle_new_connection_id(mbedtls_ssl_context *ssl)
+{
+    int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+    size_t hs_hdr_len = mbedtls_ssl_hs_hdr_len(ssl);
+    const unsigned char *p = ssl->in_msg + hs_hdr_len;
+    const unsigned char *end = ssl->in_msg + ssl->in_hslen;
+    uint16_t list_len;
+    uint8_t cid_len;
+    const unsigned char *new_cid;
+    uint8_t usage;
+
+    if (ssl->session == NULL || ssl->transform_out == NULL) {
+        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+    }
+
+    /* RFC §9: implementations that did not negotiate CID MUST abort. */
+    if (ssl->transform_out->out_cid_len == 0 &&
+        ssl->transform_in->in_cid_len == 0) {
+        MBEDTLS_SSL_PEND_FATAL_ALERT(MBEDTLS_SSL_ALERT_MSG_UNEXPECTED_MESSAGE,
+                                     MBEDTLS_ERR_SSL_UNEXPECTED_MESSAGE);
+        return MBEDTLS_ERR_SSL_UNEXPECTED_MESSAGE;
+    }
+
+    /* Parse: 2-byte list length */
+    MBEDTLS_SSL_CHK_BUF_READ_PTR(p, end, 2);
+    list_len = MBEDTLS_GET_UINT16_BE(p, 0);
+    p += 2;
+
+    MBEDTLS_SSL_CHK_BUF_READ_PTR(p, end, list_len + 1); /* list + usage byte */
+
+    /* We use only the first CID in the list (ignore extras per RFC). */
+    cid_len = *p++;
+    if (cid_len > MBEDTLS_SSL_CID_OUT_LEN_MAX) {
+        MBEDTLS_SSL_PEND_FATAL_ALERT(MBEDTLS_SSL_ALERT_MSG_ILLEGAL_PARAMETER,
+                                     MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER);
+        return MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER;
+    }
+
+    MBEDTLS_SSL_CHK_BUF_READ_PTR(p, end, cid_len);
+    new_cid = p;
+    p += list_len - 1; /* skip to usage byte (list_len = 1 + cid_len) */
+
+    /* Accept any remaining CID entries silently (just advance past them). */
+    /* p now at usage byte */
+    MBEDTLS_SSL_CHK_BUF_READ_PTR(p, end, 1);
+    usage = *p++;
+
+    if (usage != SSL_CID_USAGE_IMMEDIATE && usage != SSL_CID_USAGE_SPARE) {
+        MBEDTLS_SSL_PEND_FATAL_ALERT(MBEDTLS_SSL_ALERT_MSG_ILLEGAL_PARAMETER,
+                                     MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER);
+        return MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER;
+    }
+
+    MBEDTLS_SSL_DEBUG_MSG(2, ("NewConnectionId received: cid_len=%u usage=%u",
+                              (unsigned) cid_len, (unsigned) usage));
+
+    /* Update the outbound CID on the active transform immediately.
+     * For cid_spare we still switch — we have only one spare slot. */
+    ssl->transform_out->out_cid_len = cid_len;
+    memcpy(ssl->transform_out->out_cid, new_cid, cid_len);
+
+    /* Also update the pending transform if one is waiting (e.g. KeyUpdate
+     * was sent but not yet ACKed — inherit the new CID). */
+    if (ssl->dtls13_transform_pending_out != NULL) {
+        ssl->dtls13_transform_pending_out->out_cid_len = cid_len;
+        memcpy(ssl->dtls13_transform_pending_out->out_cid, new_cid, cid_len);
+    }
+
+    MBEDTLS_SSL_DEBUG_BUF(3, "new outbound CID", new_cid, cid_len);
+
+    /* Reset the outstanding RequestConnectionId counter. */
+    ssl->dtls13_req_cid_count = 0;
+
+    /* ACK the message. */
+    ssl->dtls13_ack_pending = 1;
+
+    ret = 0;
+    return ret;
+}
+
+/*
+ * Write a RequestConnectionId message asking for num_cids new spare CIDs.
+ */
+MBEDTLS_CHECK_RETURN_CRITICAL
+static int ssl_tls13_write_request_connection_id(mbedtls_ssl_context *ssl,
+                                                 uint8_t num_cids)
+{
+    int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+    unsigned char *buf;
+    size_t buf_len;
+
+    if (ssl->conf->transport != MBEDTLS_SSL_TRANSPORT_DATAGRAM ||
+        ssl->session == NULL) {
+        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+    }
+
+    MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_start_handshake_msg(
+                             ssl, MBEDTLS_SSL_HS_REQUEST_CONNECTION_ID,
+                             &buf, &buf_len));
+
+    MBEDTLS_SSL_CHK_BUF_PTR(buf, buf + buf_len, 1);
+    buf[0] = num_cids;
+
+    MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_finish_handshake_msg(ssl, buf_len, 1));
+    MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_flush_output(ssl));
+
+    MBEDTLS_SSL_DEBUG_MSG(2, ("RequestConnectionId sent (num_cids=%u)",
+                              (unsigned) num_cids));
+
+cleanup:
+    return ret;
+}
+
+/*
+ * Handle an incoming RequestConnectionId message: respond with NewConnectionId.
+ */
+MBEDTLS_CHECK_RETURN_CRITICAL
+static int ssl_tls13_handle_request_connection_id(mbedtls_ssl_context *ssl)
+{
+    size_t hs_hdr_len = mbedtls_ssl_hs_hdr_len(ssl);
+    const unsigned char *p = ssl->in_msg + hs_hdr_len;
+    const unsigned char *end = ssl->in_msg + ssl->in_hslen;
+    uint8_t num_cids;
+
+    if (ssl->session == NULL) {
+        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+    }
+
+    /* RFC §9: MUST NOT receive if CID was not negotiated. */
+    if (ssl->transform_out == NULL || ssl->transform_out->out_cid_len == 0) {
+        MBEDTLS_SSL_PEND_FATAL_ALERT(MBEDTLS_SSL_ALERT_MSG_UNEXPECTED_MESSAGE,
+                                     MBEDTLS_ERR_SSL_UNEXPECTED_MESSAGE);
+        return MBEDTLS_ERR_SSL_UNEXPECTED_MESSAGE;
+    }
+
+    MBEDTLS_SSL_CHK_BUF_READ_PTR(p, end, 1);
+    num_cids = *p;
+
+    MBEDTLS_SSL_DEBUG_MSG(2, ("RequestConnectionId received (num_cids=%u)",
+                              (unsigned) num_cids));
+
+    /* RFC §9: "too_many_cids_requested" if excessive requests. */
+    if (++ssl->dtls13_req_cid_count > SSL_MAX_REQ_CID_COUNT) {
+        MBEDTLS_SSL_PEND_FATAL_ALERT(
+            MBEDTLS_SSL_ALERT_MSG_TOO_MANY_CIDS_REQUESTED,
+            MBEDTLS_ERR_SSL_UNEXPECTED_MESSAGE);
+        return MBEDTLS_ERR_SSL_UNEXPECTED_MESSAGE;
+    }
+
+    /* Respond with a NewConnectionId(spare) containing our current own_cid.
+     * We don't generate a fresh CID here; the application is responsible for
+     * rotating own_cid via mbedtls_ssl_set_cid() before triggering a request.
+     * Sending the same CID again is legal and keeps the state machine simple. */
+    return ssl_tls13_write_new_connection_id(ssl, SSL_CID_USAGE_SPARE);
+}
+
+/*
+ * Public API: send a NewConnectionId to the peer (cid_immediate).
+ * Call after mbedtls_ssl_set_cid() to advertise a new inbound CID.
+ */
+int mbedtls_ssl_dtls13_send_new_connection_id(mbedtls_ssl_context *ssl)
+{
+    return ssl_tls13_write_new_connection_id(ssl, SSL_CID_USAGE_IMMEDIATE);
+}
+
+/*
+ * Public API: request the peer to send us a new CID.
+ */
+int mbedtls_ssl_dtls13_request_connection_id(mbedtls_ssl_context *ssl,
+                                             uint8_t num_cids)
+{
+    return ssl_tls13_write_request_connection_id(ssl, num_cids);
+}
+
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_DTLS_CONNECTION_ID */
+
+/* ---------------------------------------------------------------------------
+ * End of NewConnectionId / RequestConnectionId implementation
+ * ---------------------------------------------------------------------------
+ */
+
 #if defined(MBEDTLS_SSL_CLI_C)
 MBEDTLS_CHECK_RETURN_CRITICAL
 static int ssl_tls13_is_new_session_ticket(mbedtls_ssl_context *ssl)
@@ -7657,6 +7971,15 @@ static int ssl_tls13_handle_hs_message_post_handshake(mbedtls_ssl_context *ssl)
     if (ssl->in_msg[0] == MBEDTLS_SSL_HS_KEY_UPDATE) {
         return ssl_tls13_handle_key_update(ssl);
     }
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+    /* NewConnectionId / RequestConnectionId (RFC 9147 §9) */
+    if (ssl->in_msg[0] == MBEDTLS_SSL_HS_NEW_CONNECTION_ID) {
+        return ssl_tls13_handle_new_connection_id(ssl);
+    }
+    if (ssl->in_msg[0] == MBEDTLS_SSL_HS_REQUEST_CONNECTION_ID) {
+        return ssl_tls13_handle_request_connection_id(ssl);
+    }
+#endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
 
 #if defined(MBEDTLS_SSL_CLI_C)

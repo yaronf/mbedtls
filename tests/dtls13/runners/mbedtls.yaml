@@ -43,6 +43,8 @@ param_map:
   auth_fail_limit:  "auth_fail_limit={value}"
   cid:              "cid={value}"
   cid_val:          "cid_val={value}"
+  send_new_cid:     "send_new_cid={value}"
+  request_cid:      "request_cid={value}"
   skip_close_notify: "skip_close_notify={1 if value else 0}"
   read_timeout:   "read_timeout={value}"
   max_resend:     "max_resend={value}"
@@ -188,6 +190,36 @@ assertion_map:
   client_cid_not_negotiated:
     flag: "-C"
     string: "Use of Connection ID has been negotiated."
+  server_new_cid_sent:
+    flag: "-s"
+    string: "NewConnectionId sent"
+  client_new_cid_sent:
+    flag: "-c"
+    string: "NewConnectionId sent"
+  server_new_cid_received:
+    flag: "-s"
+    string: "NewConnectionId received"
+  client_new_cid_received:
+    flag: "-c"
+    string: "NewConnectionId received"
+  server_new_cid_acked:
+    flag: "-s"
+    string: "ACK: NewConnectionId acknowledged"
+  client_new_cid_acked:
+    flag: "-c"
+    string: "ACK: NewConnectionId acknowledged"
+  server_req_cid_sent:
+    flag: "-s"
+    string: "RequestConnectionId sent"
+  client_req_cid_sent:
+    flag: "-c"
+    string: "RequestConnectionId sent"
+  server_req_cid_received:
+    flag: "-s"
+    string: "RequestConnectionId received"
+  client_req_cid_received:
+    flag: "-c"
+    string: "RequestConnectionId received"
 
 requires_map:
   protocol:

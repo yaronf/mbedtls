@@ -99,6 +99,8 @@ int main(void)
 #define DFL_ALLOW_LEGACY        -2
 #define DFL_RENEGOTIATE         0
 #define DFL_KEY_UPDATE          0
+#define DFL_SEND_NEW_CID        0
+#define DFL_REQUEST_CID         0
 #define DFL_AEAD_LIMIT          0
 #define DFL_AUTH_FAIL_LIMIT     0
 #define DFL_RENEGO_DELAY        -2
@@ -418,6 +420,17 @@ int main(void)
 #define USAGE_KEY_UPDATE ""
 #endif
 
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS) && \
+    defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+#define USAGE_CID_UPDATE \
+    "    send_new_cid=%%d     default: 0 (disabled)\n"                     \
+    "                        1: send NewConnectionId(immediate) after HS\n" \
+    "    request_cid=%%d      default: 0 (disabled)\n"                     \
+    "                        N>0: send RequestConnectionId(N) after HS\n"
+#else
+#define USAGE_CID_UPDATE ""
+#endif
+
 #if defined(MBEDTLS_SSL_RENEGOTIATION)
 #define USAGE_RENEGO \
     "    renegotiation=%%d    default: 0 (disabled)\n"      \
@@ -561,6 +574,7 @@ int main(void)
     "    allow_legacy=%%d     default: (library default: no)\n"      \
     USAGE_RENEGO                                            \
     USAGE_KEY_UPDATE                                        \
+    USAGE_CID_UPDATE                                        \
     "    exchanges=%%d        default: 1\n"                 \
     "\n"                                                    \
     USAGE_TICKETS                                           \
@@ -665,6 +679,8 @@ struct options {
     int allow_legacy;           /* allow legacy renegotiation               */
     int renegotiate;            /* attempt renegotiation?                   */
     int key_update;             /* send DTLS 1.3 KeyUpdate after handshake  */
+    int send_new_cid;           /* send DTLS 1.3 NewConnectionId after HS   */
+    int request_cid;            /* send DTLS 1.3 RequestConnectionId after HS */
     uint64_t aead_limit;        /* DTLS 1.3 AEAD record limit (0=default)   */
     uint32_t auth_fail_limit;   /* DTLS 1.3 auth-fail limit (0=default)     */
     int renego_delay;           /* delay before enforcing renegotiation     */
@@ -1737,6 +1753,8 @@ int main(int argc, char *argv[])
     opt.allow_legacy        = DFL_ALLOW_LEGACY;
     opt.renegotiate         = DFL_RENEGOTIATE;
     opt.key_update          = DFL_KEY_UPDATE;
+    opt.send_new_cid        = DFL_SEND_NEW_CID;
+    opt.request_cid         = DFL_REQUEST_CID;
     opt.aead_limit          = DFL_AEAD_LIMIT;
     opt.auth_fail_limit     = DFL_AUTH_FAIL_LIMIT;
     opt.renego_delay        = DFL_RENEGO_DELAY;
@@ -2034,6 +2052,16 @@ usage:
         } else if (strcmp(p, "key_update") == 0) {
             opt.key_update = atoi(q);
             if (opt.key_update < 0 || opt.key_update > 2) {
+                goto usage;
+            }
+        } else if (strcmp(p, "send_new_cid") == 0) {
+            opt.send_new_cid = atoi(q);
+            if (opt.send_new_cid < 0 || opt.send_new_cid > 1) {
+                goto usage;
+            }
+        } else if (strcmp(p, "request_cid") == 0) {
+            opt.request_cid = atoi(q);
+            if (opt.request_cid < 0 || opt.request_cid > 255) {
                 goto usage;
             }
         } else if (strcmp(p, "aead_limit") == 0) {
@@ -3965,6 +3993,31 @@ data_exchange:
         ret = 0;
     }
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 && MBEDTLS_SSL_PROTO_DTLS */
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS) && \
+    defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+    if (opt.send_new_cid && exchanges_left == opt.exchanges) {
+        mbedtls_printf("  . Sending NewConnectionId...");
+        fflush(stdout);
+        if ((ret = mbedtls_ssl_dtls13_send_new_connection_id(&ssl)) != 0) {
+            mbedtls_printf(" failed\n  ! mbedtls_ssl_dtls13_send_new_connection_id"
+                           " returned -0x%x\n\n", (unsigned int) -ret);
+            goto reset;
+        }
+        mbedtls_printf(" ok\n");
+    }
+    if (opt.request_cid > 0 && exchanges_left == opt.exchanges) {
+        mbedtls_printf("  . Sending RequestConnectionId(%d)...", opt.request_cid);
+        fflush(stdout);
+        if ((ret = mbedtls_ssl_dtls13_request_connection_id(
+                       &ssl, (uint8_t) opt.request_cid)) != 0) {
+            mbedtls_printf(" failed\n  ! mbedtls_ssl_dtls13_request_connection_id"
+                           " returned -0x%x\n\n", (unsigned int) -ret);
+            goto reset;
+        }
+        mbedtls_printf(" ok\n");
+    }
+#endif /* TLS1_3 && DTLS && CID */
 
 #if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
     ret = report_cid_usage(&ssl, "after renegotiation");

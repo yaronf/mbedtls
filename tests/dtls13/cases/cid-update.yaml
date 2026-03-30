@@ -1,0 +1,109 @@
+family: "DTLS 1.3 CID update"
+requires:
+  - protocol: dtls13
+  - config: MBEDTLS_SSL_DTLS_CONNECTION_ID
+
+cases:
+  - name: "CID update: server sends NewConnectionId, client receives and ACKs"
+    # Server sends NewConnectionId(immediate) after handshake.
+    # Client should receive it, update outbound CID, and send ACK.
+    # Server should see its NewConnectionId acknowledged.
+    server:
+      debug_level: 3
+      cid: 1
+      cid_val: "deadbeef"
+      send_new_cid: 1
+      exchanges: 2
+    client:
+      debug_level: 3
+      cid: 1
+      cid_val: "cafebabe"
+      exchanges: 2
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - server_cid_negotiated
+        - client_cid_negotiated
+        - server_new_cid_sent
+        - client_new_cid_received
+        - server_new_cid_acked
+
+  - name: "CID update: client sends NewConnectionId, server receives and ACKs"
+    # Symmetric: client initiates a NewConnectionId update.
+    server:
+      debug_level: 3
+      cid: 1
+      cid_val: "deadbeef"
+      exchanges: 2
+    client:
+      debug_level: 3
+      cid: 1
+      cid_val: "cafebabe"
+      send_new_cid: 1
+      exchanges: 2
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - server_cid_negotiated
+        - client_cid_negotiated
+        - client_new_cid_sent
+        - server_new_cid_received
+        - client_new_cid_acked
+
+  - name: "CID update: client requests new CID from server"
+    # Client sends RequestConnectionId(1).
+    # Server responds with NewConnectionId(spare).
+    # Client receives it and ACKs.
+    server:
+      debug_level: 3
+      cid: 1
+      cid_val: "deadbeef"
+      exchanges: 2
+    client:
+      debug_level: 3
+      cid: 1
+      cid_val: "cafebabe"
+      request_cid: 1
+      exchanges: 2
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - server_cid_negotiated
+        - client_cid_negotiated
+        - client_req_cid_sent
+        - server_req_cid_received
+        - server_new_cid_sent
+        - client_new_cid_received
+        - server_new_cid_acked
+
+  - name: "CID update: server requests new CID from client"
+    # Symmetric: server sends RequestConnectionId(1).
+    server:
+      debug_level: 3
+      cid: 1
+      cid_val: "deadbeef"
+      request_cid: 1
+      exchanges: 2
+    client:
+      debug_level: 3
+      cid: 1
+      cid_val: "cafebabe"
+      exchanges: 2
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - server_cid_negotiated
+        - client_cid_negotiated
+        - server_req_cid_sent
+        - client_req_cid_received
+        - client_new_cid_sent
+        - server_new_cid_received
+        - client_new_cid_acked
