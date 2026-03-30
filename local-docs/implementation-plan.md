@@ -621,8 +621,11 @@ have been drilled down in `local-docs/design-drilldown.md`:
           mbedtls_ssl_dtls13_request_connection_id().
           Tests: server→client, client→server, client requests, server requests.
           **DONE** (commit d5118c75f5): 4 new tests passing, 35/35 suite.
-          Note: address-change continuity test not yet added (requires udp_proxy
-          source-address remapping support — separate item).
+- [ ] 5c. Address-change continuity: after handshake with CID negotiated, peer B changes
+          source IP/port (simulated via udp_proxy source remapping or direct socket test);
+          peer A continues the session using the CID to identify the association; app data
+          flows normally at the new address.
+          Requires: udp_proxy source-address remapping support (not yet implemented).
 - [N/A] 6. Post-handshake client authentication: explicitly prohibited by RFC 9147 §5.4.
          "Post-handshake authentication is not supported in DTLS 1.3."
 - [ ] 7. Self-test: KeyUpdate exchange, CID negotiation and update, limit enforcement.
