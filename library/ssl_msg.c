@@ -2318,8 +2318,7 @@ static int ssl_flight_append(mbedtls_ssl_context *ssl)
         ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3) {
         /* Record the epoch so retransmits use the same epoch even if a
          * newer one is installed later (RFC 9147 §7.2: "same key material"). */
-        msg->dtls13_send_epoch = (uint16_t) ssl->cur_out_ctr[1] |
-                                 ((uint16_t) ssl->cur_out_ctr[0] << 8);
+        msg->dtls13_send_epoch = MBEDTLS_GET_UINT16_BE(ssl->cur_out_ctr, 0);
         /* Sync the current counter into the epoch pool slot so that
          * retransmits from WAIT_ACK (when a newer epoch is active) can
          * continue from where we left off. */
@@ -2646,9 +2645,7 @@ int mbedtls_ssl_flight_transmit(mbedtls_ssl_context *ssl)
         mbedtls_ssl_dtls13_epoch_slot *dtls13_retx_slot = NULL;
         if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
             ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
-            uint16_t active_epoch =
-                (uint16_t) ssl->cur_out_ctr[1] |
-                ((uint16_t) ssl->cur_out_ctr[0] << 8);
+            uint16_t active_epoch = MBEDTLS_GET_UINT16_BE(ssl->cur_out_ctr, 0);
             if (cur->dtls13_send_epoch != active_epoch) {
                 dtls13_saved_transform = ssl->transform_out;
                 memcpy(dtls13_saved_ctr, ssl->cur_out_ctr, 8);
@@ -2662,19 +2659,14 @@ int mbedtls_ssl_flight_transmit(mbedtls_ssl_context *ssl)
                      * which are all 0 for seq <= 65535 (all normal handshakes),
                      * causing both HRR and SH to be retransmitted at seq=0 and
                      * the SH to be rejected as a replay of the HRR. */
-                    if (ssl->handshake != NULL &&
-                        (ssl->handshake->dtls13_epoch0_out_ctr[0] != 0 ||
-                         ssl->handshake->dtls13_epoch0_out_ctr[1] != 0 ||
-                         ssl->handshake->dtls13_epoch0_out_ctr[2] != 0 ||
-                         ssl->handshake->dtls13_epoch0_out_ctr[3] != 0 ||
-                         ssl->handshake->dtls13_epoch0_out_ctr[4] != 0 ||
-                         ssl->handshake->dtls13_epoch0_out_ctr[5] != 0 ||
-                         ssl->handshake->dtls13_epoch0_out_ctr[6] != 0 ||
-                         ssl->handshake->dtls13_epoch0_out_ctr[7] != 0)) {
-                        memcpy(ssl->cur_out_ctr,
-                               ssl->handshake->dtls13_epoch0_out_ctr, 8);
-                    } else {
-                        memset(ssl->cur_out_ctr, 0, 8);
+                    memset(ssl->cur_out_ctr, 0, 8);
+                    if (ssl->handshake != NULL) {
+                        static const unsigned char zero8[8] = { 0 };
+                        if (memcmp(ssl->handshake->dtls13_epoch0_out_ctr,
+                                   zero8, 8) != 0) {
+                            memcpy(ssl->cur_out_ctr,
+                                   ssl->handshake->dtls13_epoch0_out_ctr, 8);
+                        }
                     }
                 } else {
                     dtls13_retx_slot = ssl_dtls13_epoch_pool_lookup_slot(
@@ -7299,7 +7291,59 @@ static int ssl_check_ctr_renegotiate(mbedtls_ssl_context *ssl)
 #define SSL_KEY_UPDATE_NOT_REQUESTED  0
 #define SSL_KEY_UPDATE_REQUESTED      1
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+/* Return the 48-bit sequence number of the record most recently sent.
+ * write_record has already incremented cur_out_ctr, so the just-sent seq
+ * is cur_out_ctr[2..7] (as a 48-bit value) minus 1. */
+static uint64_t ssl_dtls13_last_sent_seq(const mbedtls_ssl_context *ssl)
+{
+    uint64_t seq = MBEDTLS_GET_UINT64_BE(ssl->cur_out_ctr, 0)
+                   & UINT64_C(0x0000FFFFFFFFFFFF);
+    return seq > 0 ? seq - 1 : 0;
+}
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+/* Resolve the ciphersuite, hash algorithm, and hash length from the active
+ * session.  Used by all three KeyUpdate functions. */
+MBEDTLS_CHECK_RETURN_CRITICAL
+static int ssl_tls13_session_hash_info(
+    mbedtls_ssl_context *ssl,
+    const mbedtls_ssl_ciphersuite_t **cs_info,
+    psa_algorithm_t *hash_alg,
+    size_t *hash_len)
+{
+    if (ssl->session == NULL) {
+        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+    }
+    *cs_info = mbedtls_ssl_ciphersuite_from_id(ssl->session->ciphersuite);
+    if (*cs_info == NULL) {
+        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+    }
+    *hash_alg = mbedtls_md_psa_alg_from_type((mbedtls_md_type_t)(*cs_info)->mac);
+    *hash_len = PSA_HASH_LENGTH(*hash_alg);
+    return 0;
+}
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
+
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
+/* Retire a transform to the epoch pool (if not already present) and set any
+ * aliasing pointer to NULL to prevent double-free.  Used during KeyUpdate on
+ * both the inbound and outbound paths. */
+static void ssl_dtls13_retire_transform_to_pool(
+    mbedtls_ssl_context *ssl,
+    mbedtls_ssl_transform **alias,
+    mbedtls_ssl_transform *transform)
+{
+    if (*alias == transform) {
+        *alias = NULL;
+    }
+    if (transform != NULL &&
+        !ssl_dtls13_epoch_pool_contains(ssl, transform)) {
+        ssl_dtls13_epoch_pool_insert(ssl, transform);
+    }
+}
+
 /*
  * Install the pending outbound KeyUpdate transform once its ACK has arrived.
  * Called from ssl_dtls13_process_ack().
@@ -7310,22 +7354,8 @@ static void ssl_dtls13_key_update_install_outbound(mbedtls_ssl_context *ssl)
     psa_algorithm_t hash_alg;
     size_t hash_len;
 
-    /* Retire the current outbound transform to the epoch pool so that any
-     * records the peer sends at the old epoch can still be decrypted.
-     * (Both directions share the same transform_application object, so the
-     * pool is used even for the outbound direction transition.)
-     *
-     * Avoid double-insert: if an inbound KeyUpdate already pooled this same
-     * transform (same dtls13_epoch number), skip insertion.  Null out
-     * transform_application if it aliases the outgoing pointer to prevent
-     * a double-free in ssl_free(). */
-    if (ssl->transform_out == ssl->transform_application) {
-        ssl->transform_application = NULL;
-    }
-    if (ssl->transform_out != NULL &&
-        !ssl_dtls13_epoch_pool_contains(ssl, ssl->transform_out)) {
-        ssl_dtls13_epoch_pool_insert(ssl, ssl->transform_out);
-    }
+    ssl_dtls13_retire_transform_to_pool(
+        ssl, &ssl->transform_application, ssl->transform_out);
     ssl->transform_out = NULL; /* set_outbound_transform will reassign */
 
     /* Install the new outbound transform. */
@@ -7334,11 +7364,7 @@ static void ssl_dtls13_key_update_install_outbound(mbedtls_ssl_context *ssl)
 
     /* Update the stored application secret for the outbound direction so that
      * future KeyUpdates chain correctly. */
-    cs_info = mbedtls_ssl_ciphersuite_from_id(ssl->session->ciphersuite);
-    if (cs_info != NULL) {
-        hash_alg = mbedtls_md_psa_alg_from_type((mbedtls_md_type_t) cs_info->mac);
-        hash_len = PSA_HASH_LENGTH(hash_alg);
-
+    if (ssl_tls13_session_hash_info(ssl, &cs_info, &hash_alg, &hash_len) == 0) {
         if (ssl->conf->endpoint == MBEDTLS_SSL_IS_CLIENT) {
             memcpy(ssl->session->app_secrets.client_application_traffic_secret_N,
                    ssl->dtls13_ku_pending_secret, hash_len);
@@ -7387,12 +7413,10 @@ static int ssl_tls13_write_key_update(mbedtls_ssl_context *ssl,
         return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
     }
 
-    cs_info = mbedtls_ssl_ciphersuite_from_id(ssl->session->ciphersuite);
-    if (cs_info == NULL) {
-        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+    ret = ssl_tls13_session_hash_info(ssl, &cs_info, &hash_alg, &hash_len);
+    if (ret != 0) {
+        return ret;
     }
-    hash_alg = mbedtls_md_psa_alg_from_type((mbedtls_md_type_t) cs_info->mac);
-    hash_len = PSA_HASH_LENGTH(hash_alg);
 
     /* Derive the new outbound secret (secret_N → secret_N+1). */
     {
@@ -7467,19 +7491,8 @@ static int ssl_tls13_write_key_update(mbedtls_ssl_context *ssl,
 
         memcpy(ssl->dtls13_ku_pending_secret, new_secret, hash_len);
 
-        /* cur_out_ctr epoch bytes: bytes [0..1], seq: bytes [2..7] */
-        ssl->dtls13_ku_sent_epoch =
-            MBEDTLS_GET_UINT16_BE(ssl->cur_out_ctr, 0);
-        /* The sequence counter was incremented by write_record; read
-         * the value that was just used (cur_out_ctr - 1). */
-        {
-            uint64_t sent_seq = MBEDTLS_GET_UINT64_BE(ssl->cur_out_ctr, 0)
-                                & UINT64_C(0x0000FFFFFFFFFFFF);
-            if (sent_seq > 0) {
-                sent_seq--;
-            }
-            ssl->dtls13_ku_sent_seq = sent_seq;
-        }
+        ssl->dtls13_ku_sent_epoch = MBEDTLS_GET_UINT16_BE(ssl->cur_out_ctr, 0);
+        ssl->dtls13_ku_sent_seq   = ssl_dtls13_last_sent_seq(ssl);
         ssl->dtls13_ku_ack_pending = 1;
     }
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
@@ -7535,16 +7548,10 @@ static int ssl_tls13_handle_key_update(mbedtls_ssl_context *ssl)
     MBEDTLS_SSL_DEBUG_MSG(2, ("KeyUpdate received (update_requested=%u)",
                               (unsigned) update_requested));
 
-    if (ssl->session == NULL) {
-        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+    ret = ssl_tls13_session_hash_info(ssl, &cs_info, &hash_alg, &hash_len);
+    if (ret != 0) {
+        return ret;
     }
-
-    cs_info = mbedtls_ssl_ciphersuite_from_id(ssl->session->ciphersuite);
-    if (cs_info == NULL) {
-        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
-    }
-    hash_alg = mbedtls_md_psa_alg_from_type((mbedtls_md_type_t) cs_info->mac);
-    hash_len = PSA_HASH_LENGTH(hash_alg);
 
     /* Derive new inbound secret (peer's write secret, generation N+1). */
     {
@@ -7585,19 +7592,9 @@ static int ssl_tls13_handle_key_update(mbedtls_ssl_context *ssl)
     }
 
     /* Retire old inbound transform to the epoch pool so reordered records
-     * from the old epoch can still be decrypted.  Per pool ownership rules,
-     * null out all aliasing pointers immediately after the insert.
-     *
-     * Guard against double-insert: if an outbound KeyUpdate ACK was already
-     * processed and retired this same epoch, it is already in the pool. */
-    if (ssl->transform_in == ssl->transform_application) {
-        ssl->transform_application = NULL;
-    }
-    if (ssl->transform_in != NULL &&
-        !ssl_dtls13_epoch_pool_contains(ssl, ssl->transform_in)) {
-        ssl_dtls13_epoch_pool_insert(ssl, ssl->transform_in);
-    }
-    /* else: already in pool from a prior outbound KU; just drop the pointer */
+     * from the old epoch can still be decrypted. */
+    ssl_dtls13_retire_transform_to_pool(
+        ssl, &ssl->transform_application, ssl->transform_in);
     ssl->transform_in = NULL; /* pool owns it now; set_inbound_transform will reassign */
 
     /* Install the new inbound transform. */
@@ -7747,14 +7744,7 @@ static int ssl_tls13_write_new_connection_id(mbedtls_ssl_context *ssl,
 
     /* Record the (epoch, seq) of the sent message for ACK matching. */
     ssl->dtls13_cid_sent_epoch = MBEDTLS_GET_UINT16_BE(ssl->cur_out_ctr, 0);
-    {
-        uint64_t sent_seq = MBEDTLS_GET_UINT64_BE(ssl->cur_out_ctr, 0)
-                            & UINT64_C(0x0000FFFFFFFFFFFF);
-        if (sent_seq > 0) {
-            sent_seq--;
-        }
-        ssl->dtls13_cid_sent_seq = sent_seq;
-    }
+    ssl->dtls13_cid_sent_seq   = ssl_dtls13_last_sent_seq(ssl);
     ssl->dtls13_cid_update_ack_pending = 1;
 
 cleanup:
