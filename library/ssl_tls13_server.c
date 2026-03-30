@@ -3832,79 +3832,12 @@ int mbedtls_ssl_tls13_handshake_server_step(mbedtls_ssl_context *ssl)
 
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
         case MBEDTLS_SSL_TLS1_3_NEW_SESSION_TICKET_WAIT_ACK:
-            MBEDTLS_SSL_DEBUG_MSG(2, ("WAIT_ACK: entered, retransmit_state=%d",
+            /* DTLS 1.3: wait for client ACK of NewSessionTicket flight.
+             * Retransmit timer (armed in FLUSH) drives resends via
+             * ssl_prepare_handshake_step / mbedtls_ssl_resend. */
+            MBEDTLS_SSL_DEBUG_MSG(2, ("NST_WAIT_ACK: retransmit_state=%d",
                                       ssl->handshake->retransmit_state));
-            /* DTLS 1.3 only: wait for the client to ACK the NewSessionTicket
-             * flight.  The ACK is processed by ssl_dtls13_process_ack() inside
-             * mbedtls_ssl_handle_message_type(), which sets retransmit_state
-             * to RETRANS_FINISHED when the full flight is acknowledged.
-             * The retransmit timer (armed in FLUSH above) drives retransmits
-             * via ssl_prepare_handshake_step / mbedtls_ssl_resend until then.
-             */
-            if (ssl->handshake->retransmit_state ==
-                MBEDTLS_SSL_RETRANS_FINISHED) {
-                mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_HANDSHAKE_OVER);
-                ret = 0;
-                break;
-            }
-
-            /* Try to read an incoming ACK record.  The ACK handler updates
-             * retransmit_state; we return WANT_READ so the caller retries. */
-            ret = mbedtls_ssl_read_record(ssl, 0);
-            /* Check RETRANS_FINISHED unconditionally: the ACK handler sets it
-             * inside read_record's internal NON_FATAL loop; read_record never
-             * returns NON_FATAL to callers, so we must check here regardless of
-             * the return code. */
-            if (ssl->handshake->retransmit_state ==
-                MBEDTLS_SSL_RETRANS_FINISHED) {
-                mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_HANDSHAKE_OVER);
-                ret = 0;
-                break;
-            }
-            if (ret == MBEDTLS_ERR_SSL_WANT_READ ||
-                ret == MBEDTLS_ERR_SSL_NON_FATAL) {
-                MBEDTLS_SSL_DEBUG_MSG(2, ("WAIT_ACK: read_record returned WANT_READ (ret=%d "
-                                          "in_msgtype=%d)", ret, ssl->in_msgtype));
-                ret = MBEDTLS_ERR_SSL_WANT_READ;
-                break;
-            }
-            if (ret != 0) {
-                MBEDTLS_SSL_DEBUG_RET(1,
-                                      "mbedtls_ssl_read_record "
-                                      "(waiting for NST ACK)", ret);
-                break;
-            }
-            /* Record received; ACK processing already updated retransmit_state.
-             * Re-check and advance if fully acked. */
-            MBEDTLS_SSL_DEBUG_MSG(2, ("WAIT_ACK: read_record ret=0 in_msgtype=%d retrans=%d",
-                                      ssl->in_msgtype,
-                                      ssl->handshake->retransmit_state));
-            if (ssl->handshake->retransmit_state ==
-                MBEDTLS_SSL_RETRANS_FINISHED) {
-                mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_HANDSHAKE_OVER);
-                ret = 0;
-            } else if (ssl->in_msgtype == MBEDTLS_SSL_MSG_APPLICATION_DATA ||
-                       ssl->in_msgtype == MBEDTLS_SSL_MSG_HANDSHAKE) {
-                /* RFC 9147 §7.3: receiving application data or a
-                 * post-handshake handshake message (e.g. KeyUpdate) from the
-                 * peer is an implicit acknowledgment — the client could not
-                 * have sent these unless it had already processed the
-                 * NewSessionTicket and installed the application keys.
-                 * Treat this as a full ACK, cancel the retransmit timer, and
-                 * preserve the record so ssl_read() can deliver it. */
-                MBEDTLS_SSL_DEBUG_MSG(2, ("WAIT_ACK: post-handshake message "
-                                          "received (type %d) — "
-                                          "implicit NST ACK; advancing",
-                                          ssl->in_msgtype));
-                mbedtls_ssl_set_timer(ssl, 0);
-                ssl->handshake->retransmit_state =
-                    MBEDTLS_SSL_RETRANS_FINISHED;
-                mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_HANDSHAKE_OVER);
-                ssl->keep_current_message = 1;
-                ret = 0;
-            } else {
-                ret = MBEDTLS_ERR_SSL_WANT_READ;
-            }
+            ret = mbedtls_ssl_dtls13_wait_ack_step(ssl);
             break;
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
 

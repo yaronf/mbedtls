@@ -8641,6 +8641,74 @@ int mbedtls_ssl_close_notify(mbedtls_ssl_context *ssl)
 
 #if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
 /*
+ * Common handler for the two DTLS 1.3 WAIT_ACK states:
+ *   MBEDTLS_SSL_TLS1_3_NEW_SESSION_TICKET_WAIT_ACK  (server)
+ *   MBEDTLS_SSL_TLS1_3_CLIENT_FINISHED_WAIT_ACK     (client)
+ *
+ * Both states wait for the peer to ACK a just-sent flight before advancing
+ * to HANDSHAKE_OVER.  The logic is identical:
+ *   1. If the flight is already fully ACKed (retransmit_state == FINISHED),
+ *      advance immediately — handles the case where the ACK arrived while
+ *      processing a previous record in the same read_record call.
+ *   2. Call read_record().  The ACK handler runs inside read_record's internal
+ *      NON_FATAL loop and never surfaces to us as a return code, so we must
+ *      re-check retransmit_state after every read_record call.
+ *   3. If the peer sends a post-handshake message (APP_DATA or HANDSHAKE) before
+ *      or instead of an explicit ACK, treat it as an implicit ACK per RFC 9147
+ *      §5.3 / §7.3, cancel the timer, and preserve the record.
+ *
+ * Returns 0 when HANDSHAKE_OVER has been entered, WANT_READ while still
+ * waiting, or a fatal error code.
+ */
+int mbedtls_ssl_dtls13_wait_ack_step(mbedtls_ssl_context *ssl)
+{
+    int ret;
+
+    /* Already ACKed (e.g. ACK arrived in a previous read_record call). */
+    if (ssl->handshake->retransmit_state == MBEDTLS_SSL_RETRANS_FINISHED) {
+        mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_HANDSHAKE_OVER);
+        return 0;
+    }
+
+    ret = mbedtls_ssl_read_record(ssl, 0);
+
+    /* Re-check unconditionally: ACK handler sets RETRANS_FINISHED inside
+     * read_record's NON_FATAL loop; read_record never returns NON_FATAL. */
+    if (ssl->handshake->retransmit_state == MBEDTLS_SSL_RETRANS_FINISHED) {
+        mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_HANDSHAKE_OVER);
+        return 0;
+    }
+
+    if (ret == MBEDTLS_ERR_SSL_WANT_READ ||
+        ret == MBEDTLS_ERR_SSL_NON_FATAL) {
+        return MBEDTLS_ERR_SSL_WANT_READ;
+    }
+
+    if (ret != 0) {
+        MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_read_record (WAIT_ACK)", ret);
+        return ret;
+    }
+
+    /* read_record returned 0 but no explicit ACK yet.  A post-handshake
+     * message from the peer is an implicit ACK — it could not have been sent
+     * unless the peer had already processed our flight. */
+    if (ssl->in_msgtype == MBEDTLS_SSL_MSG_APPLICATION_DATA ||
+        ssl->in_msgtype == MBEDTLS_SSL_MSG_HANDSHAKE) {
+        MBEDTLS_SSL_DEBUG_MSG(2, ("WAIT_ACK: implicit ACK from message "
+                                  "type %d — advancing", ssl->in_msgtype));
+        mbedtls_ssl_set_timer(ssl, 0);
+        ssl->handshake->retransmit_state = MBEDTLS_SSL_RETRANS_FINISHED;
+        ssl->keep_current_message = 1;
+        mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_HANDSHAKE_OVER);
+        return 0;
+    }
+
+    return MBEDTLS_ERR_SSL_WANT_READ;
+}
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+/*
  * DTLS 1.3 epoch pool — implementation.
  *
  * These functions manage a small circular pool of retained inbound transforms.

@@ -1350,6 +1350,21 @@ static inline int ssl_dtls13_epoch_pool_contains(
  */
 void ssl_dtls13_epoch_pool_free(mbedtls_ssl_context *ssl);
 
+/**
+ * \brief  Common handler for DTLS 1.3 WAIT_ACK states.
+ *
+ * Used by both NEW_SESSION_TICKET_WAIT_ACK (server) and
+ * CLIENT_FINISHED_WAIT_ACK (client).  Reads one record, checks for
+ * explicit ACK (retransmit_state == RETRANS_FINISHED) and implicit ACK
+ * (post-handshake message received), and advances to HANDSHAKE_OVER when
+ * either condition is met.
+ *
+ * \return  0 when HANDSHAKE_OVER entered,
+ *          MBEDTLS_ERR_SSL_WANT_READ while still waiting,
+ *          or a fatal error code.
+ */
+int mbedtls_ssl_dtls13_wait_ack_step(mbedtls_ssl_context *ssl);
+
 #endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 
 /*
