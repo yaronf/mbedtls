@@ -2903,7 +2903,8 @@ exit:
 /* BEGIN_CASE depends_on:MBEDTLS_SSL_HANDSHAKE_WITH_CERT_ENABLED:MBEDTLS_RSA_C:PSA_WANT_ECC_SECP_R1_384:MBEDTLS_PKCS1_V15:PSA_WANT_ALG_SHA_256:PSA_WANT_KEY_TYPE_ECC_PUBLIC_KEY */
 void move_handshake_to_state(int endpoint_type, int tls_version, int state, int need_pass)
 {
-    enum { BUFFSIZE = 1024 };
+    /* 16384: TLS 1.3 server flight (EE+Cert+CV+Finished) exceeds 1 kB. */
+    enum { BUFFSIZE = 16384 };
     mbedtls_test_ssl_endpoint base_ep, second_ep;
     memset(&base_ep, 0, sizeof(base_ep));
     memset(&second_ep, 0, sizeof(second_ep));
@@ -3297,14 +3298,16 @@ void recombine_server_first_flight(int version,
         mbedtls_test_mock_socket_close(&server.socket);
         goto goal_reached;
     }
-    while (ret == 0 && !mbedtls_ssl_is_handshake_over(&server.ssl)) {
+    while (ret == 0 && (!mbedtls_ssl_is_handshake_over(&server.ssl) ||
+                        server.ssl.state > MBEDTLS_SSL_HANDSHAKE_OVER)) {
         mbedtls_test_set_step(1000 + server.ssl.state);
         ret = mbedtls_ssl_handshake_step(&server.ssl);
     }
     TEST_EQUAL(ret, 0);
 
     /* Client: parse the second flight from the server */
-    while (ret == 0 && !mbedtls_ssl_is_handshake_over(&client.ssl)) {
+    while (ret == 0 && (!mbedtls_ssl_is_handshake_over(&client.ssl) ||
+                        client.ssl.state > MBEDTLS_SSL_HANDSHAKE_OVER)) {
         mbedtls_test_set_step(client.ssl.state);
         ret = mbedtls_ssl_handshake_step(&client.ssl);
     }
@@ -6087,3 +6090,27 @@ exit:
     return;
 }
 /* END_CASE */
+
+/* BEGIN_CASE depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:MBEDTLS_SSL_HANDSHAKE_WITH_CERT_ENABLED:PSA_WANT_ECC_SECP_R1_256:PSA_WANT_ALG_SHA_256:MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL_ENABLED:MBEDTLS_TIMING_C */
+void dtls13_handshake(void)
+{
+    mbedtls_test_handshake_test_options options;
+    mbedtls_test_init_handshake_options(&options);
+
+    options.dtls = 1;
+    options.client_min_version = MBEDTLS_SSL_VERSION_TLS1_3;
+    options.client_max_version = MBEDTLS_SSL_VERSION_TLS1_3;
+    options.server_min_version = MBEDTLS_SSL_VERSION_TLS1_3;
+    options.server_max_version = MBEDTLS_SSL_VERSION_TLS1_3;
+    options.expected_negotiated_version = MBEDTLS_SSL_VERSION_TLS1_3;
+
+    mbedtls_test_ssl_perform_handshake(&options);
+
+    /* The goto below is used to avoid an "unused label" warning. */
+    goto exit;
+
+exit:
+    mbedtls_test_free_handshake_options(&options);
+}
+/* END_CASE */
+

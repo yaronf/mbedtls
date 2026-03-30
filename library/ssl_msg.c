@@ -8742,7 +8742,6 @@ void mbedtls_ssl_transform_free(mbedtls_ssl_transform *transform)
     if (transform == NULL) {
         return;
     }
-
     psa_destroy_key(transform->psa_key_enc);
     psa_destroy_key(transform->psa_key_dec);
 

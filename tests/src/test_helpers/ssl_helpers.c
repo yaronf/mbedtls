@@ -1078,10 +1078,52 @@ int mbedtls_test_move_handshake_to_state(mbedtls_ssl_context *ssl,
         return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
     }
 
+    unsigned char drain_buf[1];
+
     /* Perform communication via connected sockets */
     while ((ssl->state != state) && (--max_steps >= 0)) {
-        /* If /p second_ssl ends the handshake procedure before /p ssl then
-         * there is no need to call the next step */
+        /* Step second_ssl toward the target state.
+         *
+         * The original guard was !mbedtls_ssl_is_handshake_over(second_ssl),
+         * which returns true for state >= MBEDTLS_SSL_HANDSHAKE_OVER.  That
+         * works for TLS and DTLS 1.2, but breaks for DTLS 1.3 because states
+         * NEW_SESSION_TICKET (28), WAIT_ACK (30), CLIENT_FINISHED_WAIT_ACK
+         * (31) are all > HANDSHAKE_OVER yet still need handshake_step.
+         *
+         * Special case for DTLS 1.3 driving both sides to HANDSHAKE_OVER:
+         * once second_ssl has reached exactly HANDSHAKE_OVER it can no longer
+         * be advanced via handshake_step.  Instead call ssl_read so that any
+         * deferred output (e.g. dtls13_ack_pending for the peer's Finished) is
+         * flushed — read_record sends the pending ACK before reading.
+         *
+         * For all other cases (TLS, DTLS 1.2, DTLS 1.3 intermediate states,
+         * and second_ssl past HANDSHAKE_OVER still advancing) fall back to the
+         * original is_handshake_over() guard so existing tests are unaffected. */
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+        if (state == MBEDTLS_SSL_HANDSHAKE_OVER &&
+            second_ssl->conf != NULL &&
+            second_ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+            second_ssl->state == MBEDTLS_SSL_HANDSHAKE_OVER) {
+            /* DTLS 1.3: flush deferred ACK by calling ssl_read. */
+            ret = mbedtls_ssl_read(second_ssl, drain_buf, sizeof(drain_buf));
+            if (ret != MBEDTLS_ERR_SSL_WANT_READ &&
+                ret != MBEDTLS_ERR_SSL_WANT_WRITE &&
+                ret != MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY &&
+                ret != 0) {
+                return ret;
+            }
+        } else if (state == MBEDTLS_SSL_HANDSHAKE_OVER &&
+                   second_ssl->conf != NULL &&
+                   second_ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+                   second_ssl->state > MBEDTLS_SSL_HANDSHAKE_OVER) {
+            /* DTLS 1.3 post-handshake-setup states: keep stepping. */
+            ret = mbedtls_ssl_handshake_step(second_ssl);
+            if (ret != 0 && ret != MBEDTLS_ERR_SSL_WANT_READ &&
+                ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
+                return ret;
+            }
+        } else
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
         if (!mbedtls_ssl_is_handshake_over(second_ssl)) {
             ret = mbedtls_ssl_handshake_step(second_ssl);
             if (ret != 0 && ret != MBEDTLS_ERR_SSL_WANT_READ &&

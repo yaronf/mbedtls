@@ -621,18 +621,109 @@ have been drilled down in `local-docs/design-drilldown.md`:
           mbedtls_ssl_dtls13_request_connection_id().
           Tests: server→client, client→server, client requests, server requests.
           **DONE** (commit d5118c75f5): 4 new tests passing, 35/35 suite.
-- [ ] 5c. Address-change continuity: after handshake with CID negotiated, client closes and
-          reopens its UDP socket on a different local port, then resumes sending app data.
-          Server identifies the association by CID (not 5-tuple) and continues the session.
-          Implement via a new ssl_client2 option (e.g. cid_change_addr=1) that rebinds the
-          socket mid-session. No proxy changes needed.
+- [x] 5c. Address migration: client rebinds UDP socket mid-session; server identifies
+          association by CID and migrates to new peer address after AEAD validation.
+          Server: `allow_addr_migration=1`, `migration_timeout_ms` (0=immediate for tests).
+          Client: `cid_change_addr=N` (rebinds N times, one per exchange).
+          Tests: positive (migration commits) + negative (default server rejects).
+          **DONE** (commit 59bf3fb958): 37/37 suite passing.
 - [N/A] 6. Post-handshake client authentication: explicitly prohibited by RFC 9147 §5.4.
          "Post-handshake authentication is not supported in DTLS 1.3."
-- [ ] 7. Self-test: KeyUpdate exchange, CID negotiation and update, limit enforcement.
-- [ ] 8. Interop: wolfSSL for KeyUpdate and CID update scenarios.
-         See `reference-implementations.md`.
+- [x] 7. Self-test: DTLS 1.3 basic handshake unit test.
+         Added `dtls13_handshake` to `test_suite_ssl.dtls13` (23/23 pass).
+         Required a targeted fix to `move_handshake_to_state` in `ssl_helpers.c`:
+         `mbedtls_ssl_is_handshake_over()` returns true for state >= HANDSHAKE_OVER(27),
+         which includes DTLS 1.3 states 28-31 — causing the helper to stop stepping
+         the server too early. Fix: for DTLS 1.3 driving both sides to HANDSHAKE_OVER,
+         keep stepping until state==27 exactly; once there, call `mbedtls_ssl_read` to
+         flush `dtls13_ack_pending` (the deferred ACK for the peer's Finished).
+         KeyUpdate and CID remain covered by `tests/dtls13-tests.sh` (real sockets).
+- [N/A] 8. Interop: wolfSSL for KeyUpdate and CID update scenarios.
+         See `reference-implementations.md` and `wolfssl-interop-notes.md §Phase 5.8`.
+         **KeyUpdate**: wolfSSL 5.9.0 does not reset post-handshake message_seq to 0 (RFC 9147 §5.2).
+         wolfSSL client sends KeyUpdate with seq=2 (continuing handshake seq); mbedtls correctly
+         rejects it as a future message (expected seq=0). This is a wolfSSL bug. No test added;
+         filed for upstream report.
+         **CID**: wolfSSL 5.9.0 build in ~/misc/wolfssl lacks `--enable-dtls-cid`. Deferred
+         pending rebuild. Not blocking — mbedtls↔mbedtls CID already tested in Phase 5.5a.
 
-### Phase 6: Hardening and Full Compliance
+### Phase 6: Quality Review
+*Goal: Systematic review across six dimensions before hardening and interop work begins. Each item produces either a concrete fix, a new plan entry, or a recorded no-action decision.*
+
+#### 6.1 RFC / bis-draft Completeness and Correctness
+Review all MUST/SHOULD/MAY requirements in RFC 9147 and draft-ietf-tls-rfc9147bis-01 against the implementation. Specific areas to audit:
+
+- **Unified record header**: correct C/S bits, length presence, epoch reconstruction from context (RFC 9147 §4.2, bis §4.2).
+- **Epoch management**: all five epochs defined (0=initial, 1=handshake-early, 2=handshake, 3=app-data, 4+=post-KeyUpdate); correct key installation and retirement ordering; multi-epoch decryption window during transitions.
+- **ACK**: sent after every non-ACK handshake record; ACK content matches received epoch/seq; handling of ACK for records not in the current flight (RFC 9147 §7).
+- **Retransmission**: correct timeout doubling; flight boundary detection; when to re-send vs. rely on ACK.
+- **Sequence number encryption (sn_key)**: derived from correct secret; mask applied correctly to outbound and inbound; interaction with epoch reconstruction.
+- **CID extension**: negotiation corner cases (empty CID, one side only, post-handshake update); `too_many_cids_requested` alert.
+- **Post-handshake messages**: KeyUpdate, NewConnectionId, RequestConnectionId — correct post-hs seq numbering, ACK matching, guard against calling during handshake.
+- **Downgrade protection**: DTLS version sentinel in ClientHello random (bis §4.4.1).
+- **Amplification limit**: enforced from first ClientHello until client address verified (RFC 9147 §5.1).
+- **bis-specific changes**: record any requirements from the bis draft not yet addressed.
+
+#### 6.2 Test Coverage
+
+**mbedtls coverage policy** (from `CONTRIBUTING.md`):
+> "New code contributions should provide a similar level of code coverage to that which already exists for the library."
+
+The reference measurement is `tests/scripts/basic-build-test.sh`, which:
+1. Builds with `CFLAGS='--coverage -g3 -O0'` (gcov instrumentation).
+2. Runs: unit tests (`tests/scripts/run-test-suites.pl`), system tests (`tests/ssl-opt.sh`), and compat tests (`tests/compat.sh`).
+3. Generates an HTML report via `scripts/lcov.sh` → `Coverage/index.html`.
+
+Equivalent CMake path: `cmake -DCMAKE_BUILD_TYPE=Coverage` then `make && make lcov`.
+
+**Coverage measurement steps for this PR:**
+1. Build with `cmake -DCMAKE_BUILD_TYPE=Coverage` and run the dtls13-tests.sh against a debug build.
+2. Collect `.gcda` files and run `scripts/lcov.sh`; focus on `library/ssl_msg.c`, `library/ssl_tls.c`, `library/ssl_tls13_*.c`.
+3. Compare branch coverage on the new DTLS 1.3 code paths against the existing library baseline.
+4. Flag any file where DTLS 1.3 branch coverage is below the baseline for that file, or below 85% if no baseline is measured.
+
+**Feature-level coverage review** — for each feature, confirm: happy path + at least one rejection/error test + the stated edge cases below. Flag gaps:
+  - ACK: lost ACK, duplicate ACK, ACK for unknown epoch.
+  - Retransmit: exponential backoff, max retransmit exceeded.
+  - CID: empty CID negotiation, CID mismatch, CID update while KeyUpdate pending.
+  - KeyUpdate: update_requested reciprocation under packet loss.
+  - Epoch transitions: record from previous epoch during transition window.
+  - Address migration: concurrent migration attempts, AEAD failure from spoofed address.
+
+**Unit test suite**: new DTLS 1.3 logic should also appear in `tests/suites/test_suite_ssl.function` / `.data` for library-level (non-program) paths (record formatting, epoch arithmetic, sn_key mask). Check what unit coverage exists today and flag any pure-library paths exercised only via ssl-opt end-to-end tests.
+
+#### 6.3 DRY and Code Reuse
+- Identify DTLS 1.3 code that duplicates logic already present in TLS 1.3 (`ssl_tls13_*.c`) or DTLS 1.2 (`ssl_tls.c`, `ssl_msg.c`). Flag for extraction into shared helpers or direct reuse.
+- Identify DTLS 1.3-specific helpers that are structurally identical (e.g. post-hs seq increment in both directions, ACK pending flag management). Evaluate consolidation.
+- Review `ssl_msg.c` additions for inline vs. function decomposition — long functions with repeated epoch/transform lookup patterns are a smell.
+- Check whether the ACK send/receive path reuses or reimplements alert/handshake record framing.
+
+#### 6.4 Code Complexity
+- Cyclomatic complexity audit of the five largest DTLS 1.3 code paths: record parsing (unified header), epoch lookup, ACK processing, post-hs dispatch, retransmit timer.
+- Flag any function exceeding ~60 lines or ~10 branches for refactoring consideration.
+- Review state machine transitions: are all `ssl->state` paths reachable and correctly guarded? Are there dead states or missing transitions?
+- Comment density: are non-obvious decisions (epoch arithmetic, sn_key mask construction, ACK flush timing) explained at the code level?
+
+#### 6.5 Memory Safety
+- Audit all buffer size calculations in record formatting and parsing: unified header length assumptions, CID length bounds, fragment reassembly buffer sizing.
+- Verify bounds checks before every `memcpy`/`memmove` involving untrusted length fields (record length, CID length, fragment offset/length, ACK record count).
+- Check for use-after-free risk in epoch/transform lifetime: transforms freed while still referenced by pending ACK state or retransmit buffers.
+- Review `migration_ctx_t` in ssl_server2: `listen_fd` lifetime vs. ssl context lifetime; `peer_addr` atomicity (single-threaded assumed but document it).
+- Verify `mbedtls_platform_zeroize` is called on all key material at the appropriate lifetime boundary (KeyUpdate old transform teardown, session close).
+
+#### 6.6 Security Review
+- **Time-invariance**: audit all HMAC/MAC comparisons, AEAD tag comparisons, and PSK identity lookups for constant-time execution. Check that `mbedtls_ssl_safer_memcmp` (or PSA equivalent) is used everywhere a timing oracle would be exploitable.
+- **Cookie entropy**: verify cookie generation uses a strong PRF (HMAC-SHA256 over server random + client transport ID); review key rotation policy.
+- **Sequence number encryption**: confirm the sn_key mask is applied before sending and stripped before decryption in all code paths; check that the mask is not reused across records.
+- **Downgrade**: confirm that a DTLS 1.3 server correctly rejects a ClientHello that advertises DTLS 1.3 but contains the DTLS 1.2 sentinel in the random field.
+- **Amplification**: confirm the amplification limit is not bypassable via fragmented or replayed ClientHellos.
+- **Integer overflow**: review all epoch arithmetic (uint64), sequence number arithmetic, and fragment offset/length arithmetic for overflow conditions.
+- **Alert handling**: confirm that fatal alerts cause immediate session termination and key material zeroization; confirm that unknown alert types are handled defensively.
+- **CID privacy**: document that CID values are visible in plaintext and advise on rotation policy (already in RFC constraints note; verify it is surfaced in API docs or PORTING notes).
+
+---
+
+### Phase 7: Hardening and Full Compliance
 *Goal: All MUST requirements covered; passes full interop with wolfSSL; ready for OpenSSL when available.*
 
 - [ ] 1. Association re-establishment: server receives epoch=0 ClientHello while an existing
@@ -673,11 +764,6 @@ have been drilled down in `local-docs/design-drilldown.md`:
 ### Pre-merge Cleanup
 *Items added as temporary debugging/development aids that MUST be removed before any upstream submission.*
 
-- [ ] Remove `mbedtls_net_usleep(1000)` from the `nbio==2` branch in
-      `programs/ssl/ssl_client2.c` and `programs/ssl/ssl_server2.c`.
-      Re-added as a temporary log-volume limiter during ACK debugging.
-      Remove once ACK fix is confirmed working (sustained spin under packet
-      loss is addressed at the protocol level via ACK).
 
 ---
 

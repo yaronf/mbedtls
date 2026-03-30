@@ -1281,7 +1281,9 @@ void mbedtls_ssl_session_reset_msg_layer(mbedtls_ssl_context *ssl,
     ssl->keep_current_message = 0;
 
 #if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
-    if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3) {
+    if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+        ssl->conf != NULL &&
+        ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
         /* Collect post-KeyUpdate transforms into the epoch pool before nulling
          * transform_in / transform_out.  If no KeyUpdate occurred these pointers
          * alias transform_application (freed below) and must not be freed here. */
@@ -5187,7 +5189,9 @@ void mbedtls_ssl_free(mbedtls_ssl_context *ssl)
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 
 #if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
-    if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3) {
+    if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+        ssl->conf != NULL &&
+        ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
         /* After a KeyUpdate, transform_application is nulled out.  The current
          * transform_in / transform_out may point to freshly allocated post-KU
          * epochs not yet in the pool; insert those so ssl_dtls13_epoch_pool_free()

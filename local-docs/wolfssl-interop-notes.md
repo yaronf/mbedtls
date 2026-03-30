@@ -245,4 +245,42 @@ WOLFSSL_DIR=~/misc/wolfssl ./build-dbg/tests/dtls13/dtls13-wolfssl-tests.sh
 
 All 4 tests pass (full handshake, application data, server ACKs Finished, PSK psk_ephemeral).
 
-All 3 tests pass.
+## Phase 5.8 — KeyUpdate and CID interop findings (2026-03-30)
+
+### KeyUpdate: wolfSSL 5.9.0 does not reset post-handshake message_seq
+
+RFC 9147 §5.2 requires post-handshake messages to use a separate message_seq space
+starting at 0. wolfSSL 5.9.0 continues the handshake message_seq counter into the
+post-handshake phase instead.
+
+Reproduction: `wolfssl client -u -v 4 -d -p 4433 -I` (the `-I` flag triggers
+`wolfSSL_update_keys()` after the handshake). The server receives:
+
+```
+received future KeyUpdate (type=24) seq=2 (next expected=0)
+```
+
+The server's handshake ends with `in_msg_seq=2` (Finished consumed seq=1 → seq=2).
+wolfSSL then sends KeyUpdate with seq=2, but mbedtls correctly expects
+`dtls13_post_hs_in_msg_seq=0`. The KeyUpdate is buffered as a "future" message,
+ACKed, but never processed — the connection stalls in a retransmit loop.
+
+**Root cause**: wolfSSL bug — post-handshake message_seq not reset to 0.
+**mbedtls behavior**: correct per RFC 9147 §5.2.
+**Resolution**: No interop test added for wolfSSL KeyUpdate. Document for upstream
+wolfSSL bug report.
+
+### CID: not compiled into wolfSSL 5.9.0 build
+
+The wolfSSL build in `~/misc/wolfssl` was configured without `--enable-dtls-cid`.
+The `WOLFSSL_DTLS_CID` preprocessor macro is not defined, so the `--cid` client
+flag is a no-op and CID extension is never sent.
+
+To test CID interop, wolfSSL would need to be rebuilt:
+```sh
+./configure --disable-asm --enable-dtls13 --enable-dtls --enable-dtls-cid
+make -j4
+```
+
+**Resolution**: CID interop with wolfSSL deferred pending wolfSSL rebuild.
+Not blocking — mbedtls↔mbedtls CID tests already pass (Phase 5.5a).

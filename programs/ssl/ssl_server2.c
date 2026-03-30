@@ -3684,9 +3684,6 @@ handshake:
                 goto reset;
             }
         } else if (opt.nbio == 2) {
-            /* TEMPORARY: 1ms yield to limit log volume during DTLS 1.3
-             * ACK debugging.  Remove before merge. */
-            mbedtls_net_usleep(1000);
         }
     }
 
