@@ -59,6 +59,12 @@ export SSL_OPT_SOURCE_ONLY
 # shellcheck source=ssl-opt.sh
 . ./ssl-opt.sh "$@"
 
+# ssl-opt.sh sets DOG_DELAY inside its main() body which we skip.
+# Set it here so that client_needs_more_time() works correctly.
+: "${DOG_DELAY:=20}"
+CLI_DELAY_FACTOR=1
+SRV_DELAY_SECONDS=0
+
 # ======================================================================
 # Cases from: cid-update.yaml
 # ======================================================================
@@ -126,6 +132,34 @@ run_test    "DTLS 1.3 CID update: CID update: server requests new CID from clien
             -c "NewConnectionId sent" \
             -s "NewConnectionId received" \
             -c "ACK: NewConnectionId acknowledged"
+
+requires_protocol_version dtls13
+requires_config_enabled MBEDTLS_SSL_DTLS_CONNECTION_ID
+run_test    "DTLS 1.3 CID update: CID update: client rebinds socket (address migration)" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=3 cid=1 cid_val=deadbeef allow_addr_migration=1 migration_timeout_ms=0 exchanges=999 read_timeout=5000" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=3 cid=1 cid_val=cafebabe cid_change_addr=2 exchanges=4" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -s "Use of Connection ID has been negotiated." \
+            -c "Use of Connection ID has been negotiated." \
+            -c "cid_change_addr: address changed" \
+            -s "Address migrated to new peer"
+
+requires_protocol_version dtls13
+requires_config_enabled MBEDTLS_SSL_DTLS_CONNECTION_ID
+run_test    "DTLS 1.3 CID update: CID update: client address change rejected by default server (no migration)" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=3 cid=1 cid_val=deadbeef exchanges=999 read_timeout=5000" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=3 cid=1 cid_val=cafebabe cid_change_addr=1 exchanges=4 read_timeout=3000" \
+            1 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -s "Use of Connection ID has been negotiated." \
+            -c "Use of Connection ID has been negotiated." \
+            -c "cid_change_addr: address changed" \
+            -S "Address migrated to new peer"
 
 # ======================================================================
 # Cases from: cid.yaml

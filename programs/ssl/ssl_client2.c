@@ -66,6 +66,7 @@ int main(void)
 #define DFL_KEY_UPDATE          0
 #define DFL_SEND_NEW_CID        0
 #define DFL_REQUEST_CID         0
+#define DFL_CID_CHANGE_ADDR     0
 #define DFL_AEAD_LIMIT          0
 #define DFL_AUTH_FAIL_LIMIT     0
 #define DFL_EXCHANGES           1
@@ -317,7 +318,9 @@ int main(void)
     "    send_new_cid=%%d     default: 0 (disabled)\n"                     \
     "                        1: send NewConnectionId(immediate) after HS\n" \
     "    request_cid=%%d      default: 0 (disabled)\n"                     \
-    "                        N>0: send RequestConnectionId(N) after HS\n"
+    "                        N>0: send RequestConnectionId(N) after HS\n"  \
+    "    cid_change_addr=%%d  default: 0 (disabled)\n"                     \
+    "                        N>0: rebind UDP socket N times (one per exchange)\n"
 #else
 #define USAGE_CID_UPDATE ""
 #endif
@@ -529,6 +532,7 @@ struct options {
     int key_update;             /* send DTLS 1.3 KeyUpdate after handshake  */
     int send_new_cid;           /* send DTLS 1.3 NewConnectionId after HS   */
     int request_cid;            /* send DTLS 1.3 RequestConnectionId after HS */
+    int cid_change_addr;        /* rebind UDP socket N times mid-session    */
     uint64_t aead_limit;        /* DTLS 1.3 AEAD record limit (0=default)   */
     uint32_t auth_fail_limit;   /* DTLS 1.3 auth-fail limit (0=default)     */
     int exchanges;              /* number of data exchanges                 */
@@ -973,6 +977,7 @@ int main(int argc, char *argv[])
     opt.key_update          = DFL_KEY_UPDATE;
     opt.send_new_cid        = DFL_SEND_NEW_CID;
     opt.request_cid         = DFL_REQUEST_CID;
+    opt.cid_change_addr     = DFL_CID_CHANGE_ADDR;
     opt.aead_limit          = DFL_AEAD_LIMIT;
     opt.auth_fail_limit     = DFL_AUTH_FAIL_LIMIT;
     opt.exchanges           = DFL_EXCHANGES;
@@ -1225,6 +1230,11 @@ usage:
         } else if (strcmp(p, "request_cid") == 0) {
             opt.request_cid = atoi(q);
             if (opt.request_cid < 0 || opt.request_cid > 255) {
+                goto usage;
+            }
+        } else if (strcmp(p, "cid_change_addr") == 0) {
+            opt.cid_change_addr = atoi(q);
+            if (opt.cid_change_addr < 0) {
                 goto usage;
             }
         } else if (strcmp(p, "aead_limit") == 0) {
@@ -3109,6 +3119,28 @@ send_request:
      * 7d. Continue doing data exchanges?
      */
     if (--opt.exchanges > 0) {
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS) && \
+    defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+        /* Rebind UDP socket to simulate client address change (e.g. NAT rebind).
+         * Only when CID is negotiated — without CID the server cannot track us. */
+        if (opt.cid_change_addr > 0) {
+            int cid_enabled;
+            if (mbedtls_ssl_get_peer_cid(&ssl, &cid_enabled, NULL, NULL) == 0 &&
+                cid_enabled == MBEDTLS_SSL_CID_ENABLED) {
+                mbedtls_net_free(&server_fd);
+                if ((ret = mbedtls_net_connect(&server_fd,
+                                               opt.server_addr,
+                                               opt.server_port,
+                                               MBEDTLS_NET_PROTO_UDP)) != 0) {
+                    mbedtls_printf("  ! cid_change_addr: mbedtls_net_connect"
+                                   " returned -0x%x\n\n", (unsigned int) -ret);
+                    goto exit;
+                }
+                mbedtls_printf("  . cid_change_addr: address changed\n");
+                --opt.cid_change_addr;
+            }
+        }
+#endif /* TLS1_3 && DTLS && CID */
         goto send_request;
     }
 

@@ -30,6 +30,7 @@ int main(void)
 #endif
 
 #if !defined(_WIN32)
+#include <errno.h>
 #include <signal.h>
 #endif
 
@@ -101,6 +102,8 @@ int main(void)
 #define DFL_KEY_UPDATE          0
 #define DFL_SEND_NEW_CID        0
 #define DFL_REQUEST_CID         0
+#define DFL_ALLOW_ADDR_MIGRATION    0
+#define DFL_MIGRATION_TIMEOUT_MS    1000
 #define DFL_AEAD_LIMIT          0
 #define DFL_AUTH_FAIL_LIMIT     0
 #define DFL_RENEGO_DELAY        -2
@@ -423,10 +426,13 @@ int main(void)
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS) && \
     defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
 #define USAGE_CID_UPDATE \
-    "    send_new_cid=%%d     default: 0 (disabled)\n"                     \
-    "                        1: send NewConnectionId(immediate) after HS\n" \
-    "    request_cid=%%d      default: 0 (disabled)\n"                     \
-    "                        N>0: send RequestConnectionId(N) after HS\n"
+    "    send_new_cid=%%d          default: 0 (disabled)\n"                          \
+    "                             1: send NewConnectionId(immediate) after HS\n"     \
+    "    request_cid=%%d           default: 0 (disabled)\n"                          \
+    "                             N>0: send RequestConnectionId(N) after HS\n"       \
+    "    allow_addr_migration=%%d  default: 0 (disabled)\n"                          \
+    "                             1: accept client address changes (CID must be on)\n" \
+    "    migration_timeout_ms=%%d  default: 1000 ms; 0 = commit immediately\n"
 #else
 #define USAGE_CID_UPDATE ""
 #endif
@@ -681,6 +687,8 @@ struct options {
     int key_update;             /* send DTLS 1.3 KeyUpdate after handshake  */
     int send_new_cid;           /* send DTLS 1.3 NewConnectionId after HS   */
     int request_cid;            /* send DTLS 1.3 RequestConnectionId after HS */
+    int allow_addr_migration;   /* accept client address changes via CID    */
+    long migration_timeout_ms;  /* ms of old-addr silence before migrating  */
     uint64_t aead_limit;        /* DTLS 1.3 AEAD record limit (0=default)   */
     uint32_t auth_fail_limit;   /* DTLS 1.3 auth-fail limit (0=default)     */
     int renego_delay;           /* delay before enforcing renegotiation     */
@@ -1342,6 +1350,163 @@ static psa_status_t psa_setup_psk_key_slot(mbedtls_svc_key_id_t *slot,
 }
 #endif /* MBEDTLS_SSL_HANDSHAKE_WITH_PSK_ENABLED */
 
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS) && \
+    defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+#if !defined(_WIN32)
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/select.h>
+#endif
+/*
+ * Migration context: allows the server to receive from and send to a client
+ * that changes its source address mid-session (e.g. NAT rebind).
+ *
+ * The server uses a single unconnected socket (listen_fd) for both recv and
+ * send.  When a datagram arrives from a new source address, it is recorded as
+ * a candidate.  Migration is committed after 1 second of silence from the old
+ * address AND at least one AEAD-authenticated packet from the new address
+ * (validated by observing mbedtls_ssl_read returning application data).
+ */
+typedef struct {
+    int          listen_fd;                      /* unconnected bound UDP socket  */
+    struct sockaddr_storage peer_addr;           /* current authoritative peer    */
+    socklen_t    peer_addr_len;
+    struct sockaddr_storage candidate;           /* pending new peer address      */
+    socklen_t    candidate_len;
+    struct sockaddr_storage last_src;            /* src of most recent datagram   */
+    socklen_t    last_src_len;
+    int          candidate_active;              /* 1 if a candidate is pending   */
+    int          candidate_validated;           /* set by main loop after ssl_read > 0 */
+    struct timespec candidate_since;            /* time of last old-addr packet  */
+    long         migration_timeout_ms;          /* default 1000                  */
+} migration_ctx_t;
+
+static int migration_recv_cb(void *ctx, unsigned char *buf, size_t len)
+{
+    migration_ctx_t *mctx = (migration_ctx_t *) ctx;
+    struct sockaddr_storage src;
+    socklen_t src_len = sizeof(src);
+    int ret;
+
+    ret = (int) recvfrom(mctx->listen_fd, (char *) buf, len, 0,
+                         (struct sockaddr *) &src, &src_len);
+    if (ret < 0) {
+#if defined(_WIN32)
+        if (WSAGetLastError() == WSAEWOULDBLOCK) {
+            return MBEDTLS_ERR_SSL_WANT_READ;
+        }
+#else
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return MBEDTLS_ERR_SSL_WANT_READ;
+        }
+#endif
+        return MBEDTLS_ERR_NET_RECV_FAILED;
+    }
+
+    /* Record last source address for candidate_validated check in main loop. */
+    mctx->last_src     = src;
+    mctx->last_src_len = src_len;
+
+    /* Update migration state based on source address. */
+    if (src_len == mctx->peer_addr_len &&
+        memcmp(&src, &mctx->peer_addr, src_len) == 0) {
+        /* Packet from current peer — restart migration timer if pending. */
+        if (mctx->candidate_active) {
+            clock_gettime(CLOCK_MONOTONIC, &mctx->candidate_since);
+        }
+    } else if (mctx->candidate_active &&
+               src_len == mctx->candidate_len &&
+               memcmp(&src, &mctx->candidate, src_len) == 0) {
+        /* Packet from existing candidate — validation happens in main loop. */
+    } else {
+        /* New address — register as candidate. */
+        mctx->candidate           = src;
+        mctx->candidate_len       = src_len;
+        mctx->candidate_active    = 1;
+        mctx->candidate_validated = 0;
+        clock_gettime(CLOCK_MONOTONIC, &mctx->candidate_since);
+    }
+
+    return ret;
+}
+
+static int migration_recv_timeout_cb(void *ctx, unsigned char *buf, size_t len,
+                                     uint32_t timeout)
+{
+    migration_ctx_t *mctx = (migration_ctx_t *) ctx;
+    fd_set read_fds;
+    struct timeval tv;
+    int ret;
+
+    FD_ZERO(&read_fds);
+    FD_SET(mctx->listen_fd, &read_fds);
+
+    tv.tv_sec  = timeout / 1000;
+    tv.tv_usec = (timeout % 1000) * 1000;
+
+    ret = select(mctx->listen_fd + 1, &read_fds, NULL, NULL, &tv);
+    if (ret == 0) {
+        return MBEDTLS_ERR_SSL_TIMEOUT;
+    }
+    if (ret < 0) {
+        return MBEDTLS_ERR_NET_RECV_FAILED;
+    }
+
+    return migration_recv_cb(ctx, buf, len);
+}
+
+static int migration_send_cb(void *ctx, const unsigned char *buf, size_t len)
+{
+    migration_ctx_t *mctx = (migration_ctx_t *) ctx;
+    int ret;
+
+    ret = (int) sendto(mctx->listen_fd, (const char *) buf, len, 0,
+                       (const struct sockaddr *) &mctx->peer_addr,
+                       mctx->peer_addr_len);
+    if (ret < 0) {
+        return MBEDTLS_ERR_NET_SEND_FAILED;
+    }
+    return ret;
+}
+
+/* Check migration timer and commit if conditions are met.
+ * Call this after every mbedtls_ssl_read() invocation.
+ * Pass app_data_received=1 if ssl_read returned > 0. */
+static void migration_check_timer(migration_ctx_t *mctx, int app_data_received)
+{
+    struct timespec now;
+
+    if (!mctx->candidate_active) {
+        return;
+    }
+
+    /* Validate candidate: ssl_read delivered data and last datagram came from
+     * the candidate address. */
+    if (app_data_received &&
+        mctx->last_src_len == mctx->candidate_len &&
+        memcmp(&mctx->last_src, &mctx->candidate, mctx->last_src_len) == 0) {
+        mctx->candidate_validated = 1;
+    }
+
+    if (!mctx->candidate_validated) {
+        return;
+    }
+
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    long elapsed_ms = (now.tv_sec  - mctx->candidate_since.tv_sec)  * 1000L
+                    + (now.tv_nsec - mctx->candidate_since.tv_nsec) / 1000000L;
+
+    if (elapsed_ms >= mctx->migration_timeout_ms) {
+        mctx->peer_addr     = mctx->candidate;
+        mctx->peer_addr_len = mctx->candidate_len;
+        mctx->candidate_active    = 0;
+        mctx->candidate_validated = 0;
+        mbedtls_printf("  . Address migrated to new peer\n");
+        fflush(stdout);
+    }
+}
+#endif /* TLS1_3 && DTLS && CID */
+
 #if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
 static int report_cid_usage(mbedtls_ssl_context *ssl,
                             const char *additional_description)
@@ -1555,6 +1720,11 @@ int main(int argc, char *argv[])
     int ret = 0, len, written, frags, exchanges_left;
     int query_config_ret = 0;
     io_ctx_t io_ctx;
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS) && \
+    defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+    migration_ctx_t mctx;
+    memset(&mctx, 0, sizeof(mctx));
+#endif
     unsigned char *buf = 0;
 #if defined(MBEDTLS_SSL_HANDSHAKE_WITH_PSK_ENABLED)
     psa_algorithm_t alg = 0;
@@ -1755,6 +1925,8 @@ int main(int argc, char *argv[])
     opt.key_update          = DFL_KEY_UPDATE;
     opt.send_new_cid        = DFL_SEND_NEW_CID;
     opt.request_cid         = DFL_REQUEST_CID;
+    opt.allow_addr_migration = DFL_ALLOW_ADDR_MIGRATION;
+    opt.migration_timeout_ms = DFL_MIGRATION_TIMEOUT_MS;
     opt.aead_limit          = DFL_AEAD_LIMIT;
     opt.auth_fail_limit     = DFL_AUTH_FAIL_LIMIT;
     opt.renego_delay        = DFL_RENEGO_DELAY;
@@ -2062,6 +2234,16 @@ usage:
         } else if (strcmp(p, "request_cid") == 0) {
             opt.request_cid = atoi(q);
             if (opt.request_cid < 0 || opt.request_cid > 255) {
+                goto usage;
+            }
+        } else if (strcmp(p, "allow_addr_migration") == 0) {
+            opt.allow_addr_migration = atoi(q);
+            if (opt.allow_addr_migration < 0 || opt.allow_addr_migration > 1) {
+                goto usage;
+            }
+        } else if (strcmp(p, "migration_timeout_ms") == 0) {
+            opt.migration_timeout_ms = atol(q);
+            if (opt.migration_timeout_ms < 0) {
                 goto usage;
             }
         } else if (strcmp(p, "aead_limit") == 0) {
@@ -3758,6 +3940,38 @@ handshake:
         goto close_notify;
     }
 
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS) && \
+    defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+    if (opt.allow_addr_migration &&
+        opt.transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+        int cid_negotiated;
+        if (mbedtls_ssl_get_peer_cid(&ssl, &cid_negotiated, NULL, NULL) == 0 &&
+            cid_negotiated == MBEDTLS_SSL_CID_ENABLED) {
+            /* Retrieve the peer address that was recorded during accept. */
+            struct sockaddr_storage peer_addr;
+            socklen_t peer_addr_len = sizeof(peer_addr);
+            if (getpeername(client_fd.fd,
+                            (struct sockaddr *) &peer_addr, &peer_addr_len) == 0) {
+                mctx.listen_fd            = listen_fd.fd;
+                mctx.peer_addr            = peer_addr;
+                mctx.peer_addr_len        = peer_addr_len;
+                mctx.migration_timeout_ms = opt.migration_timeout_ms;
+                mbedtls_ssl_set_bio(&ssl, &mctx,
+                                    migration_send_cb,
+                                    migration_recv_cb,
+                                    opt.nbio == 0 ? migration_recv_timeout_cb : NULL);
+                mbedtls_printf("  . Address migration enabled\n");
+            } else {
+                mbedtls_printf("  ! allow_addr_migration: getpeername failed, "
+                               "migration disabled\n");
+            }
+        } else {
+            mbedtls_printf("  ! allow_addr_migration: CID not negotiated, "
+                           "migration disabled\n");
+        }
+    }
+#endif /* TLS1_3 && DTLS && CID */
+
     exchanges_left = opt.exchanges;
 data_exchange:
     /*
@@ -3901,6 +4115,11 @@ data_exchange:
                     mbedtls_printf(" connection was closed gracefully\n");
                     goto close_notify;
 
+                case MBEDTLS_ERR_SSL_TIMEOUT:
+                    mbedtls_printf(" timed out waiting for client\n");
+                    ret = 0;
+                    goto close_notify;
+
                 default:
                     mbedtls_printf(" mbedtls_ssl_read returned -0x%x\n", (unsigned int) -ret);
                     goto reset;
@@ -3911,6 +4130,13 @@ data_exchange:
         buf[len] = '\0';
         mbedtls_printf(" %d bytes read\n\n%s", len, (char *) buf);
         ret = 0;
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS) && \
+    defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+        if (opt.allow_addr_migration) {
+            migration_check_timer(&mctx, 1 /* app_data_received */);
+        }
+#endif
     }
 
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS)

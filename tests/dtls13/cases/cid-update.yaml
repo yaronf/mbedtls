@@ -107,3 +107,60 @@ cases:
         - client_new_cid_sent
         - server_new_cid_received
         - client_new_cid_acked
+
+  - name: "CID update: client rebinds socket (address migration)"
+    # Client changes UDP source port mid-session to simulate NAT rebind / address change.
+    # Server has allow_addr_migration=1: uses recvfrom on listen_fd, commits migration
+    # after 1s silence from old address with at least one validated packet from new address.
+    server:
+      debug_level: 3
+      cid: 1
+      cid_val: "deadbeef"
+      allow_addr_migration: 1
+      migration_timeout_ms: 0
+      exchanges: 999
+      read_timeout: 5000
+    client:
+      debug_level: 3
+      cid: 1
+      cid_val: "cafebabe"
+      cid_change_addr: 2
+      exchanges: 4
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - server_cid_negotiated
+        - client_cid_negotiated
+        - client_addr_changed
+        - server_addr_migrated
+
+  - name: "CID update: client address change rejected by default server (no migration)"
+    # Default server behavior: connected UDP socket filters by 5-tuple.
+    # After client rebinds, datagrams from the new source are dropped by the kernel.
+    # Client times out waiting for a reply; server times out waiting for more data.
+    # Verifies that migration is opt-in and the default is safe.
+    # Client exits non-zero (timeout); server exits 0 (clean timeout via read_timeout).
+    server:
+      debug_level: 3
+      cid: 1
+      cid_val: "deadbeef"
+      exchanges: 999
+      read_timeout: 5000
+    client:
+      debug_level: 3
+      cid: 1
+      cid_val: "cafebabe"
+      cid_change_addr: 1
+      exchanges: 4
+      read_timeout: 3000
+    expect:
+      exit: 1
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - server_cid_negotiated
+        - client_cid_negotiated
+        - client_addr_changed
+        - server_addr_not_migrated

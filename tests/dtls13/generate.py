@@ -190,7 +190,10 @@ def render_case(family, case, runner, runner_stem=""):
     exit_code = expect.get("exit", 0)
     assertions = render_assertions(expect.get("assert") or [], assertion_map)
 
-    # Emit run_test
+    # Emit run_test (optionally preceded by set_cli_delay_factor for slow tests)
+    slow_factor = case.get("slow")
+    if slow_factor:
+        lines.append(f'client_needs_more_time {slow_factor}')
     lines.append(f'run_test    "{full_name}" \\')
     if pxy_params:
         pxy_full = runner["proxy_cmd"] + " " + " ".join(pxy_params)
@@ -272,6 +275,12 @@ export SSL_OPT_SOURCE_ONLY
 
 # shellcheck source=ssl-opt.sh
 . ./ssl-opt.sh "$@"
+
+# ssl-opt.sh sets DOG_DELAY inside its main() body which we skip.
+# Set it here so that client_needs_more_time() works correctly.
+: "${{DOG_DELAY:=20}}"
+CLI_DELAY_FACTOR=1
+SRV_DELAY_SECONDS=0
 """
 
 EMIT_FOOTER = """\
