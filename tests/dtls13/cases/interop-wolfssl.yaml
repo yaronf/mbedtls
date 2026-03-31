@@ -41,6 +41,25 @@ cases:
         - client_dtls13_negotiated
         - server_ticket_issued
 
+  - name: "A: wolfSSL client sends KeyUpdate after handshake"
+    # wolfSSL -I calls wolfSSL_update_keys() after the handshake, sending
+    # KeyUpdate with message_seq continuing from the handshake (not reset to 0).
+    # Validates RFC 9147 §5.2: message_seq is NOT reset at HANDSHAKE_OVER.
+    # mbedtls bug fix: dtls13_post_hs_in_msg_seq must be initialized to
+    # handshake->in_msg_seq at HANDSHAKE_OVER, not left at 0.
+    # Without the fix: wolfSSL times out in a retransmit loop (KeyUpdate seq=2
+    # buffered as "future message", never processed).
+    server:
+      debug_level: 2
+    client:
+      wolfssl_keyupdate: true
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - server_read_client_data
+
   # NOTE: fragmentation (proxy MTU) is not included here because wolfSSL client
   # produces a "record layer version error" when receiving fragmented DTLS 1.3
   # records from mbedtls server. This is a wolfSSL limitation.

@@ -4,6 +4,7 @@ requires:
 
 cases:
   - name: "client sends KeyUpdate (update_not_requested)"
+    skip_runners: [wolfssl]
     server:
       debug_level: 2
     client:
@@ -21,6 +22,7 @@ cases:
         - server_key_update_inbound_installed
 
   - name: "server sends KeyUpdate (update_not_requested)"
+    skip_runners: [wolfssl]
     server:
       debug_level: 2
       key_update: 1
@@ -38,6 +40,7 @@ cases:
         - client_key_update_inbound_installed
 
   - name: "client sends KeyUpdate (update_requested) — server reciprocates"
+    skip_runners: [wolfssl]
     server:
       debug_level: 2
     client:
@@ -57,6 +60,7 @@ cases:
         - client_key_update_inbound_installed
 
   - name: "KeyUpdate followed by application data exchange"
+    skip_runners: [wolfssl]
     server:
       debug_level: 2
       key_update: 1
@@ -73,6 +77,7 @@ cases:
         - server_key_update_outbound_installed
 
   - name: "AEAD limit auto-triggers KeyUpdate on server"
+    skip_runners: [wolfssl]
     # aead_limit=3: server triggers KeyUpdate automatically after 3 outbound
     # records on an epoch (well before the exchange count exhausts them).
     server:
@@ -95,6 +100,7 @@ cases:
         - client_key_update_inbound_installed
 
   - name: "AEAD limit auto-triggers KeyUpdate on client"
+    skip_runners: [wolfssl]
     server:
       debug_level: 2
       exchanges: 4
@@ -115,6 +121,7 @@ cases:
         - server_key_update_inbound_installed
 
   - name: "auth-fail limit: server closes after too many bad MACs"
+    skip_runners: [wolfssl]
     # bad_ad proxy corrupts every ApplicationData record.
     # auth_fail_limit=1 on server → closes on the first bad inbound record.
     server:

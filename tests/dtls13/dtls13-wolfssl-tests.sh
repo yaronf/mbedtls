@@ -19,11 +19,51 @@ if ! cd "$(dirname "$0")"; then
     exit 125
 fi
 
+# When the dtls13/ directory is a symlink into a build tree (e.g.
+# build-dbg/tests/dtls13 -> <repo>/tests/dtls13), the shell resolves ".."
+# against the *real* path, so ssl-opt.sh's defaults for DATA_FILES_PATH and
+# P_SRV/P_CLI/P_PXY/P_QUERY all point into the source tree rather than the
+# build tree.  Detect this once and patch up any unset variables.
+# Use the logical (symlink-preserving) path so that ".." stays in the build
+# tree rather than escaping through the symlink into the source tree.
+_script_logical=$(cd "$(dirname "$0")" && pwd)    # logical path of dtls13/
+_build_tests=$(dirname "$_script_logical")         # …/tests
+_build_root=$(dirname "$_build_tests")             # …  (the cmake build root)
+_build_programs="$_build_root/programs"
+
+if [ -z "${DATA_FILES_PATH:-}" ] && [ -d "$_build_root/framework/data_files" ]; then
+    DATA_FILES_PATH="$_build_root/framework/data_files"
+    export DATA_FILES_PATH
+fi
+if [ -z "${P_SRV:-}" ] && [ -f "$_build_programs/ssl/ssl_server2" ]; then
+    P_SRV="$_build_programs/ssl/ssl_server2"
+    export P_SRV
+fi
+if [ -z "${P_CLI:-}" ] && [ -f "$_build_programs/ssl/ssl_client2" ]; then
+    P_CLI="$_build_programs/ssl/ssl_client2"
+    export P_CLI
+fi
+if [ -z "${P_PXY:-}" ] && [ -f "$_build_programs/test/udp_proxy" ]; then
+    P_PXY="$_build_programs/test/udp_proxy"
+    export P_PXY
+fi
+if [ -z "${P_QUERY:-}" ] && [ -f "$_build_programs/test/query_compile_time_config" ]; then
+    P_QUERY="$_build_programs/test/query_compile_time_config"
+    export P_QUERY
+fi
+unset _script_logical _build_tests _build_root _build_programs
+
 SSL_OPT_SOURCE_ONLY=1
 export SSL_OPT_SOURCE_ONLY
 
 # shellcheck source=ssl-opt.sh
 . ./ssl-opt.sh "$@"
+
+# ssl-opt.sh sets DOG_DELAY inside its main() body which we skip.
+# Set it here so that client_needs_more_time() works correctly.
+: "${DOG_DELAY:=20}"
+CLI_DELAY_FACTOR=1
+SRV_DELAY_SECONDS=0
 
 # ======================================================================
 # Cases from: fragmentation.yaml
@@ -103,6 +143,20 @@ run_test    "DTLS 1.3 wolfSSL interop: A: reconnect after NewSessionTicket" \
             -s "Protocol is DTLSv1.3" \
             -c "SSL version is DTLSv1.3" \
             -s "write new session ticket"
+
+requires_wolfssl
+run_test    "DTLS 1.3 wolfSSL interop: A: wolfSSL client sends KeyUpdate after handshake" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 auth_mode=none debug_level=2" \
+            "cd $WOLFSSL_DIR && $WOLFSSL_CLI -u -v 4 -d -p +SRV_PORT -I" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "SSL version is DTLSv1.3" \
+            -s "Read from client:"
+
+# ======================================================================
+# Cases from: keyupdate.yaml
+# ======================================================================
 
 # ======================================================================
 # Cases from: proxy-3d.yaml

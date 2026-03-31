@@ -7,9 +7,17 @@
 #
 # emit_path: output file when using --emit (relative to tests/dtls13/)
 emit_path: "dtls13-wolfssl-tests.sh"
-# case_glob: shared non-version-negotiation cases + wolfSSL-specific interop-A.
+# case_glob: shared non-CID, non-version-negotiation cases + wolfSSL-specific interop-A.
+# Explicitly excludes cid.yaml and cid-update.yaml: wolfSSL is not built with
+# --enable-dtls-cid so CID extension is not available.
 case_glob:
-  - "[!iv]*.yaml"
+  - "fragmentation.yaml"
+  - "handshake.yaml"
+  - "hrr-cookie.yaml"
+  - "keyupdate.yaml"
+  - "proxy-3d.yaml"
+  - "proxy-basic.yaml"
+  - "psk.yaml"
   - "interop-wolfssl.yaml"
 #
 # Prerequisites:
@@ -51,10 +59,33 @@ param_map:
   nbio:
     skip: true
   # wolfSSL client-specific flags (only valid in client_param_map)
-  wolfssl_psk:    "-s --openssl-psk"
-  wolfssl_hrr:    "-J"
-  wolfssl_resume: "-r"
-  wolfssl_ca:     "ca_file=$WOLFSSL_DIR/certs/ca-cert.pem"
+  wolfssl_psk:       "-s --openssl-psk"
+  wolfssl_hrr:       "-J"
+  wolfssl_resume:    "-r"
+  wolfssl_keyupdate: "-I"
+  wolfssl_ca:        "ca_file=$WOLFSSL_DIR/certs/ca-cert.pem"
+  # key_update is an mbedtls client/server param — wolfSSL uses -I (wolfssl_keyupdate)
+  key_update:
+    skip: true
+  aead_limit:
+    skip: true
+  auth_fail_limit:
+    skip: true
+  # CID params — wolfSSL not built with --enable-dtls-cid, skip all CID tests
+  cid:
+    skip: true
+  cid_val:
+    skip: true
+  send_new_cid:
+    skip: true
+  request_cid:
+    skip: true
+  allow_addr_migration:
+    skip: true
+  cid_change_addr:
+    skip: true
+  migration_timeout_ms:
+    skip: true
   # mbedtls client params — not applicable to wolfSSL server params
   reconnect:
     skip: true
@@ -71,9 +102,10 @@ param_map:
 # groups, etc.) must be skipped — wolfSSL client does not accept them.
 client_param_map:
   # wolfSSL client flags
-  wolfssl_psk:    "-s --openssl-psk"
-  wolfssl_hrr:    "-J"
-  wolfssl_resume: "-r"
+  wolfssl_psk:       "-s --openssl-psk"
+  wolfssl_hrr:       "-J"
+  wolfssl_resume:    "-r"
+  wolfssl_keyupdate: "-I"
   # wolfssl_ca: not a client-side param (passed to mbedtls server as ca_file)
   wolfssl_ca:
     skip: true
@@ -105,6 +137,26 @@ client_param_map:
   key_file:
     skip: true
   nbio:
+    skip: true
+  key_update:
+    skip: true
+  aead_limit:
+    skip: true
+  auth_fail_limit:
+    skip: true
+  cid:
+    skip: true
+  cid_val:
+    skip: true
+  send_new_cid:
+    skip: true
+  request_cid:
+    skip: true
+  allow_addr_migration:
+    skip: true
+  cid_change_addr:
+    skip: true
+  migration_timeout_ms:
     skip: true
   reconnect:
     skip: true
@@ -156,6 +208,9 @@ assertion_map:
   server_fragmented_hs:
     flag: "-s"
     string: "found fragmented DTLS handshake message"
+  server_keyupdate_received:
+    flag: "-s"
+    string: "KeyUpdate received"
   client_read_server_data:
     flag: "-c"
     string: "SSL version is DTLSv1.3"

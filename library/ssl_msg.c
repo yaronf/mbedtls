@@ -2992,15 +2992,13 @@ int mbedtls_ssl_write_handshake_msg_ext(mbedtls_ssl_context *ssl,
             /* Write message_seq and update it, except for HelloRequest */
             if (hs_type != MBEDTLS_SSL_HS_HELLO_REQUEST) {
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
-                /* RFC 9147 §5.2: post-handshake messages use an independent
-                 * message_seq space starting at 0.  Use the context-level
-                 * counter when we are truly post-handshake (state ==
-                 * HANDSHAKE_OVER) OR when handshake is NULL. */
-                /* RFC 9147 §5.2: post-handshake messages use an independent
-                 * message_seq space starting at 0.  Use the context-level
-                 * counter for KeyUpdate (always post-hs) and for any message
-                 * when handshake is NULL.  NST and other handshake-flight
-                 * messages continue to use handshake->out_msg_seq. */
+                /* RFC 9147 §5.2: message_seq is NOT reset at handshake
+                 * completion in DTLS 1.3.  dtls13_post_hs_msg_seq is
+                 * initialised to handshake->out_msg_seq at HANDSHAKE_OVER,
+                 * so post-HS messages continue the sequence.  Use it for
+                 * KeyUpdate/NewConnectionId (always post-HS) and when
+                 * handshake is NULL.  NST and other handshake-flight messages
+                 * still use handshake->out_msg_seq during finishing states. */
                 if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
                     ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
                     (ssl->handshake == NULL ||
@@ -3852,12 +3850,17 @@ int mbedtls_ssl_prepare_handshake_record(mbedtls_ssl_context *ssl)
              (mbedtls_ssl_is_handshake_over(ssl) == 1 &&
               ssl->in_msg[0] != MBEDTLS_SSL_HS_CLIENT_HELLO &&
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
-              /* RFC 9147 §5.2: KeyUpdate is a truly post-handshake message
-               * and uses an independent sequence number space starting at 0.
-               * All other messages (NST, Certificate, etc.) are part of the
-               * handshake flight and use the sequential handshake counter. */
+              /* RFC 9147 §5.2: message_seq is NOT reset at handshake
+               * completion in DTLS 1.3.  Post-handshake messages (KeyUpdate,
+               * NewConnectionId, etc.) continue the same counter.
+               * dtls13_post_hs_in_msg_seq is initialised to
+               * handshake->in_msg_seq at HANDSHAKE_OVER exactly.  During
+               * finishing states (NST_WAIT_ACK etc.) state > HANDSHAKE_OVER
+               * but handshake is still live — use handshake->in_msg_seq
+               * directly to avoid using the not-yet-synced post-hs counter. */
               (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
                ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+               ssl->state == MBEDTLS_SSL_HANDSHAKE_OVER &&
                (ssl->in_msg[0] == MBEDTLS_SSL_HS_KEY_UPDATE
 #if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
                 || ssl->in_msg[0] == MBEDTLS_SSL_HS_NEW_CONNECTION_ID
@@ -3874,6 +3877,7 @@ int mbedtls_ssl_prepare_handshake_record(mbedtls_ssl_context *ssl)
             uint16_t expected_seq =
                 (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
                  ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+                 ssl->state == MBEDTLS_SSL_HANDSHAKE_OVER &&
                  (ssl->in_msg[0] == MBEDTLS_SSL_HS_KEY_UPDATE
 #if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
                   || ssl->in_msg[0] == MBEDTLS_SSL_HS_NEW_CONNECTION_ID
@@ -8162,11 +8166,12 @@ static int ssl_handle_hs_message_post_handshake(mbedtls_ssl_context *ssl)
     if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3) {
         int ret = ssl_tls13_handle_hs_message_post_handshake(ssl);
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
-        /* RFC 9147 §5.2: post-hs messages use an independent seq number space.
-         * Advance the counter after successfully consuming the message so that
-         * the next post-hs message is accepted.  Only advance when handshake
-         * is NULL (truly post-handshake, not still-finishing states like
-         * TLS1_3_CLIENT_FINISHED_WAIT_ACK). */
+        /* RFC 9147 §5.2: message_seq is NOT reset at handshake completion in
+         * DTLS 1.3.  dtls13_post_hs_in_msg_seq is initialised to
+         * handshake->in_msg_seq at HANDSHAKE_OVER, so incrementing it here
+         * correctly tracks the continuing sequence across post-hs messages.
+         * Only advance when truly post-handshake (not still-finishing states
+         * like TLS1_3_CLIENT_FINISHED_WAIT_ACK where handshake is still live). */
         if (ret == 0 &&
             ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
             mbedtls_ssl_is_handshake_over(ssl)) {
