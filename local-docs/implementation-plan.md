@@ -698,7 +698,7 @@ Review all MUST/SHOULD/MAY requirements in RFC 9147 and draft-ietf-tls-rfc9147bi
 
 | Area | § | Status | Notes |
 |------|---|--------|-------|
-| Amplification limit (3× unverified data) | §5.1 | **NOT IMPLEMENTED** | No byte-count tracking. Mitigated by cookie-based address verification (f_cookie_write); operators using the cookie callback are effectively compliant. Operators not using it have no amplification protection. Flag for Phase 7 / API documentation. |
+| Amplification limit (3× unverified data) | §5.1 | **WON'T DO** | No byte-count tracking. Mitigated by cookie-based address verification (f_cookie_write); operators using the cookie callback are effectively compliant. Operators not using it have no amplification protection. |
 | Downgrade sentinel (ServerHello→client) | RFC 8446 §4.1.3 | ✓ | Inherited from TLS 1.3: `ssl_tls13_is_downgrade_negotiation()` checks last 8 bytes of ServerHello random for `"DOWNGRD\x00"` / `"DOWNGRD\x01"`. No DTLS-specific addition exists in RFC 9147 or bis-01. A ClientHello-side sentinel (client→server direction) has not been proposed in any published draft. |
 | Per-epoch anti-replay windows | §4.2 (SHOULD) | **DEFERRED** | Tracked in Phase 7 item 5. Current implementation resets the single window on each `set_inbound_transform`; RFC uses SHOULD. |
 | S bit (16-bit seq) always on | §4.1 | **DESIGN CHOICE** | RFC allows 8-bit seq. We always send 16-bit (S=1). Conservative, safe, interoperable with all known implementations. |
@@ -883,14 +883,14 @@ Audit completed 2026-03-31 (re-audited with Opus 4.6 1M context). Results:
 | 2 | Cookie entropy | PASS | 256-bit PSA random key, HMAC-SHA256, PSA constant-time verify. **Advisory:** no auto-rotation; long-lived servers should rotate manually |
 | 3 | SNE mask reuse | PASS | `ssl_dtls13_sne_compute_mask` computed fresh per record from current record's ciphertext sample; no caching; temporary transform zeroized after outbound use |
 | 4 | Downgrade protection | PASS | Client-side sentinel check via `ssl_tls13_is_downgrade_negotiation` (`ssl_tls13_client.c:1393`) runs for DTLS through shared `preprocess_server_hello` path |
-| 5 | Amplification bypass | ISSUE | **No 3x byte-count limit** per RFC 9147 §5.1. Cookie-based address verification mitigates but does not fully address. Already documented as NOT IMPLEMENTED in 6.1 compliance table; tracked for Phase 7 |
+| 5 | Amplification bypass | WON'T DO | No 3x byte-count limit per RFC 9147 §5.1. Conscious decision: mitigated by cookie-based address verification; documented in 6.1 compliance table |
 | 6 | Integer overflow | PASS | Seq counter wrapping detected and returns fatal error. **Advisory:** epoch `uint16_t` wrap at 65535→0 has no guard (unrealistic: requires 65K KeyUpdates) |
 | 7 | Alert handling | PASS | Epoch-0 alerts discarded post-handshake (epoch mismatch check); key material zeroized on context free; auth failure count capped by `dtls13_auth_fail_limit` |
 | 8 | ACK parsing | PASS | Bounds checks on list_len; multiple-of-16 validation; epoch-0 / duplicate / future-epoch entries silently ignored; errors non-fatal |
 | 9 | Record parsing | PASS | Unified header parser validates all lengths before use; truncated headers rejected; L=0 correctly treated as last-in-datagram; unknown epochs buffered or discarded |
 | 10 | Epoch pool | PASS | Ownership model sound; eviction by lowest epoch; double-insert guarded. **Advisory:** theoretical retransmit failure if >4 KeyUpdates during active retransmit window |
 
-**Amplification limit (#5):** Conscious design decision — mitigated by cookie-based address verification; already documented in 6.1 compliance table and deferred to Phase 7.
+**Amplification limit (#5):** Won't do — conscious design decision. Mitigated by cookie-based address verification; documented in 6.1 compliance table.
 
 **Advisories resolved:**
 - Cookie key rotation: pre-existing (same as DTLS 1.2); no action.
@@ -919,7 +919,6 @@ Audit completed 2026-03-31 (re-audited with Opus 4.6 1M context). Results:
          - Multi-epoch key retention during key transitions.
          - Fragment reassembly correctness with out-of-order and overlapping fragments.
          - Explicit record length validation within datagram bounds.
-         - Amplification limit enforced from the first ClientHello.
 - [ ] 7. Post-handshake idle timeout test.
          mbedtls exposes liveness detection via the timer callback pair
          (`mbedtls_ssl_set_timer_cb`): after the handshake, the application arms
@@ -966,7 +965,7 @@ Audit completed 2026-03-31 (re-audited with Opus 4.6 1M context). Results:
 - **Anti-replay window per epoch**: DTLS 1.2 window must not be shared across epoch boundary.
 - **ACK correctness**: never ACK a message that hasn't been processed or buffered — deadlock risk.
 - **Cookie statelessness**: server cookie must not require server state before address validation.
-- **Amplification factor**: server MUST NOT send more than 3x bytes received before address validated.
+- **Amplification factor**: not byte-counted (won't do); mitigated by cookie-based address verification.
 - **Epoch wrap = terminate**: if epoch would exceed 2^48-1 (sending) or 2^64-1 (full), terminate.
 - **Failed AEAD counter**: unlike TLS, DTLS silently drops invalid records, so we must track the failure count actively.
 
