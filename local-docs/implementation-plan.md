@@ -913,6 +913,18 @@ Audit completed 2026-03-31 (re-audited with Opus 4.6 1M context). Results:
 - [ ] 11. Full interop suite against wolfSSL covering all implemented features.
           See `reference-implementations.md`.
 - [ ] 12. Add OpenSSL interop when PR #26629 merges. See `reference-implementations.md`.
+- [ ] 13. Non-DTLS-1.3 build validation: compile the full library with
+          `MBEDTLS_SSL_PROTO_TLS1_3` enabled but DTLS 1.3 disabled (or with DTLS
+          disabled entirely), and with various config combinations (no TLS 1.3, no DTLS,
+          minimal config). Verify: no regressions, no new warnings, no dead-code
+          compiler errors, correct `#if` guards throughout. All existing non-DTLS-1.3
+          test suites must pass unchanged.
+- [ ] 14. Upstream rebase and merge-conflict analysis: review all mbedtls commits to
+          the affected files (`ssl_msg.c`, `ssl_tls.c`, `ssl_tls13_*.c`, `ssl_misc.h`)
+          since the 4.0.0 tag; identify conflicts and upstream changes that should be
+          incorporated; assess branch stability and decide on approach (rebase onto
+          current `development`, squash-merge, or long-lived feature branch with
+          periodic merge commits).
 
 ---
 
