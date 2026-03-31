@@ -919,7 +919,7 @@ Audit completed 2026-03-31 (re-audited with Opus 4.6 1M context). Results:
           minimal config). Verify: no regressions, no new warnings, no dead-code
           compiler errors, correct `#if` guards throughout. All existing non-DTLS-1.3
           test suites must pass unchanged.
-- [ ] 15. Fix mbedtls post-handshake message_seq bug (originally misattributed to wolfSSL).
+- [x] 15. Fix mbedtls post-handshake message_seq bug (originally misattributed to wolfSSL).
           **Finding** (revised 2026-03-31, see `wolfssl-interop-notes.md §Phase 5.8`):
           RFC 9147 §5.2 explicitly states that `message_seq` is NOT reset at the end of
           the handshake — it continues into the post-handshake phase to distinguish
@@ -927,10 +927,13 @@ Audit completed 2026-03-31 (re-audited with Opus 4.6 1M context). Results:
           a handshake consuming seqs 0–1) is correct. mbedtls is wrong: it initializes
           `dtls13_post_hs_in_msg_seq` to 0 at context creation rather than to
           `handshake->in_msg_seq` at handshake completion.
-          **Fix**: when setting `MBEDTLS_SSL_HANDSHAKE_OVER`, copy
-          `ssl->handshake->in_msg_seq` → `ssl->dtls13_post_hs_in_msg_seq`.
-          **Test**: add wolfSSL KeyUpdate interop test (client sends KeyUpdate after
-          handshake; verify mbedtls server accepts it and reciprocates correctly).
+          **Fix (commit 8234bcee75)**: In `mbedtls_ssl_handshake_set_state()`, when
+          entering `HANDSHAKE_OVER` exactly, sync both `dtls13_post_hs_in_msg_seq`
+          (inbound) and `dtls13_post_hs_msg_seq` (outbound) from handshake counters.
+          Also fixed the inbound seq check to use `handshake->in_msg_seq` directly
+          during finishing states (NST_WAIT_ACK etc.) where post-HS counter not yet synced.
+          **Test**: wolfSSL KeyUpdate interop test added — all 12 wolfSSL tests pass.
+          All 25 mbedtls dtls13 integration tests pass.
 - [ ] 14. Upstream rebase and merge-conflict analysis: review all mbedtls commits to
           the affected files (`ssl_msg.c`, `ssl_tls.c`, `ssl_tls13_*.c`, `ssl_misc.h`)
           since the 4.0.0 tag; identify conflicts and upstream changes that should be

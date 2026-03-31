@@ -278,12 +278,25 @@ The server's handshake ends with `in_msg_seq=2` (Finished consumed seq=1 → seq
 wolfSSL sends KeyUpdate with seq=2. mbedtls buffers it as "future", ACKs it, but
 never processes it — the connection stalls in a retransmit loop.
 
-**Root cause**: mbedtls bug — `dtls13_post_hs_in_msg_seq` should be initialized to
-`handshake->in_msg_seq` at handshake completion, not to 0.
-**Fix**: at the point `MBEDTLS_SSL_HANDSHAKE_OVER` is set, copy
-`ssl->handshake->in_msg_seq` into `ssl->dtls13_post_hs_in_msg_seq`.
-**Tracked**: Phase 7 item 15 (validate and file bug report — now confirmed an mbedtls
-bug, not a wolfSSL bug).
+**Root cause**: mbedtls bug — both `dtls13_post_hs_in_msg_seq` (inbound) and
+`dtls13_post_hs_msg_seq` (outbound) should be initialized to `handshake->in_msg_seq`
+and `handshake->out_msg_seq` respectively at handshake completion, not to 0.
+
+**Fix (implemented 2026-03-31, commit 8234bcee75)**:
+- In `mbedtls_ssl_handshake_set_state()` (ssl_misc.h): when transitioning to
+  `MBEDTLS_SSL_HANDSHAKE_OVER` exactly, sync both post-HS counters from handshake
+  counters.
+- In `ssl_msg.c` seq check: use `handshake->in_msg_seq` (not `dtls13_post_hs_in_msg_seq`)
+  when state is not exactly `HANDSHAKE_OVER` — during finishing states (NST_WAIT_ACK etc.)
+  the post-HS counter is not yet synced.
+- Added wolfSSL KeyUpdate interop test: `dtls13-wolfssl-tests.sh` case
+  "A: wolfSSL client sends KeyUpdate after handshake".
+
+**Verification**: All 25 mbedtls dtls13 integration tests pass. All 12 wolfSSL
+interop tests pass (including new KeyUpdate test). wolfSSL client -I now
+completes with exit=0 (no more retransmit loop).
+
+**Status**: FIXED (Phase 7 item 15 complete).
 
 ### CID: not compiled into wolfSSL 5.9.0 build
 
