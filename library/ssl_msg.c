@@ -3322,7 +3322,7 @@ int mbedtls_ssl_write_handshake_msg_ext(mbedtls_ssl_context *ssl,
 #endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 
         {
-#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS)
             /* DTLS 1.3: record the initial send's epoch and sequence number
              * in the just-appended flight item so ssl_dtls13_process_ack()
              * can match the original send.  The retransmit path records each
@@ -3366,7 +3366,7 @@ int mbedtls_ssl_write_handshake_msg_ext(mbedtls_ssl_context *ssl,
                     }
                 }
             }
-#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 && MBEDTLS_SSL_PROTO_DTLS */
             if ((ret = mbedtls_ssl_write_record(ssl, force_flush)) != 0) {
                 MBEDTLS_SSL_DEBUG_RET(1, "ssl_write_record", ret);
                 return ret;
@@ -5211,9 +5211,11 @@ static int ssl_prepare_record_content(mbedtls_ssl_context *ssl,
         transform_in->tls_version == MBEDTLS_SSL_VERSION_TLS1_3) {
         if (rec->type == MBEDTLS_SSL_MSG_CHANGE_CIPHER_SPEC) {
             done = 1;
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
         } else if (rec->type == MBEDTLS_SSL_MSG_ACK &&
                    MBEDTLS_GET_UINT16_BE(rec->ctr, 0) < ssl->in_epoch) {
             done = 1;
+#endif /* MBEDTLS_SSL_PROTO_DTLS */
         }
     }
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
@@ -5621,11 +5623,11 @@ int mbedtls_ssl_read_record(mbedtls_ssl_context *ssl,
                 if (dtls_have_buffered == 0) {
                     ret = ssl_get_next_record(ssl);
                     if (ret == MBEDTLS_ERR_SSL_CONTINUE_PROCESSING) {
-#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS)
                         /* Send any ACK scheduled while processing the
                          * discarded record before looping to fetch the next. */
                         ssl_dtls13_flush_ack_if_pending(ssl);
-#endif
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 && MBEDTLS_SSL_PROTO_DTLS */
                         continue;
                     }
 
@@ -7400,7 +7402,7 @@ static uint64_t ssl_dtls13_last_sent_seq(const mbedtls_ssl_context *ssl)
 }
 #endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 
-#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS)
 /* Resolve the ciphersuite, hash algorithm, and hash length from the active
  * session.  Used by all three KeyUpdate functions. */
 MBEDTLS_CHECK_RETURN_CRITICAL
@@ -7421,7 +7423,7 @@ static int ssl_tls13_session_hash_info(
     *hash_len = PSA_HASH_LENGTH(*hash_alg);
     return 0;
 }
-#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 && MBEDTLS_SSL_PROTO_DTLS */
 
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
 /* Retire a transform to the epoch pool (if not already present) and set any
