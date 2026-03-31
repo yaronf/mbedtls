@@ -707,6 +707,8 @@ Review all MUST/SHOULD/MAY requirements in RFC 9147 and draft-ietf-tls-rfc9147bi
 
 Measured 2026-03-31. Build: `cmake -DCMAKE_C_FLAGS="--coverage -O0 -g3"`, ran CTest (131 unit suites) + `tests/dtls13/dtls13-tests.sh` (integration tests). Note: `development` branch has a broken CMake (`generate_config_checks.py` submodule mismatch), so the baseline is computed as coverage of pre-existing lines in the same 4 files on the `dtls13` build.
 
+**Target:** ≥70% branch coverage on new DTLS 1.3 lines (revised up from initial 60% target based on actual achievability).
+
 **Key finding:** `dtls13-tests.sh` was not wired into CTest. Fixed as part of this phase — wired as `dtls13-integration-suite` (test #132). Without it CTest alone gave 40.8% branch coverage on new code.
 
 **Coverage comparison: new DTLS 1.3 code vs pre-existing code in the same files**
