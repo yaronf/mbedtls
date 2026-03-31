@@ -730,7 +730,7 @@ New code is **+13.4 pp** branch coverage and **+8.2 pp** line coverage vs baseli
 | ssl_tls13_server.c | 65.6% (59/90) | 54.3% (354/652) | 84.9% | 80.8% |
 | ssl_tls.c | 89.5% (34/38) | 60.2% (916/1521) | 100.0% | 74.3% |
 
-**Remaining gaps in new code (tracked for Phase 7):**
+**Remaining gaps in new code (tracked in Phase 7 item 8):**
 - `ssl_tls13_server.c` 65.6%: HRR+cookie error paths, EncryptedExtensions CID error paths
 - `ssl_msg.c` 72.7%: KeyUpdate error/cleanup paths, CID NewConnectionId/RequestConnectionId parsing errors, SNE AES path (ChaCha20 only exercised currently), cross-epoch retransmit eviction path, `dtls13_wait_ack_step` implicit-ACK path
 
@@ -932,13 +932,23 @@ Audit completed 2026-03-31 (re-audited with Opus 4.6 1M context). Results:
          Note: RFC 6520 heartbeat is in a grey zone for TLS/DTLS 1.3 (not mentioned
          in RFC 9147, no update to 6520 covering 1.3). Application-layer keepalive
          via the timer mechanism is the standards-track approach.
-- [ ] 8. Fuzz testing: record parser (unified header, epoch reconstruction, fragment
+- [ ] 8. Coverage gaps from Phase 6.2 (currently at 72.7% branch / target ≥70%; specific
+         uncovered paths to close):
+         - `ssl_tls13_server.c`: HRR+cookie write/check failure paths; EncryptedExtensions
+           CID error paths.
+         - `ssl_msg.c`: KeyUpdate error and cleanup paths; CID NewConnectionId /
+           RequestConnectionId parsing errors; SNE AES path (currently only ChaCha20 /
+           AES-GCM exercised); cross-epoch retransmit eviction path (epoch evicted from
+           pool during active retransmit); `dtls13_wait_ack_step` implicit-ACK and
+           timeout paths.
+         Target: ≥80% branch coverage on new DTLS 1.3 lines after Phase 7 tests.
+- [ ] 9. Fuzz testing: record parser (unified header, epoch reconstruction, fragment
          reassembly), ACK parser.
-- [ ] 9. Security review: cookie generation entropy, sn_key derivation ordering, epoch
-         wrap, failed AEAD counter enforcement, downgrade sentinel checks.
-- [ ] 10. Full interop suite against wolfSSL covering all implemented features.
+- [ ] 10. Security review: cookie generation entropy, sn_key derivation ordering, epoch
+          wrap, failed AEAD counter enforcement, downgrade sentinel checks.
+- [ ] 11. Full interop suite against wolfSSL covering all implemented features.
           See `reference-implementations.md`.
-- [ ] 11. Add OpenSSL interop when PR #26629 merges. See `reference-implementations.md`.
+- [ ] 12. Add OpenSSL interop when PR #26629 merges. See `reference-implementations.md`.
 
 ---
 
