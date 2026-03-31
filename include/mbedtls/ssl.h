@@ -1616,7 +1616,7 @@ struct mbedtls_ssl_config {
 typedef struct {
     uint64_t epoch;                   /*!< full 64-bit epoch value; 0=empty  */
     mbedtls_ssl_transform *transform; /*!< NULL when slot is empty           */
-    uint64_t retired_at_ms;           /*!< monotonic ms when superseded      */
+    uint64_t retired_at_ms;           /*!< eviction key: epoch number (lower = older, evicted first); name is historical */
     unsigned char out_ctr[8];         /*!< outbound counter for this epoch   */
     /* Per-epoch anti-replay window (RFC 9147 §4.2.1).
      * Mirrors in_window / in_window_top in ssl_context but scoped to this

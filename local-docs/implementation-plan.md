@@ -909,10 +909,20 @@ Audit completed 2026-03-31 (re-audited with Opus 4.6 1M context). Results:
          drop testing requires delayed application-data replay across epoch boundary;
          not achievable with the current proxy (duplicate=1 only duplicates HS records
          immediately after originals). The fix is correct per code review.
-- [ ] 6. Verify all Appendix C implementation pitfalls are covered:
-         - Multi-epoch key retention during key transitions.
-         - Fragment reassembly correctness with out-of-order and overlapping fragments.
-         - Explicit record length validation within datagram bounds.
+- [x] 6. Verify all Appendix C implementation pitfalls are covered.
+         Audited (2026-03-31): all three areas compliant.
+         - Multi-epoch key retention: epoch pool (size 4) correctly retains retired
+           inbound transforms for reordered records; eviction is FIFO by epoch number
+           (not MSL timer, which RFC 9147 only SHOULDs). No premature freeing found.
+           Minor: `retired_at_ms` field name in ssl.h was misleading (stores epoch
+           number, not a timestamp); comment clarified.
+         - Fragment reassembly: bitmask-based reassembly correctly handles overlapping
+           and out-of-order fragments; epoch validation occurs above reassembly layer;
+           fragment header consistency enforced across fragments of same message_seq.
+         - Record length validation: explicit length field validated against datagram
+           bounds at two independent layers (ssl_parse_dtls13_record_header line 4576
+           and ssl_parse_record_header line 5030). L=0 case (no length field) is
+           trivially safe (length = remaining bytes). No bypass paths found.
 - [ ] 7. Post-handshake idle timeout test.
          mbedtls exposes liveness detection via the timer callback pair
          (`mbedtls_ssl_set_timer_cb`): after the handshake, the application arms
