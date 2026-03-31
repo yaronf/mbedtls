@@ -735,42 +735,7 @@ New code is **+13.4 pp** branch coverage and **+8.2 pp** line coverage vs baseli
 - `ssl_msg.c` 72.7%: KeyUpdate error/cleanup paths, CID NewConnectionId/RequestConnectionId parsing errors, SNE AES path (ChaCha20 only exercised currently), cross-epoch retransmit eviction path, `dtls13_wait_ack_step` implicit-ACK path
 
 #### [x] 6.3 DRY and Code Reuse
-*Target: −1,100 net library lines (20% of ~5,500 added). Highest-yield items first.*
-
-- [ ] **a. `ssl_dtls13_sne_apply` defined twice** (`ssl_msg.c` lines 3384 and 4718).
-       One is a forward declaration region, the other the real body — or they are
-       near-identical. Audit and collapse to a single definition. Est. −100–200 lines.
-
-- [ ] **b. Repeated epoch/transform lookup boilerplate** in `ssl_msg.c`.
-       Pattern `ssl_dtls13_epoch_pool_lookup(ssl, epoch)` + null-check + error path
-       appears many times inline. Extract a `ssl_dtls13_get_transform_or_drop()` helper
-       that encapsulates the lookup + drop-with-log path. Est. −80–120 lines.
-
-- [ ] **c. Near-duplicate key derivation calls in `ssl_tls13_keys.c`** (+728 lines).
-       DTLS 1.3 label prefix switching added ~728 lines of near-copies of existing
-       TLS 1.3 derivation calls, differing only in the `"dtls13"` vs `"tls13 "` prefix.
-       Parameterize `ssl_tls13_derive_secret_with_prefix()` and replace all call-sites
-       that duplicate the TLS 1.3 version. Est. −200–300 lines.
-
-- [ ] **d. Post-handshake message_seq increment duplicated** across
-       `ssl_tls13_write_key_update`, `ssl_tls13_write_new_connection_id`,
-       `ssl_tls13_write_request_connection_id`. Extract a single
-       `ssl_dtls13_post_hs_msg_seq_next()` inline and reuse. Est. −30–50 lines.
-
-- [ ] **e. `ssl_tls13_server.c` / `ssl_tls13_client.c` epoch-wiring code** (+404/+382).
-       Version negotiation and epoch-wiring additions likely duplicate guards already
-       present for TLS 1.3. Audit for `#if DTLS` blocks that replicate adjacent
-       non-DTLS code paths and consolidate. Est. −150–250 lines.
-
-- [ ] **f. ACK record framing vs. existing record write path**.
-       Confirm whether `ssl_dtls13_write_ack` calls `mbedtls_ssl_write_record` or
-       reimplements header construction. If the latter, refactor to reuse the existing
-       path. Est. −50–100 lines.
-
-- [ ] **g. Comments / blank lines density in long functions**.
-       `process_ack` (~734 lines gap), `sne_apply` impl (~large). Review for
-       redundant multi-line block comments restating the code, and compress.
-       Est. −80–150 lines.
+*Target: −1,100 net library lines (20% of ~5,500 added). Achieved: −900 net LOC.*
 
 #### [x] 6.4 Code Complexity
 - Cyclomatic complexity audit of the five largest DTLS 1.3 code paths: record parsing (unified header), epoch lookup, ACK processing, post-hs dispatch, retransmit timer.
