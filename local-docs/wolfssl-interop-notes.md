@@ -247,28 +247,43 @@ All 4 tests pass (full handshake, application data, server ACKs Finished, PSK ps
 
 ## Phase 5.8 — KeyUpdate and CID interop findings (2026-03-30)
 
-### KeyUpdate: wolfSSL 5.9.0 does not reset post-handshake message_seq
+### KeyUpdate: mbedtls post-handshake message_seq counter starts at 0 — MBEDTLS BUG
 
-RFC 9147 §5.2 requires post-handshake messages to use a separate message_seq space
-starting at 0. wolfSSL 5.9.0 continues the handshake message_seq counter into the
-post-handshake phase instead.
+**FINDING REVISED 2026-03-31**: The original attribution to wolfSSL was incorrect.
+
+RFC 9147 §5.2 states explicitly:
+> "Note: In DTLS 1.2, the message_seq was reset to zero in case of a rehandshake
+> (i.e., renegotiation). On the surface, a rehandshake in DTLS 1.2 shares similarities
+> with a post-handshake message exchange in DTLS 1.3. However, in DTLS 1.3 the
+> message_seq is **not** reset, to allow distinguishing a retransmission from a
+> previously sent post-handshake message from a newly sent post-handshake message."
+
+wolfSSL 5.9.0 continues the handshake `message_seq` counter into the post-handshake
+phase (sending KeyUpdate with seq=2 after a handshake that consumed seqs 0 and 1).
+This is **correct per the RFC**.
+
+mbedtls uses a separate `dtls13_post_hs_in_msg_seq` counter (`ssl_context`, `ssl.h:1790`)
+initialized to 0 at context creation and incremented independently. This is **wrong**:
+it expects seq=0 for the first post-handshake message regardless of the handshake
+sequence count, causing wolfSSL's seq=2 KeyUpdate to be buffered as a "future" message.
 
 Reproduction: `wolfssl client -u -v 4 -d -p 4433 -I` (the `-I` flag triggers
-`wolfSSL_update_keys()` after the handshake). The server receives:
+`wolfSSL_update_keys()` after the handshake). The mbedtls server receives:
 
 ```
 received future KeyUpdate (type=24) seq=2 (next expected=0)
 ```
 
 The server's handshake ends with `in_msg_seq=2` (Finished consumed seq=1 → seq=2).
-wolfSSL then sends KeyUpdate with seq=2, but mbedtls correctly expects
-`dtls13_post_hs_in_msg_seq=0`. The KeyUpdate is buffered as a "future" message,
-ACKed, but never processed — the connection stalls in a retransmit loop.
+wolfSSL sends KeyUpdate with seq=2. mbedtls buffers it as "future", ACKs it, but
+never processes it — the connection stalls in a retransmit loop.
 
-**Root cause**: wolfSSL bug — post-handshake message_seq not reset to 0.
-**mbedtls behavior**: correct per RFC 9147 §5.2.
-**Resolution**: No interop test added for wolfSSL KeyUpdate. Document for upstream
-wolfSSL bug report.
+**Root cause**: mbedtls bug — `dtls13_post_hs_in_msg_seq` should be initialized to
+`handshake->in_msg_seq` at handshake completion, not to 0.
+**Fix**: at the point `MBEDTLS_SSL_HANDSHAKE_OVER` is set, copy
+`ssl->handshake->in_msg_seq` into `ssl->dtls13_post_hs_in_msg_seq`.
+**Tracked**: Phase 7 item 15 (validate and file bug report — now confirmed an mbedtls
+bug, not a wolfSSL bug).
 
 ### CID: not compiled into wolfSSL 5.9.0 build
 

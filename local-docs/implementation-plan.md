@@ -919,19 +919,18 @@ Audit completed 2026-03-31 (re-audited with Opus 4.6 1M context). Results:
           minimal config). Verify: no regressions, no new warnings, no dead-code
           compiler errors, correct `#if` guards throughout. All existing non-DTLS-1.3
           test suites must pass unchanged.
-- [ ] 15. wolfSSL KeyUpdate bug: validate the finding, then file a bug report.
-          **Finding** (from `wolfssl-interop-notes.md §Phase 5.8`): wolfSSL client sends
-          KeyUpdate with `message_seq=2` (not reset to 0 after handshake). mbedtls server
-          correctly expects `dtls13_post_hs_in_msg_seq=0` per RFC 9147 §5.2 and buffers
-          the message as "future", causing a retransmit loop.
-          **Validation steps:**
-          1. Confirm the bug is still present in latest wolfSSL `master`.
-          2. Bisect to the commit that introduced it (or confirm it was never fixed).
-          3. Verify mbedtls behavior is correct: RFC 9147 §5.2 states post-handshake
-             messages use a sequence space independent of the handshake, starting at 0.
-          **Bug report must include:** exact wolfSSL version, reproduction command,
-          observed vs expected `message_seq`, RFC 9147 §5.2 citation, mbedtls debug log
-          excerpt showing the buffered-future-message path, and a minimal test case.
+- [ ] 15. Fix mbedtls post-handshake message_seq bug (originally misattributed to wolfSSL).
+          **Finding** (revised 2026-03-31, see `wolfssl-interop-notes.md §Phase 5.8`):
+          RFC 9147 §5.2 explicitly states that `message_seq` is NOT reset at the end of
+          the handshake — it continues into the post-handshake phase to distinguish
+          retransmissions from new messages. wolfSSL sending KeyUpdate with seq=2 (after
+          a handshake consuming seqs 0–1) is correct. mbedtls is wrong: it initializes
+          `dtls13_post_hs_in_msg_seq` to 0 at context creation rather than to
+          `handshake->in_msg_seq` at handshake completion.
+          **Fix**: when setting `MBEDTLS_SSL_HANDSHAKE_OVER`, copy
+          `ssl->handshake->in_msg_seq` → `ssl->dtls13_post_hs_in_msg_seq`.
+          **Test**: add wolfSSL KeyUpdate interop test (client sends KeyUpdate after
+          handshake; verify mbedtls server accepts it and reciprocates correctly).
 - [ ] 14. Upstream rebase and merge-conflict analysis: review all mbedtls commits to
           the affected files (`ssl_msg.c`, `ssl_tls.c`, `ssl_tls13_*.c`, `ssl_misc.h`)
           since the 4.0.0 tag; identify conflicts and upstream changes that should be
