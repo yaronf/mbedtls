@@ -164,3 +164,91 @@ cases:
         - client_cid_negotiated
         - client_addr_changed
         - server_addr_not_migrated
+
+  - name: "bad NewConnectionId: truncated body triggers server decode_error"
+    skip_runners: [wolfssl]
+    # Client sends a NewConnectionId with a 1-byte body (list_len field truncated).
+    # Server must reject with decode_error and close the connection.
+    server:
+      debug_level: 2
+      cid: 1
+      cid_val: "deadbeef"
+    client:
+      debug_level: 2
+      cid: 1
+      cid_val: "cafebabe"
+      bad_new_cid: 1
+    expect:
+      exit: 1
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - server_cid_negotiated
+        - client_cid_negotiated
+        - server_new_cid_not_accepted
+
+  - name: "bad NewConnectionId: list_len=0 triggers server decode_error"
+    skip_runners: [wolfssl]
+    # Client sends a NewConnectionId with list_len=0 (must be >=1 per RFC).
+    # Server must reject with decode_error.
+    server:
+      debug_level: 2
+      cid: 1
+      cid_val: "deadbeef"
+    client:
+      debug_level: 2
+      cid: 1
+      cid_val: "cafebabe"
+      bad_new_cid: 2
+    expect:
+      exit: 1
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - server_cid_negotiated
+        - client_cid_negotiated
+        - server_new_cid_not_accepted
+
+  - name: "bad NewConnectionId: cid_len too large triggers server illegal_parameter"
+    skip_runners: [wolfssl]
+    # Client sends a NewConnectionId with cid_len > MBEDTLS_SSL_CID_OUT_LEN_MAX.
+    # Server must reject with illegal_parameter.
+    server:
+      debug_level: 2
+      cid: 1
+      cid_val: "deadbeef"
+    client:
+      debug_level: 2
+      cid: 1
+      cid_val: "cafebabe"
+      bad_new_cid: 3
+    expect:
+      exit: 1
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - server_cid_negotiated
+        - client_cid_negotiated
+        - server_new_cid_not_accepted
+
+  - name: "bad RequestConnectionId: empty body triggers server decode_error"
+    skip_runners: [wolfssl]
+    # Client sends a RequestConnectionId with 0-byte body (needs 1 byte for num_cids).
+    # Server must reject with decode_error.
+    server:
+      debug_level: 2
+      cid: 1
+      cid_val: "deadbeef"
+    client:
+      debug_level: 2
+      cid: 1
+      cid_val: "cafebabe"
+      bad_req_cid: 1
+    expect:
+      exit: 1
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - server_cid_negotiated
+        - client_cid_negotiated
+        - server_req_cid_not_accepted

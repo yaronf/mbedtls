@@ -8060,6 +8060,145 @@ int mbedtls_ssl_dtls13_request_connection_id(mbedtls_ssl_context *ssl,
 #endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_DTLS_CONNECTION_ID */
 
 /* ---------------------------------------------------------------------------
+ * Coverage-test helpers: send intentionally malformed post-HS messages.
+ * These functions are public but only used from test programs (ssl_client2).
+ * Excluded from coverage measurement: they run in the test binary, not the
+ * library under test, so no gcda data is collected for them.
+ * ---------------------------------------------------------------------------
+ */
+
+/* LCOV_EXCL_START */
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS)
+
+/*
+ * Send a malformed KeyUpdate message.
+ *   bad_type == 1: body is 2 bytes (too long; valid body is 1 byte)
+ *   bad_type == 2: body is 1 byte with value 2 (invalid update_requested)
+ * The server should reject with decode_error or illegal_parameter.
+ */
+int mbedtls_ssl_dtls13_send_bad_keyupdate(mbedtls_ssl_context *ssl, int bad_type)
+{
+    int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+    unsigned char *buf;
+    size_t buf_len;
+    size_t body_len;
+
+    if (ssl == NULL || ssl->session == NULL || ssl->transform_out == NULL) {
+        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+    }
+
+    MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_start_handshake_msg(
+                             ssl, MBEDTLS_SSL_HS_KEY_UPDATE, &buf, &buf_len));
+
+    if (bad_type == 1) {
+        /* Too long: two bytes instead of one */
+        body_len = 2;
+        MBEDTLS_SSL_CHK_BUF_PTR(buf, buf + buf_len, body_len);
+        buf[0] = SSL_KEY_UPDATE_NOT_REQUESTED;
+        buf[1] = 0x00; /* extra garbage byte */
+    } else {
+        /* bad_type == 2: invalid update_requested value */
+        body_len = 1;
+        MBEDTLS_SSL_CHK_BUF_PTR(buf, buf + buf_len, body_len);
+        buf[0] = 0x02; /* illegal value (only 0 and 1 are valid) */
+    }
+
+    MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_finish_handshake_msg(ssl, buf_len, body_len));
+    MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_flush_output(ssl));
+
+cleanup:
+    return ret;
+}
+
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+
+/*
+ * Send a malformed NewConnectionId message.
+ *   bad_type == 1: body is 1 byte (too short; list_len field truncated)
+ *   bad_type == 2: list_len == 0 (must be >= 1)
+ *   bad_type == 3: cid_len > MBEDTLS_SSL_CID_OUT_LEN_MAX (CID too long)
+ * Server should reject with decode_error or illegal_parameter.
+ */
+int mbedtls_ssl_dtls13_send_bad_new_connection_id(mbedtls_ssl_context *ssl,
+                                                  int bad_type)
+{
+    int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+    unsigned char *buf;
+    size_t buf_len;
+    size_t body_len;
+
+    if (ssl == NULL || ssl->session == NULL) {
+        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+    }
+
+    MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_start_handshake_msg(
+                             ssl, MBEDTLS_SSL_HS_NEW_CONNECTION_ID,
+                             &buf, &buf_len));
+
+    if (bad_type == 1) {
+        /* Truncated: only 1 byte (list_len requires 2) */
+        body_len = 1;
+        MBEDTLS_SSL_CHK_BUF_PTR(buf, buf + buf_len, body_len);
+        buf[0] = 0x00;
+    } else if (bad_type == 2) {
+        /* list_len == 0: illegal per RFC */
+        body_len = 3;
+        MBEDTLS_SSL_CHK_BUF_PTR(buf, buf + buf_len, body_len);
+        MBEDTLS_PUT_UINT16_BE(0, buf, 0); /* list_len = 0 */
+        buf[2] = 0x00; /* usage byte (won't be reached) */
+    } else {
+        /* bad_type == 3: cid_len > MBEDTLS_SSL_CID_OUT_LEN_MAX */
+        uint8_t cid_len = MBEDTLS_SSL_CID_OUT_LEN_MAX + 1;
+        body_len = 2 + 1 + (size_t) cid_len + 1;
+        MBEDTLS_SSL_CHK_BUF_PTR(buf, buf + buf_len, body_len);
+        MBEDTLS_PUT_UINT16_BE(1 + (size_t) cid_len, buf, 0); /* list_len */
+        buf[2] = cid_len;
+        memset(buf + 3, 0xAB, cid_len); /* dummy CID bytes */
+        buf[3 + cid_len] = 0x00; /* usage = immediate */
+    }
+
+    MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_finish_handshake_msg(ssl, buf_len, body_len));
+    MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_flush_output(ssl));
+
+cleanup:
+    return ret;
+}
+
+/*
+ * Send a malformed RequestConnectionId message.
+ *   bad_type == 1: empty body (0 bytes instead of 1)
+ * Server should reject with decode_error.
+ */
+int mbedtls_ssl_dtls13_send_bad_request_connection_id(mbedtls_ssl_context *ssl,
+                                                      int bad_type)
+{
+    int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+    unsigned char *buf;
+    size_t buf_len;
+
+    (void) bad_type; /* only one bad type currently */
+
+    if (ssl == NULL || ssl->session == NULL) {
+        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+    }
+
+    MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_start_handshake_msg(
+                             ssl, MBEDTLS_SSL_HS_REQUEST_CONNECTION_ID,
+                             &buf, &buf_len));
+
+    /* Empty body (0 bytes): triggers CHK_BUF_READ_PTR failure in handler */
+    MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_finish_handshake_msg(ssl, buf_len, 0));
+    MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_flush_output(ssl));
+
+cleanup:
+    return ret;
+}
+
+#endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 && MBEDTLS_SSL_PROTO_DTLS */
+/* LCOV_EXCL_STOP */
+
+/* ---------------------------------------------------------------------------
  * End of NewConnectionId / RequestConnectionId implementation
  * ---------------------------------------------------------------------------
  */

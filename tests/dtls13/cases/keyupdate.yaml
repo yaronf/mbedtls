@@ -178,3 +178,51 @@ cases:
         - server_dtls13_negotiated
         - client_dtls13_negotiated
         - server_auth_fail_limit_reached
+
+  - name: "bad KeyUpdate: body too long triggers server decode_error"
+    skip_runners: [wolfssl]
+    # Client sends a 2-byte KeyUpdate body (valid is 1 byte).
+    # Server must reject with decode_error and close the connection.
+    server:
+      debug_level: 2
+    client:
+      debug_level: 2
+      bad_keyupdate: 1
+    expect:
+      exit: 1
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - server_keyupdate_bad_length
+
+  - name: "bad KeyUpdate: invalid update_requested value triggers illegal_parameter"
+    skip_runners: [wolfssl]
+    # Client sends update_requested=2 (only 0 and 1 are valid per RFC 9147 §8).
+    # Server must reject with illegal_parameter.
+    server:
+      debug_level: 2
+    client:
+      debug_level: 2
+      bad_keyupdate: 2
+    expect:
+      exit: 1
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - server_keyupdate_invalid_update_requested
+
+  - name: "double KeyUpdate: second blocked by pending-ACK guard"
+    skip_runners: [wolfssl]
+    # ssl_client2 sends two KeyUpdates back-to-back without waiting for ACK.
+    # The second call must return WANT_WRITE (pending-ACK guard at ssl_msg.c:7515).
+    # The ssl_client2 binary returns exit 0 if it gets the expected WANT_WRITE.
+    server:
+      debug_level: 2
+    client:
+      debug_level: 2
+      double_keyupdate: 1
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated

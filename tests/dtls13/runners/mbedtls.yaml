@@ -51,6 +51,12 @@ param_map:
   skip_close_notify: "skip_close_notify={1 if value else 0}"
   read_timeout:   "read_timeout={value}"
   max_resend:     "max_resend={value}"
+  force_ciphersuite: "force_ciphersuite={value}"
+  bad_keyupdate:     "bad_keyupdate={value}"
+  bad_cookie_on_retry: "bad_cookie_on_retry={value}"
+  bad_new_cid:       "bad_new_cid={value}"
+  bad_req_cid:       "bad_req_cid={value}"
+  double_keyupdate:  "double_keyupdate={1 if value else 0}"
 
 proxy_param_map:
   drop:       "drop={value}"
@@ -238,6 +244,21 @@ assertion_map:
   client_old_epoch_replayed_dropped:
     flag: "-c"
     string: "replayed old-epoch record"
+  server_keyupdate_bad_length:
+    flag: "-s"
+    string: "KeyUpdate: bad length"
+  server_keyupdate_invalid_update_requested:
+    flag: "-s"
+    string: "KeyUpdate: invalid update_requested value"
+  server_new_cid_not_accepted:
+    flag: "-S"
+    string: "NewConnectionId received"
+  server_req_cid_not_accepted:
+    flag: "-S"
+    string: "RequestConnectionId received"
+  server_cookie_verification_failed:
+    flag: "-s"
+    string: "cookie verification failed"
 
 requires_map:
   protocol:

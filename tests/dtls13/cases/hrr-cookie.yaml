@@ -18,3 +18,22 @@ cases:
         - client_dtls13_negotiated
         - client_hrr_received
         - server_cookie_verified
+
+  - name: "HRR+cookie: bad cookie on retry causes server handshake_failure"
+    requires:
+      - config: MBEDTLS_SSL_DTLS_HELLO_VERIFY
+    # Server installs a cookie-check callback that always returns failure.
+    # This exercises the "cookie verification failed" branch in ssl_tls13_server.c.
+    # Client sends a second ClientHello with a valid cookie, but the server rejects it.
+    # The handshake fails and both sides exit non-zero.
+    server:
+      groups: secp384r1
+      debug_level: 2
+      bad_cookie_on_retry: 1
+    client:
+      debug_level: 2
+    expect:
+      exit: 1
+      assert:
+        - client_hrr_received
+        - server_cookie_verification_failed

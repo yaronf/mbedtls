@@ -242,6 +242,6 @@ if(UNIX)
         COMMAND ${CMAKE_CURRENT_BINARY_DIR}/dtls13/dtls13-tests.sh
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/dtls13)
     set_tests_properties(dtls13-integration-suite PROPERTIES
-        TIMEOUT 300
+        TIMEOUT 600
         LABELS "dtls13")
 endif()

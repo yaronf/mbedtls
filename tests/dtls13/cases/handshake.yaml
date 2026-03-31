@@ -38,3 +38,16 @@ cases:
         - server_dtls13_negotiated
         - client_dtls13_negotiated
         - client_ack_sent
+
+  - name: "force AES-128-GCM ciphersuite (AES SNE path)"
+    server:
+      debug_level: 2
+      force_ciphersuite: TLS1-3-AES-128-GCM-SHA256
+    client:
+      debug_level: 2
+      force_ciphersuite: TLS1-3-AES-128-GCM-SHA256
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated

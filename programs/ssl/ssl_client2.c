@@ -64,8 +64,12 @@ int main(void)
 #define DFL_ALLOW_LEGACY        -2
 #define DFL_RENEGOTIATE         0
 #define DFL_KEY_UPDATE          0
+#define DFL_BAD_KEYUPDATE       0
+#define DFL_DOUBLE_KEYUPDATE    0
 #define DFL_SEND_NEW_CID        0
 #define DFL_REQUEST_CID         0
+#define DFL_BAD_NEW_CID         0
+#define DFL_BAD_REQ_CID         0
 #define DFL_CID_CHANGE_ADDR     0
 #define DFL_AEAD_LIMIT          0
 #define DFL_AUTH_FAIL_LIMIT     0
@@ -306,6 +310,10 @@ int main(void)
     "    key_update=%%d       default: 0 (disabled)\n"                  \
     "                        1: send KeyUpdate(update_not_requested)\n" \
     "                        2: send KeyUpdate(update_requested)\n"     \
+    "    bad_keyupdate=%%d    default: 0 (disabled)\n"                  \
+    "                        1: send KeyUpdate with bad body length\n"  \
+    "                        2: send KeyUpdate with invalid update_requested=2\n" \
+    "    double_keyupdate=1  send KeyUpdate twice (second while first pending)\n" \
     "    aead_limit=%%d       default: 0 (use RFC default 2^23)\n"      \
     "    auth_fail_limit=%%d  default: 0 (use built-in default)\n"
 #else
@@ -319,6 +327,12 @@ int main(void)
     "                        1: send NewConnectionId(immediate) after HS\n" \
     "    request_cid=%%d      default: 0 (disabled)\n"                     \
     "                        N>0: send RequestConnectionId(N) after HS\n"  \
+    "    bad_new_cid=%%d      default: 0 (disabled)\n"                     \
+    "                        1: send NewConnectionId with list_len=0\n"    \
+    "                        2: send NewConnectionId with invalid usage\n" \
+    "                        3: send NewConnectionId with cid_len too large\n" \
+    "    bad_req_cid=%%d      default: 0 (disabled)\n"                     \
+    "                        1: send RequestConnectionId with empty body\n" \
     "    cid_change_addr=%%d  default: 0 (disabled)\n"                     \
     "                        N>0: rebind UDP socket N times (one per exchange)\n"
 #else
@@ -530,8 +544,12 @@ struct options {
     int renegotiate;            /* attempt renegotiation?                   */
     int renego_delay;           /* delay before enforcing renegotiation     */
     int key_update;             /* send DTLS 1.3 KeyUpdate after handshake  */
+    int bad_keyupdate;          /* send malformed KeyUpdate (coverage test) */
+    int double_keyupdate;       /* send KeyUpdate twice (pending-guard test) */
     int send_new_cid;           /* send DTLS 1.3 NewConnectionId after HS   */
     int request_cid;            /* send DTLS 1.3 RequestConnectionId after HS */
+    int bad_new_cid;            /* send malformed NewConnectionId (coverage) */
+    int bad_req_cid;            /* send malformed RequestConnectionId       */
     int cid_change_addr;        /* rebind UDP socket N times mid-session    */
     uint64_t aead_limit;        /* DTLS 1.3 AEAD record limit (0=default)   */
     uint32_t auth_fail_limit;   /* DTLS 1.3 auth-fail limit (0=default)     */
@@ -975,8 +993,12 @@ int main(int argc, char *argv[])
     opt.renegotiate         = DFL_RENEGOTIATE;
     opt.renego_delay        = DFL_RENEGO_DELAY;
     opt.key_update          = DFL_KEY_UPDATE;
+    opt.bad_keyupdate       = DFL_BAD_KEYUPDATE;
+    opt.double_keyupdate    = DFL_DOUBLE_KEYUPDATE;
     opt.send_new_cid        = DFL_SEND_NEW_CID;
     opt.request_cid         = DFL_REQUEST_CID;
+    opt.bad_new_cid         = DFL_BAD_NEW_CID;
+    opt.bad_req_cid         = DFL_BAD_REQ_CID;
     opt.cid_change_addr     = DFL_CID_CHANGE_ADDR;
     opt.aead_limit          = DFL_AEAD_LIMIT;
     opt.auth_fail_limit     = DFL_AUTH_FAIL_LIMIT;
@@ -1222,6 +1244,16 @@ usage:
             if (opt.key_update < 0 || opt.key_update > 2) {
                 goto usage;
             }
+        } else if (strcmp(p, "bad_keyupdate") == 0) {
+            opt.bad_keyupdate = atoi(q);
+            if (opt.bad_keyupdate < 0 || opt.bad_keyupdate > 2) {
+                goto usage;
+            }
+        } else if (strcmp(p, "double_keyupdate") == 0) {
+            opt.double_keyupdate = atoi(q);
+            if (opt.double_keyupdate < 0 || opt.double_keyupdate > 1) {
+                goto usage;
+            }
         } else if (strcmp(p, "send_new_cid") == 0) {
             opt.send_new_cid = atoi(q);
             if (opt.send_new_cid < 0 || opt.send_new_cid > 1) {
@@ -1230,6 +1262,16 @@ usage:
         } else if (strcmp(p, "request_cid") == 0) {
             opt.request_cid = atoi(q);
             if (opt.request_cid < 0 || opt.request_cid > 255) {
+                goto usage;
+            }
+        } else if (strcmp(p, "bad_new_cid") == 0) {
+            opt.bad_new_cid = atoi(q);
+            if (opt.bad_new_cid < 0 || opt.bad_new_cid > 3) {
+                goto usage;
+            }
+        } else if (strcmp(p, "bad_req_cid") == 0) {
+            opt.bad_req_cid = atoi(q);
+            if (opt.bad_req_cid < 0 || opt.bad_req_cid > 1) {
                 goto usage;
             }
         } else if (strcmp(p, "cid_change_addr") == 0) {
@@ -2582,6 +2624,50 @@ usage:
         }
         mbedtls_printf(" ok\n");
     }
+    if (opt.double_keyupdate) {
+        /* Send KeyUpdate twice in rapid succession.  The second call should
+         * fail with MBEDTLS_ERR_SSL_BAD_INPUT_DATA (pending ACK guard) — this
+         * exercises the "pending KeyUpdate" branch in ssl_tls13_write_key_update.
+         * The first KeyUpdate must succeed; the second is expected to fail. */
+        mbedtls_printf("  . Sending first KeyUpdate (double_keyupdate test)...");
+        fflush(stdout);
+        ret = mbedtls_ssl_send_key_update(&ssl, 0);
+        if (ret != 0) {
+            mbedtls_printf(" failed\n  ! first KeyUpdate returned -0x%x\n\n",
+                           (unsigned int) -ret);
+            goto exit;
+        }
+        mbedtls_printf(" ok\n");
+        mbedtls_printf("  . Sending second KeyUpdate (expect PENDING error)...");
+        fflush(stdout);
+        ret = mbedtls_ssl_send_key_update(&ssl, 0);
+        if (ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+            mbedtls_printf(" ok (got expected WANT_WRITE — pending ACK guard)\n");
+        } else if (ret == 0) {
+            mbedtls_printf(" UNEXPECTED SUCCESS (double KeyUpdate should be blocked)\n");
+            ret = MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+            goto exit;
+        } else {
+            mbedtls_printf(" failed with unexpected error -0x%x\n\n",
+                           (unsigned int) -ret);
+            goto exit;
+        }
+        ret = 0; /* reset for subsequent operations */
+    }
+    if (opt.bad_keyupdate > 0) {
+        mbedtls_printf("  . Sending bad KeyUpdate (type=%d)...", opt.bad_keyupdate);
+        fflush(stdout);
+        /* The send itself should succeed; the server will close the connection
+         * with a fatal alert when it tries to parse the malformed body. */
+        ret = mbedtls_ssl_dtls13_send_bad_keyupdate(&ssl, opt.bad_keyupdate);
+        if (ret != 0) {
+            mbedtls_printf(" failed\n  ! send_bad_keyupdate returned -0x%x\n\n",
+                           (unsigned int) -ret);
+            goto exit;
+        }
+        mbedtls_printf(" ok (bad message sent, expect server close)\n");
+        ret = 0;
+    }
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 && MBEDTLS_SSL_PROTO_DTLS */
 
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS) && \
@@ -2606,6 +2692,35 @@ usage:
             goto exit;
         }
         mbedtls_printf(" ok\n");
+    }
+    if (opt.bad_new_cid > 0) {
+        mbedtls_printf("  . Sending bad NewConnectionId (type=%d)...",
+                       opt.bad_new_cid);
+        fflush(stdout);
+        /* Expect the server to close the connection with a fatal alert.
+         * The call itself succeeds (message is sent); the connection will
+         * fail when we next try to read/write. */
+        ret = mbedtls_ssl_dtls13_send_bad_new_connection_id(&ssl,
+                                                            opt.bad_new_cid);
+        if (ret != 0) {
+            mbedtls_printf(" failed\n  ! send_bad_new_connection_id returned"
+                           " -0x%x\n\n", (unsigned int) -ret);
+            goto exit;
+        }
+        mbedtls_printf(" ok (bad message sent, expect server close)\n");
+    }
+    if (opt.bad_req_cid > 0) {
+        mbedtls_printf("  . Sending bad RequestConnectionId (type=%d)...",
+                       opt.bad_req_cid);
+        fflush(stdout);
+        ret = mbedtls_ssl_dtls13_send_bad_request_connection_id(&ssl,
+                                                                opt.bad_req_cid);
+        if (ret != 0) {
+            mbedtls_printf(" failed\n  ! send_bad_request_connection_id returned"
+                           " -0x%x\n\n", (unsigned int) -ret);
+            goto exit;
+        }
+        mbedtls_printf(" ok (bad message sent, expect server close)\n");
     }
 #endif /* TLS1_3 && DTLS && CID */
 

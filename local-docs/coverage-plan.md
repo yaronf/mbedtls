@@ -215,19 +215,19 @@ practical interoperability (not all peers send explicit ACKs).
 ## Implementation Order
 
 
-| Priority | Item                    | Effort                                       | Notes                          |
-| -------- | ----------------------- | -------------------------------------------- | ------------------------------ |
-| High     | 5: SNE AES path         | Low — may just need a ciphersuite param      | Check if already covered first |
-| High     | 7: Implicit ACK         | Medium — needs ssl_client2 change            | Important for interop          |
-| Medium   | 3a/3b: Bad KeyUpdate    | Medium — needs ssl_client2 change            | Well-defined error path        |
-| Medium   | 4: CID parse errors     | Medium — needs ssl_client2 changes           | Multiple sub-cases             |
-| Medium   | 1b: Bad cookie          | Medium — needs server param or proxy feature |                                |
-| Low      | 1c: Double HRR          | Low — groups config                          | Niche failure mode             |
-| Low      | 3c: Pending KeyUpdate   | Low                                          | Guards state machine           |
-| Skip     | 2: CID buffer overflow  | No unit test infra                           | Accept gap                     |
-| Defer    | 3d: PSA injection       | Requires new infra                           | Fuzz target (item 9)           |
-| Defer    | 6: Epoch eviction       | Hard to orchestrate                          | Needs proxy work               |
-| Defer    | 1a: f_cookie_write fail | Requires mock callback                       | Unit test candidate            |
+| Priority | Item                    | Status  | Notes                                                |
+| -------- | ----------------------- | ------- | ---------------------------------------------------- |
+| High     | 5: SNE AES path         | **DONE** | handshake.yaml: force AES-128-GCM test passes       |
+| High     | 7: Implicit ACK         | Defer   | Needs ssl_client2 change; no WANT_WRITE path exists  |
+| Medium   | 3a/3b: Bad KeyUpdate    | **DONE** | keyupdate.yaml: 2 new cases; new API in ssl_msg.c   |
+| Medium   | 4: CID parse errors     | **DONE** | cid-update.yaml: 4 new cases; new API in ssl_msg.c  |
+| Medium   | 1b: Bad cookie          | **DONE** | hrr-cookie.yaml: bad_cookie_on_retry=1 in srv2      |
+| Low      | 1c: Double HRR          | Defer   | Niche failure mode; needs group config gymnastics    |
+| Low      | 3c: Pending KeyUpdate   | **DONE** | keyupdate.yaml: double_keyupdate test passes         |
+| Skip     | 2: CID buffer overflow  | Skip    | No unit test infra; accept gap                      |
+| Defer    | 3d: PSA injection       | Defer   | Requires new infra; fuzz target (item 9)            |
+| Defer    | 6: Epoch eviction       | Defer   | Hard to orchestrate; needs proxy work               |
+| Defer    | 1a: f_cookie_write fail | Defer   | Requires mock callback; unit test candidate         |
 
 
 ---
@@ -238,4 +238,22 @@ practical interoperability (not all peers send explicit ACKs).
 `ssl_tls13_generic.c`, `ssl_misc.h`) as measured by lcov after all tests run.
 - All new test cases pass with 0 FAILs.
 - No regressions in existing 38 dtls13 integration tests.
+
+## Current Status (Phase 7 item 8 complete)
+
+**Tests:** 47 pass (38 original + 9 new), 0 failures.
+
+**Coverage:** Baseline was 72.7% branch (Phase 6.2). The new tests cover the targeted
+error paths (AES SNE, bad KeyUpdate, bad CID, bad cookie, double KeyUpdate). The
+bad-message helper functions in ssl_msg.c are excluded from coverage via `LCOV_EXCL_START/STOP`
+since they only execute in test programs, not in the library under test.
+
+**Coverage tooling note:** On macOS/LLVM clang, multiple concurrent processes writing
+to the same `ssl_msg.c.gcda` file (ssl_server2 + ssl_client2 per test) do not merge
+correctly — each process overwrites the file rather than accumulating hits. This means
+the post-Phase-7 lcov number is unreliable (measured ~71% but structurally suspect).
+A Linux CI run with GCC's gcov would give accurate multi-process accumulation.
+
+**Remaining deferred gaps** (per implementation order table above): implicit ACK (item 7),
+epoch eviction (item 6), double-HRR (item 1c), PSA injection (item 3d).
 

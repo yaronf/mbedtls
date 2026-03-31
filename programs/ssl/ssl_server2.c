@@ -102,6 +102,7 @@ int main(void)
 #define DFL_KEY_UPDATE          0
 #define DFL_SEND_NEW_CID        0
 #define DFL_REQUEST_CID         0
+#define DFL_BAD_COOKIE_ON_RETRY 0
 #define DFL_ALLOW_ADDR_MIGRATION    0
 #define DFL_MIGRATION_TIMEOUT_MS    1000
 #define DFL_AEAD_LIMIT          0
@@ -365,7 +366,8 @@ int main(void)
 #if defined(MBEDTLS_SSL_DTLS_HELLO_VERIFY)
 #define USAGE_COOKIES \
     "    cookies=0/1/-1      default: 1 (enabled)\n"        \
-    "                        0: disabled, -1: library default (broken)\n"
+    "                        0: disabled, -1: library default (broken)\n" \
+    "    bad_cookie_on_retry=1  default: 0; force cookie-check failure (coverage)\n"
 #else
 #define USAGE_COOKIES ""
 #endif
@@ -722,6 +724,7 @@ struct options {
     int etm;                    /* allow negotiation of encrypt-then-MAC?   */
     int transport;              /* TLS or DTLS?                             */
     int cookies;                /* Use cookies for DTLS? -1 to break them   */
+    int bad_cookie_on_retry;    /* force cookie-check failure (coverage)    */
     int anti_replay;            /* Use anti-replay for DTLS? -1 for default */
     uint32_t hs_to_min;         /* Initial value of DTLS handshake timer    */
     uint32_t hs_to_max;         /* Max value of DTLS handshake timer        */
@@ -757,6 +760,20 @@ struct options {
 } opt;
 
 #include "ssl_test_common_source.c"
+
+#if defined(MBEDTLS_SSL_DTLS_HELLO_VERIFY)
+/*
+ * Cookie-check callback that always rejects: simulates an expired or corrupt
+ * cookie in the second ClientHello (bad_cookie_on_retry=1 coverage test).
+ */
+static int bad_cookie_check(void *ctx,
+                            const unsigned char *cookie, size_t clen,
+                            const unsigned char *info, size_t ilen)
+{
+    (void) ctx; (void) cookie; (void) clen; (void) info; (void) ilen;
+    return -1; /* always reject */
+}
+#endif /* MBEDTLS_SSL_DTLS_HELLO_VERIFY */
 
 /*
  * Return authmode from string, or -1 on error
@@ -1962,6 +1979,7 @@ int main(int argc, char *argv[])
     opt.sig_algs            = DFL_SIG_ALGS;
     opt.transport           = DFL_TRANSPORT;
     opt.cookies             = DFL_COOKIES;
+    opt.bad_cookie_on_retry = DFL_BAD_COOKIE_ON_RETRY;
     opt.anti_replay         = DFL_ANTI_REPLAY;
     opt.hs_to_min           = DFL_HS_TO_MIN;
     opt.hs_to_max           = DFL_HS_TO_MAX;
@@ -2451,6 +2469,11 @@ usage:
         } else if (strcmp(p, "cookies") == 0) {
             opt.cookies = atoi(q);
             if (opt.cookies < -1 || opt.cookies > 1) {
+                goto usage;
+            }
+        } else if (strcmp(p, "bad_cookie_on_retry") == 0) {
+            opt.bad_cookie_on_retry = atoi(q);
+            if (opt.bad_cookie_on_retry < 0 || opt.bad_cookie_on_retry > 1) {
                 goto usage;
             }
         } else if (strcmp(p, "anti_replay") == 0) {
@@ -3218,8 +3241,15 @@ usage:
                 goto exit;
             }
 
-            mbedtls_ssl_conf_dtls_cookies(&conf, mbedtls_ssl_cookie_write, mbedtls_ssl_cookie_check,
-                                          &cookie_ctx);
+            if (opt.bad_cookie_on_retry) {
+                /* Use a cookie-check callback that always fails: exercises the
+                 * "cookie check fails on second ClientHello" error path. */
+                mbedtls_ssl_conf_dtls_cookies(&conf, mbedtls_ssl_cookie_write,
+                                              bad_cookie_check, &cookie_ctx);
+            } else {
+                mbedtls_ssl_conf_dtls_cookies(&conf, mbedtls_ssl_cookie_write,
+                                              mbedtls_ssl_cookie_check, &cookie_ctx);
+            }
         } else
 #endif /* MBEDTLS_SSL_COOKIE_C */
 #if defined(MBEDTLS_SSL_DTLS_HELLO_VERIFY)

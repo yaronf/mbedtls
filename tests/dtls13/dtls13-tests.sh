@@ -161,6 +161,58 @@ run_test    "DTLS 1.3 CID update: CID update: client address change rejected by 
             -c "cid_change_addr: address changed" \
             -S "Address migrated to new peer"
 
+requires_protocol_version dtls13
+requires_config_enabled MBEDTLS_SSL_DTLS_CONNECTION_ID
+run_test    "DTLS 1.3 CID update: bad NewConnectionId: truncated body triggers server decode_error" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=2 cid=1 cid_val=deadbeef" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=2 cid=1 cid_val=cafebabe bad_new_cid=1" \
+            1 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -s "Use of Connection ID has been negotiated." \
+            -c "Use of Connection ID has been negotiated." \
+            -S "NewConnectionId received"
+
+requires_protocol_version dtls13
+requires_config_enabled MBEDTLS_SSL_DTLS_CONNECTION_ID
+run_test    "DTLS 1.3 CID update: bad NewConnectionId: list_len=0 triggers server decode_error" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=2 cid=1 cid_val=deadbeef" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=2 cid=1 cid_val=cafebabe bad_new_cid=2" \
+            1 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -s "Use of Connection ID has been negotiated." \
+            -c "Use of Connection ID has been negotiated." \
+            -S "NewConnectionId received"
+
+requires_protocol_version dtls13
+requires_config_enabled MBEDTLS_SSL_DTLS_CONNECTION_ID
+run_test    "DTLS 1.3 CID update: bad NewConnectionId: cid_len too large triggers server illegal_parameter" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=2 cid=1 cid_val=deadbeef" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=2 cid=1 cid_val=cafebabe bad_new_cid=3" \
+            1 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -s "Use of Connection ID has been negotiated." \
+            -c "Use of Connection ID has been negotiated." \
+            -S "NewConnectionId received"
+
+requires_protocol_version dtls13
+requires_config_enabled MBEDTLS_SSL_DTLS_CONNECTION_ID
+run_test    "DTLS 1.3 CID update: bad RequestConnectionId: empty body triggers server decode_error" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=2 cid=1 cid_val=deadbeef" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=2 cid=1 cid_val=cafebabe bad_req_cid=1" \
+            1 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -s "Use of Connection ID has been negotiated." \
+            -c "Use of Connection ID has been negotiated." \
+            -S "RequestConnectionId received"
+
 # ======================================================================
 # Cases from: cid.yaml
 # ======================================================================
@@ -265,6 +317,15 @@ run_test    "DTLS 1.3: client ACKs server Finished flight" \
             -c "Protocol is DTLSv1.3" \
             -c "=> write ACK"
 
+requires_protocol_version dtls13
+run_test    "DTLS 1.3: force AES-128-GCM ciphersuite (AES SNE path)" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=2 force_ciphersuite=TLS1-3-AES-128-GCM-SHA256" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=2 force_ciphersuite=TLS1-3-AES-128-GCM-SHA256" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3"
+
 # ======================================================================
 # Cases from: hrr-cookie.yaml
 # ======================================================================
@@ -280,6 +341,16 @@ run_test    "DTLS 1.3: HRR+cookie exchange (cookie enabled)" \
             -c "Protocol is DTLSv1.3" \
             -c "received HelloRetryRequest message" \
             -s "cookie verified"
+
+requires_protocol_version dtls13
+requires_config_enabled MBEDTLS_SSL_DTLS_HELLO_VERIFY
+run_test    "DTLS 1.3: HRR+cookie: bad cookie on retry causes server handshake_failure" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 groups=secp384r1 debug_level=2 bad_cookie_on_retry=1" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=2" \
+            1 \
+            -c "received HelloRetryRequest message" \
+            -s "cookie verification failed"
 
 # ======================================================================
 # Cases from: keyupdate.yaml
@@ -394,6 +465,35 @@ run_test    "DTLS 1.3 KeyUpdate: auth-fail limit: server closes after too many b
             -s "Protocol is DTLSv1.3" \
             -c "Protocol is DTLSv1.3" \
             -s "auth-fail limit reached"
+
+requires_protocol_version dtls13
+run_test    "DTLS 1.3 KeyUpdate: bad KeyUpdate: body too long triggers server decode_error" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=2" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=2 bad_keyupdate=1" \
+            1 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -s "KeyUpdate: bad length"
+
+requires_protocol_version dtls13
+run_test    "DTLS 1.3 KeyUpdate: bad KeyUpdate: invalid update_requested value triggers illegal_parameter" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=2" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=2 bad_keyupdate=2" \
+            1 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -s "KeyUpdate: invalid update_requested value"
+
+requires_protocol_version dtls13
+run_test    "DTLS 1.3 KeyUpdate: double KeyUpdate: second blocked by pending-ACK guard" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=2" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=2 double_keyupdate=1" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3"
 
 # ======================================================================
 # Cases from: proxy-3d.yaml
