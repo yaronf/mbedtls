@@ -2423,7 +2423,9 @@ int mbedtls_ssl_resend(mbedtls_ssl_context *ssl)
  * slot (or NULL for epoch 0) in *retx_slot_out.  On return, *saved_transform
  * is non-NULL iff a switch actually happened (caller must call
  * ssl_dtls13_retx_epoch_restore() after the write). */
-static void ssl_dtls13_retx_epoch_switch(
+/* Returns 0 on success, 1 if the flight item should be skipped (epoch
+ * evicted from pool — retransmitting at the wrong epoch is not allowed). */
+static int ssl_dtls13_retx_epoch_switch(
     mbedtls_ssl_context *ssl,
     const mbedtls_ssl_flight_item *cur,
     mbedtls_ssl_transform **saved_transform,
@@ -2437,12 +2439,12 @@ static void ssl_dtls13_retx_epoch_switch(
 
     if (ssl->tls_version != MBEDTLS_SSL_VERSION_TLS1_3 ||
         ssl->conf->transport != MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
-        return;
+        return 0;
     }
 
     active_epoch = MBEDTLS_GET_UINT16_BE(ssl->cur_out_ctr, 0);
     if (cur->dtls13_send_epoch == active_epoch) {
-        return;
+        return 0;
     }
 
     *saved_transform = ssl->transform_out;
@@ -2470,15 +2472,21 @@ static void ssl_dtls13_retx_epoch_switch(
             memcpy(ssl->cur_out_ctr, slot->out_ctr, 8);
             *retx_slot_out = slot;
         } else {
-            /* Epoch no longer in pool: fall back to active epoch. */
+            /* Epoch evicted — cannot retransmit at the correct epoch. */
+            MBEDTLS_SSL_DEBUG_MSG(1,
+                ("DTLS 1.3: retransmit epoch %u evicted from pool, "
+                 "skipping flight item",
+                 (unsigned) cur->dtls13_send_epoch));
             *saved_transform = NULL;
-            return;
+            *retx_slot_out   = NULL;
+            return 1;
         }
     }
 
     mbedtls_ssl_update_out_pointers(ssl, ssl->transform_out);
     MBEDTLS_SSL_DEBUG_MSG(2, ("DTLS 1.3: retransmit epoch switch %u -> %u",
                               active_epoch, cur->dtls13_send_epoch));
+    return 0;
 }
 
 /* Restore the active epoch after a cross-epoch retransmit and persist the
@@ -2727,10 +2735,13 @@ int mbedtls_ssl_flight_transmit(mbedtls_ssl_context *ssl)
         mbedtls_ssl_transform *dtls13_saved_transform = NULL;
         unsigned char dtls13_saved_ctr[8];
         mbedtls_ssl_dtls13_epoch_slot *dtls13_retx_slot = NULL;
-        ssl_dtls13_retx_epoch_switch(ssl, cur,
-                                     &dtls13_saved_transform,
-                                     dtls13_saved_ctr,
-                                     &dtls13_retx_slot);
+        if (ssl_dtls13_retx_epoch_switch(ssl, cur,
+                                         &dtls13_saved_transform,
+                                         dtls13_saved_ctr,
+                                         &dtls13_retx_slot) != 0) {
+            /* Epoch evicted from pool — skip this flight item. */
+            continue;
+        }
 
         /* DTLS 1.3: record the outbound epoch+seq before the write so we can
          * match incoming ACKs to this flight item.  cur_out_ctr[0..1] is the
@@ -7434,6 +7445,13 @@ static int ssl_tls13_write_key_update(mbedtls_ssl_context *ssl,
         return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
     }
 
+    /* A previous KeyUpdate is still pending ACK — cannot overwrite the
+     * pending transform without leaking it.  The caller must wait. */
+    if (ssl->dtls13_ku_ack_pending) {
+        MBEDTLS_SSL_DEBUG_MSG(2, ("KeyUpdate: previous KU still pending ACK"));
+        return MBEDTLS_ERR_SSL_WANT_WRITE;
+    }
+
     ret = ssl_tls13_session_hash_info(ssl, &cs_info, &hash_alg, &hash_len);
     if (ret != 0) {
         return ret;
@@ -7456,6 +7474,11 @@ static int ssl_tls13_write_key_update(mbedtls_ssl_context *ssl,
     }
 
     /* Build the new outbound transform from the updated secret. */
+    if (ssl->transform_out->dtls13_epoch == UINT16_MAX) {
+        MBEDTLS_SSL_DEBUG_MSG(1, ("KeyUpdate: outbound epoch would wrap"));
+        ret = MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+        goto cleanup;
+    }
     new_epoch = (uint16_t)(ssl->transform_out->dtls13_epoch + 1);
     {
         const unsigned char *client_secret, *server_secret;
@@ -7591,6 +7614,11 @@ static int ssl_tls13_handle_key_update(mbedtls_ssl_context *ssl)
     }
 
     /* Build new inbound transform. */
+    if (ssl->transform_in->dtls13_epoch == UINT16_MAX) {
+        MBEDTLS_SSL_DEBUG_MSG(1, ("KeyUpdate: inbound epoch would wrap"));
+        ret = MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+        goto cleanup;
+    }
     new_epoch = (uint16_t)(ssl->transform_in->dtls13_epoch + 1);
     {
         const unsigned char *client_secret, *server_secret;
@@ -7804,7 +7832,14 @@ static int ssl_tls13_handle_new_connection_id(mbedtls_ssl_context *ssl)
     list_len = MBEDTLS_GET_UINT16_BE(p, 0);
     p += 2;
 
-    MBEDTLS_SSL_CHK_BUF_READ_PTR(p, end, list_len + 1); /* list + usage byte */
+    /* list_len must hold at least 1 byte (cid_len), plus we need 1 usage byte
+     * after the list. */
+    if (list_len < 1) {
+        MBEDTLS_SSL_PEND_FATAL_ALERT(MBEDTLS_SSL_ALERT_MSG_DECODE_ERROR,
+                                     MBEDTLS_ERR_SSL_DECODE_ERROR);
+        return MBEDTLS_ERR_SSL_DECODE_ERROR;
+    }
+    MBEDTLS_SSL_CHK_BUF_READ_PTR(p, end, (size_t) list_len + 1); /* list + usage byte */
 
     /* We use only the first CID in the list (ignore extras per RFC). */
     cid_len = *p++;
@@ -7814,11 +7849,18 @@ static int ssl_tls13_handle_new_connection_id(mbedtls_ssl_context *ssl)
         return MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER;
     }
 
+    if (cid_len > list_len - 1) {
+        MBEDTLS_SSL_PEND_FATAL_ALERT(MBEDTLS_SSL_ALERT_MSG_DECODE_ERROR,
+                                     MBEDTLS_ERR_SSL_DECODE_ERROR);
+        return MBEDTLS_ERR_SSL_DECODE_ERROR;
+    }
     MBEDTLS_SSL_CHK_BUF_READ_PTR(p, end, cid_len);
     new_cid = p;
-    p += list_len - 1; /* skip to usage byte (list_len = 1 + cid_len) */
+    p += cid_len; /* advance past the CID we just captured */
 
-    /* Accept any remaining CID entries silently (just advance past them). */
+    /* Skip any remaining CID entries in the list. */
+    p += (size_t)(list_len - 1) - cid_len;
+
     /* p now at usage byte */
     MBEDTLS_SSL_CHK_BUF_READ_PTR(p, end, 1);
     usage = *p++;

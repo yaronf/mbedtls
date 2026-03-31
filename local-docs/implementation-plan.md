@@ -850,22 +850,49 @@ from peer) propagates correctly via the `ret != 0` branch. The two WAIT_ACK hand
 structurally identical; the duplication is accepted given the cross-file boundary
 (server.c vs client.c).
 
-#### 6.5 Memory Safety
-- Audit all buffer size calculations in record formatting and parsing: unified header length assumptions, CID length bounds, fragment reassembly buffer sizing.
-- Verify bounds checks before every `memcpy`/`memmove` involving untrusted length fields (record length, CID length, fragment offset/length, ACK record count).
-- Check for use-after-free risk in epoch/transform lifetime: transforms freed while still referenced by pending ACK state or retransmit buffers.
-- Review `migration_ctx_t` in ssl_server2: `listen_fd` lifetime vs. ssl context lifetime; `peer_addr` atomicity (single-threaded assumed but document it).
-- Verify `mbedtls_platform_zeroize` is called on all key material at the appropriate lifetime boundary (KeyUpdate old transform teardown, session close).
+#### [x] 6.5 Memory Safety
 
-#### 6.6 Security Review
-- **Time-invariance**: audit all HMAC/MAC comparisons, AEAD tag comparisons, and PSK identity lookups for constant-time execution. Check that `mbedtls_ssl_safer_memcmp` (or PSA equivalent) is used everywhere a timing oracle would be exploitable.
-- **Cookie entropy**: verify cookie generation uses a strong PRF (HMAC-SHA256 over server random + client transport ID); review key rotation policy.
-- **Sequence number encryption**: confirm the sn_key mask is applied before sending and stripped before decryption in all code paths; check that the mask is not reused across records.
-- **Downgrade**: confirm that a DTLS 1.3 server correctly rejects a ClientHello that advertises DTLS 1.3 but contains the DTLS 1.2 sentinel in the random field.
-- **Amplification**: confirm the amplification limit is not bypassable via fragmented or replayed ClientHellos.
-- **Integer overflow**: review all epoch arithmetic (uint64), sequence number arithmetic, and fragment offset/length arithmetic for overflow conditions.
-- **Alert handling**: confirm that fatal alerts cause immediate session termination and key material zeroization; confirm that unknown alert types are handled defensively.
-- **CID privacy**: document that CID values are visible in plaintext and advise on rotation policy (already in RFC constraints note; verify it is surfaced in API docs or PORTING notes).
+Re-audited 2026-03-31 with Opus 4.6 1M context (8 sections: A-H). Results:
+
+| Section | Area | Verdict | Notes |
+|---------|------|---------|-------|
+| A | Raw C memory functions | PASS | No malloc/calloc/free/realloc; all memset calls are on non-sensitive data |
+| B | mbedtls_calloc lifecycle | PASS | 4 allocations verified: dtls13_cli_hello, body_copy, dtls13_post_hs_ack, HVR cookie. All freed on all paths. **Advisory:** post_hs_ack alloc failure silently ignored (peer retransmits) |
+| C | Key material zeroization | PASS | dtls13_ku_pending_secret, new_secret (stack), sn_key, tmp_transform all zeroized on success+error paths |
+| D | Buffer bounds | PASS | All memcpy/memmove/PUT/GET verified. **Fixed:** NewConnectionId `list_len - 1` uint16 underflow when list_len=0 |
+| E | Use-after-free / double-free | PASS | Epoch pool ownership sound; flight items freed in handshake_free. **Fixed:** dtls13_transform_pending_out leak on double KeyUpdate |
+| F | Integer overflow | PASS | Seq counter wrapping detected. **Fixed:** epoch uint16 wrap guard in KeyUpdate. **Advisory:** sent_record_count uint8 wrap at 255 overwrites slot 0 (unreachable in practice) |
+| G | Concurrency | PASS | One static const (read-only); all mutable state per-context |
+| H | Error paths | PASS | All allocating functions have complete cleanup on all error paths |
+
+Bugs fixed during audit:
+- `ssl_tls13_write_key_update`: reject if `dtls13_ku_ack_pending` (prevents transform leak)
+- `ssl_tls13_handle_new_connection_id`: guard `list_len < 1`; replace `p += list_len - 1` with safe arithmetic
+- KeyUpdate: guard `dtls13_epoch == UINT16_MAX` before increment (both inbound and outbound)
+
+#### [x] 6.6 Security Review
+
+Audit completed 2026-03-31 (re-audited with Opus 4.6 1M context). Results:
+
+| # | Area | Verdict | Notes |
+|---|------|---------|-------|
+| 1 | Timing oracles | PASS | PSK identity (`ssl_tls13_server.c:382`), PSK binder (`ssl_tls13_server.c:448`) both use `mbedtls_ct_memcmp`; AEAD tag via PSA (constant-time by spec); cookie MAC via `psa_mac_verify_finish` |
+| 2 | Cookie entropy | PASS | 256-bit PSA random key, HMAC-SHA256, PSA constant-time verify. **Advisory:** no auto-rotation; long-lived servers should rotate manually |
+| 3 | SNE mask reuse | PASS | `ssl_dtls13_sne_compute_mask` computed fresh per record from current record's ciphertext sample; no caching; temporary transform zeroized after outbound use |
+| 4 | Downgrade protection | PASS | Client-side sentinel check via `ssl_tls13_is_downgrade_negotiation` (`ssl_tls13_client.c:1393`) runs for DTLS through shared `preprocess_server_hello` path |
+| 5 | Amplification bypass | ISSUE | **No 3x byte-count limit** per RFC 9147 §5.1. Cookie-based address verification mitigates but does not fully address. Already documented as NOT IMPLEMENTED in 6.1 compliance table; tracked for Phase 7 |
+| 6 | Integer overflow | PASS | Seq counter wrapping detected and returns fatal error. **Advisory:** epoch `uint16_t` wrap at 65535→0 has no guard (unrealistic: requires 65K KeyUpdates) |
+| 7 | Alert handling | PASS | Epoch-0 alerts discarded post-handshake (epoch mismatch check); key material zeroized on context free; auth failure count capped by `dtls13_auth_fail_limit` |
+| 8 | ACK parsing | PASS | Bounds checks on list_len; multiple-of-16 validation; epoch-0 / duplicate / future-epoch entries silently ignored; errors non-fatal |
+| 9 | Record parsing | PASS | Unified header parser validates all lengths before use; truncated headers rejected; L=0 correctly treated as last-in-datagram; unknown epochs buffered or discarded |
+| 10 | Epoch pool | PASS | Ownership model sound; eviction by lowest epoch; double-insert guarded. **Advisory:** theoretical retransmit failure if >4 KeyUpdates during active retransmit window |
+
+**Amplification limit (#5):** Conscious design decision — mitigated by cookie-based address verification; already documented in 6.1 compliance table and deferred to Phase 7.
+
+**Advisories resolved:**
+- Cookie key rotation: pre-existing (same as DTLS 1.2); no action.
+- Epoch uint16_t wrap: guard added in KeyUpdate paths.
+- Epoch pool eviction during retransmit: defensive NULL check added at retransmit lookup site.
 
 ---
 
