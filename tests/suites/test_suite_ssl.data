@@ -3364,3 +3364,119 @@ ssl_tls_exporter_rejects_bad_parameters:MBEDTLS_SSL_VERSION_TLS1_3:24:250:10
 TLS 1.3 Keying Material Exporter: Handshake not done
 depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_TEST_AT_LEAST_ONE_TLS1_3_CIPHERSUITE:MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL_ENABLED:PSA_WANT_ALG_RSA_PKCS1V15_SIGN:MBEDTLS_X509_RSASSA_PSS_SUPPORT
 ssl_tls_exporter_too_early:MBEDTLS_SSL_VERSION_TLS1_3:1:MBEDTLS_SSL_SERVER_CERTIFICATE
+
+# DTLS 1.3 SNE: sn_key derivation (HKDF-Expand-Label with "dtls13" prefix)
+# Vectors from local-docs/test-vectors/sne-vectors.txt (BoringSSL, 2026-03-25)
+
+DTLS 1.3 SNE key derivation: ChaCha20-Poly1305 epoch 2 (set 1)
+depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS
+ssl_dtls13_sne_key_derivation:PSA_ALG_SHA_256:"9ffa268e91b420bd897d27235aa6bfbb0b7a33eddd821456f45b5c8e402d3fdc":32:"90cfdd1f36dab2b52c9584a845e8511877cba792c884ee3ed10cc45080261f25"
+
+DTLS 1.3 SNE key derivation: ChaCha20-Poly1305 epoch 3 server (set 1)
+depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS
+ssl_dtls13_sne_key_derivation:PSA_ALG_SHA_256:"20df9779e432cc95f1fd6c35c7a871bc8ac3329fc965c7edd9b4930ca34db826":32:"fec922627ff6e58350dac11b25494dc8df10fc52cb85ad27bcd0d0e9574d1251"
+
+DTLS 1.3 SNE key derivation: ChaCha20-Poly1305 epoch 2 client (set 1)
+depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS
+ssl_dtls13_sne_key_derivation:PSA_ALG_SHA_256:"d34f4c6b6502774c739a74caf648e25fef0a8cefb9d94fbb8fb4af5910609b23":32:"0defc4458751c3f309cb83093edaea862612f81a0f886cd3629c52e80ed7f926"
+
+DTLS 1.3 SNE key derivation: AES-128-GCM epoch 2 (set 3)
+depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS
+ssl_dtls13_sne_key_derivation:PSA_ALG_SHA_256:"b9124db1b091716ae687131b7c6b987eb558408feeef7de203f63d09e48c98ee":16:"554e0ac7e99a4dd3228bf8e3f19912f5"
+
+DTLS 1.3 SNE key derivation: AES-128-GCM epoch 3 (set 3)
+depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS
+ssl_dtls13_sne_key_derivation:PSA_ALG_SHA_256:"81047da0a2caa32aac1a5b2a4c151d8e02b59998295090ee62105101ff12a1ba":16:"f830caa78960ca273b30eed78ccfee52"
+
+DTLS 1.3 SNE key derivation: ChaCha20-Poly1305 epoch 2 (set 2)
+depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS
+ssl_dtls13_sne_key_derivation:PSA_ALG_SHA_256:"268661048da3aed072748d94928329e282564e83f3b52f7cef79b3a6407abf79":32:"4be00b106cfa6b6029d3836f6b22ba53964df374508a681a7ed09d895a01222b"
+
+# DTLS 1.3 SNE: AES-ECB mask computation
+# Vectors from sne-vectors.txt VECTOR SET 3 (TLS_AES_128_GCM_SHA256)
+
+DTLS 1.3 SNE AES mask: epoch 2 seq=0 encrypt
+depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:PSA_WANT_KEY_TYPE_AES:PSA_WANT_ALG_ECB_NO_PADDING
+ssl_dtls13_sne_mask_aes:"554e0ac7e99a4dd3228bf8e3f19912f5":"beebd7f3f22978b608d54713c980c0c5":"62a4":"0000":"62a4"
+
+DTLS 1.3 SNE AES mask: epoch 2 seq=1 encrypt
+depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:PSA_WANT_KEY_TYPE_AES:PSA_WANT_ALG_ECB_NO_PADDING
+ssl_dtls13_sne_mask_aes:"554e0ac7e99a4dd3228bf8e3f19912f5":"d9c77b687be73e65ef16903e8a7c567e":"5e5c":"0001":"5e5d"
+
+DTLS 1.3 SNE AES mask: epoch 2 seq=2 encrypt
+depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:PSA_WANT_KEY_TYPE_AES:PSA_WANT_ALG_ECB_NO_PADDING
+ssl_dtls13_sne_mask_aes:"554e0ac7e99a4dd3228bf8e3f19912f5":"fdf6be4f91af93aa77ed824dc0ad8609":"5d99":"0002":"5d9b"
+
+DTLS 1.3 SNE AES mask: epoch 2 seq=3 encrypt
+depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:PSA_WANT_KEY_TYPE_AES:PSA_WANT_ALG_ECB_NO_PADDING
+ssl_dtls13_sne_mask_aes:"554e0ac7e99a4dd3228bf8e3f19912f5":"7ae5da6cd690255a304cc181928da9ca":"04ce":"0003":"04cd"
+
+DTLS 1.3 SNE AES mask: epoch 3 seq=0 encrypt
+depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:PSA_WANT_KEY_TYPE_AES:PSA_WANT_ALG_ECB_NO_PADDING
+ssl_dtls13_sne_mask_aes:"f830caa78960ca273b30eed78ccfee52":"dfccd13fec35869c9cf7775fa81b1a13":"cf1e":"0000":"cf1e"
+
+DTLS 1.3 SNE AES mask: epoch 3 seq=1 encrypt
+depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:PSA_WANT_KEY_TYPE_AES:PSA_WANT_ALG_ECB_NO_PADDING
+ssl_dtls13_sne_mask_aes:"f830caa78960ca273b30eed78ccfee52":"3e4feae5061cf39eed4ee9c1d51ec655":"61c1":"0001":"61c0"
+
+DTLS 1.3 SNE AES mask: epoch 3 seq=2 encrypt
+depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:PSA_WANT_KEY_TYPE_AES:PSA_WANT_ALG_ECB_NO_PADDING
+ssl_dtls13_sne_mask_aes:"f830caa78960ca273b30eed78ccfee52":"3a19ac02bd61c840d8cc8165f4c81d51":"3542":"0002":"3540"
+
+DTLS 1.3 SNE AES mask: epoch 3 seq=0 decrypt (roundtrip)
+depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:PSA_WANT_KEY_TYPE_AES:PSA_WANT_ALG_ECB_NO_PADDING
+ssl_dtls13_sne_mask_aes:"f830caa78960ca273b30eed78ccfee52":"dfccd13fec35869c9cf7775fa81b1a13":"cf1e":"cf1e":"0000"
+
+# DTLS 1.3 SNE: ChaCha20 mask computation
+# Vectors from sne-vectors.txt VECTOR SETS 1 and 2 (TLS_CHACHA20_POLY1305_SHA256)
+
+DTLS 1.3 SNE ChaCha20 mask: set 1 epoch 2 decrypt seq=0
+depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:MBEDTLS_CHACHA20_C
+ssl_dtls13_sne_mask_chacha20:"90cfdd1f36dab2b52c9584a845e8511877cba792c884ee3ed10cc45080261f25":"8cbaae7c43585beb0ef926d9b4d5b02a":"e403":"e403":"0000"
+
+DTLS 1.3 SNE ChaCha20 mask: set 1 epoch 2 encrypt seq=0
+depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:MBEDTLS_CHACHA20_C
+ssl_dtls13_sne_mask_chacha20:"0defc4458751c3f309cb83093edaea862612f81a0f886cd3629c52e80ed7f926":"a2a5dce0d5b3a2f39249675232f3abd8":"f057":"0000":"f057"
+
+DTLS 1.3 SNE ChaCha20 mask: set 1 epoch 3 decrypt seq=0
+depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:MBEDTLS_CHACHA20_C
+ssl_dtls13_sne_mask_chacha20:"c124acc717ee61ca0630085a1cdaeb2d1bfff7c28ccecd5788a5feda5a62bb10":"1d318ce5ff6b7ab3e62d5b2760323810":"0d20":"0d20":"0000"
+
+DTLS 1.3 SNE ChaCha20 mask: set 1 epoch 3 encrypt seq=0
+depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:MBEDTLS_CHACHA20_C
+ssl_dtls13_sne_mask_chacha20:"c124acc717ee61ca0630085a1cdaeb2d1bfff7c28ccecd5788a5feda5a62bb10":"473ce7c122437616941b8af24cbebab7":"58be":"0000":"58be"
+
+DTLS 1.3 SNE ChaCha20 mask: set 1 epoch 3 encrypt seq=1
+depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:MBEDTLS_CHACHA20_C
+ssl_dtls13_sne_mask_chacha20:"c124acc717ee61ca0630085a1cdaeb2d1bfff7c28ccecd5788a5feda5a62bb10":"6d2630aaa545c0be68dc8412de4cbd2c":"9b29":"0001":"9b28"
+
+DTLS 1.3 SNE ChaCha20 mask: set 1 epoch 3 decrypt seq=1
+depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:MBEDTLS_CHACHA20_C
+ssl_dtls13_sne_mask_chacha20:"fec922627ff6e58350dac11b25494dc8df10fc52cb85ad27bcd0d0e9574d1251":"90f78aae01d2947fd86c73c59958dc19":"c14d":"c14c":"0001"
+
+DTLS 1.3 SNE ChaCha20 mask: set 1 epoch 3 encrypt seq=2
+depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:MBEDTLS_CHACHA20_C
+ssl_dtls13_sne_mask_chacha20:"c124acc717ee61ca0630085a1cdaeb2d1bfff7c28ccecd5788a5feda5a62bb10":"9e2e6427ce86c507aa5d215ec5e654d1":"8ffe":"0002":"8ffc"
+
+DTLS 1.3 SNE ChaCha20 mask: set 2 epoch 2 decrypt seq=0
+depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:MBEDTLS_CHACHA20_C
+ssl_dtls13_sne_mask_chacha20:"4be00b106cfa6b6029d3836f6b22ba53964df374508a681a7ed09d895a01222b":"e732eccbff7d71a12fa8e37575089150":"f150":"f150":"0000"
+
+
+DTLS 1.3 SNE ChaCha20 mask: set 2 epoch 3 decrypt seq=0
+depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:MBEDTLS_CHACHA20_C
+ssl_dtls13_sne_mask_chacha20:"30e7ffec21a8b243132f4a4e6e96b0f9a002aeee1f0f7f1e8ca8cab6e129b4ca":"bfd6d8860837ed2f9797ac76a1820a75":"4e5e":"4e5e":"0000"
+
+DTLS 1.3 SNE ChaCha20 mask: set 2 epoch 3 encrypt seq=0
+depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:MBEDTLS_CHACHA20_C
+ssl_dtls13_sne_mask_chacha20:"511512c42488709b04daca2a00d01a5200ca633759e13823ac96bbd0cc9aa3df":"9ea5665cebfdf91d61f4d5d822d2a679":"ee3c":"0000":"ee3c"
+
+DTLS 1.3 SNE ChaCha20 mask: set 2 epoch 3 encrypt seq=1
+depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:MBEDTLS_CHACHA20_C
+ssl_dtls13_sne_mask_chacha20:"511512c42488709b04daca2a00d01a5200ca633759e13823ac96bbd0cc9aa3df":"f5f89105432ca203b2dc2698bde133c9":"dbb7":"0001":"dbb6"
+
+# DTLS 1.3 in-process handshake (loopback, no network)
+
+DTLS 1.3 handshake (in-process loopback)
+depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:MBEDTLS_SSL_HANDSHAKE_WITH_CERT_ENABLED:PSA_WANT_ECC_SECP_R1_256:PSA_WANT_ALG_SHA_256:MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL_ENABLED:MBEDTLS_TIMING_C
+dtls13_handshake
