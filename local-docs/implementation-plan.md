@@ -948,6 +948,12 @@ Audit completed 2026-03-31 (re-audited with Opus 4.6 1M context). Results:
           minimal config). Verify: no regressions, no new warnings, no dead-code
           compiler errors, correct `#if` guards throughout. All existing non-DTLS-1.3
           test suites must pass unchanged.
+- [ ] 14. Upstream rebase and merge-conflict analysis: review all mbedtls commits to
+          the affected files (`ssl_msg.c`, `ssl_tls.c`, `ssl_tls13_*.c`, `ssl_misc.h`)
+          since the 4.0.0 tag; identify conflicts and upstream changes that should be
+          incorporated; assess branch stability and decide on approach (rebase onto
+          current `development`, squash-merge, or long-lived feature branch with
+          periodic merge commits).
 - [x] 15. Fix mbedtls post-handshake message_seq bug (originally misattributed to wolfSSL).
           **Finding** (revised 2026-03-31, see `wolfssl-interop-notes.md §Phase 5.8`):
           RFC 9147 §5.2 explicitly states that `message_seq` is NOT reset at the end of
@@ -963,12 +969,6 @@ Audit completed 2026-03-31 (re-audited with Opus 4.6 1M context). Results:
           during finishing states (NST_WAIT_ACK etc.) where post-HS counter not yet synced.
           **Test**: wolfSSL KeyUpdate interop test added — all 12 wolfSSL tests pass.
           All 25 mbedtls dtls13 integration tests pass.
-- [ ] 14. Upstream rebase and merge-conflict analysis: review all mbedtls commits to
-          the affected files (`ssl_msg.c`, `ssl_tls.c`, `ssl_tls13_*.c`, `ssl_misc.h`)
-          since the 4.0.0 tag; identify conflicts and upstream changes that should be
-          incorporated; assess branch stability and decide on approach (rebase onto
-          current `development`, squash-merge, or long-lived feature branch with
-          periodic merge commits).
 
 ---
 
