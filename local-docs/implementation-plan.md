@@ -705,24 +705,32 @@ Review all MUST/SHOULD/MAY requirements in RFC 9147 and draft-ietf-tls-rfc9147bi
 
 #### [x] 6.2 Test Coverage
 
-Measured 2026-03-31. Build: `cmake -DCMAKE_C_FLAGS="--coverage -O0 -g3"`, ran CTest (131/131) + `tests/dtls13/dtls13-tests.sh`.
+Measured 2026-03-31. Build: `cmake -DCMAKE_C_FLAGS="--coverage -O0 -g3"`, ran CTest (131 unit suites) + `tests/dtls13/dtls13-tests.sh` (integration tests). Note: `development` branch has a broken CMake (`generate_config_checks.py` submodule mismatch), so the baseline is computed as coverage of pre-existing lines in the same 4 files on the `dtls13` build.
 
-**Key finding:** `dtls13-tests.sh` is NOT wired into CTest. Running CTest alone gives 40.8% branch coverage on new code; including the DTLS 1.3 integration tests gives **72.7%** — well above the 60% target. Action item: wire `dtls13-tests.sh` into CTest (tracked in Phase 7).
+**Key finding:** `dtls13-tests.sh` was not wired into CTest. Fixed as part of this phase — wired as `dtls13-integration-suite` (test #132). Without it CTest alone gave 40.8% branch coverage on new code.
 
-**Branch coverage on new DTLS 1.3 lines (CTest + dtls13-tests.sh):**
+**Coverage comparison: new DTLS 1.3 code vs pre-existing code in the same files**
+(same build, same test run — measures whether new code is better-tested than what was there before)
 
-| File | Branches | Br% | Lines | Ln% |
+| Code | Branches | Br% | Lines | Ln% |
 |------|----------|-----|-------|-----|
-| ssl_msg.c | 598/822 | 72.7% | 1083/1278 | 84.7% |
-| ssl_tls13_client.c | 53/74 | 71.6% | 106/130 | 81.5% |
-| ssl_tls13_server.c | 59/90 | 65.6% | 107/126 | 84.9% |
-| ssl_tls.c | 34/38 | 89.5% | 56/56 | 100.0% |
-| **TOTAL** | **744/1024** | **72.7%** | **1352/1590** | **85.0%** |
+| **New DTLS 1.3 lines** | **744/1024** | **72.7%** | **1352/1590** | **85.0%** |
+| Pre-existing lines (baseline) | 2356/3976 | 59.3% | 6126/7979 | 76.8% |
 
-**Remaining gaps (uncovered branches in new code):**
-- `ssl_tls13_server.c` 65.6%: HRR+cookie error paths (cookie write/check failure), EncryptedExtensions CID error paths
-- `ssl_msg.c` 72.7%: KeyUpdate error/cleanup paths, CID NewConnectionId/RequestConnectionId parsing errors, SNE AES path (ChaCha20 only exercised in current tests), cross-epoch retransmit eviction path, `dtls13_wait_ack_step` timeout/implicit-ACK paths
-- These gaps are acceptable for Phase 6; improving them is tracked in Phase 7 alongside CID hardening and additional interop tests.
+New code is **+13.4 pp** branch coverage and **+8.2 pp** line coverage vs baseline. Meets and exceeds the mbedtls policy ("similar level of coverage to existing code").
+
+**Per-file breakdown:**
+
+| File | New DTLS 1.3 br% | Pre-existing br% | New ln% | Pre-existing ln% |
+|------|-----------------|-----------------|---------|-----------------|
+| ssl_msg.c | 72.7% (598/822) | 65.6% (786/1199) | 84.7% | 77.2% |
+| ssl_tls13_client.c | 71.6% (53/74) | 49.7% (300/604) | 81.5% | 78.6% |
+| ssl_tls13_server.c | 65.6% (59/90) | 54.3% (354/652) | 84.9% | 80.8% |
+| ssl_tls.c | 89.5% (34/38) | 60.2% (916/1521) | 100.0% | 74.3% |
+
+**Remaining gaps in new code (tracked for Phase 7):**
+- `ssl_tls13_server.c` 65.6%: HRR+cookie error paths, EncryptedExtensions CID error paths
+- `ssl_msg.c` 72.7%: KeyUpdate error/cleanup paths, CID NewConnectionId/RequestConnectionId parsing errors, SNE AES path (ChaCha20 only exercised currently), cross-epoch retransmit eviction path, `dtls13_wait_ack_step` implicit-ACK path
 
 #### [x] 6.3 DRY and Code Reuse
 *Target: −1,100 net library lines (20% of ~5,500 added). Highest-yield items first.*
