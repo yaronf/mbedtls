@@ -264,11 +264,6 @@ have been drilled down in `local-docs/design-drilldown.md`:
          New context fields `dtls13_epoch_max_seq[4]` and `in_epoch_full` in
          `mbedtls_ssl_context` (ssl.h). Reconstruction logic in
          `ssl_parse_dtls13_record_header()`.
-- [ ] 5. Implement per-epoch anti-replay sliding windows.
-         See drilldown §2: epoch pool allows maintaining separate windows per retained
-         epoch; existing `in_window`/`in_window_top` covers the active epoch only.
-         Test: integration test via udp_proxy that replays a record and verifies it
-         is silently dropped (no error surfaced to application, connection stays live).
 - [x] 6. Add `sn_key` + `sn_key_len` fields to `mbedtls_ssl_transform` (ssl_misc.h).
          Derivation function `mbedtls_ssl_dtls13_hkdf_expand_label` added to
          `ssl_tls13_keys.c/h`; not yet wired to key installation (Phase 2.2).
@@ -664,6 +659,50 @@ Review all MUST/SHOULD/MAY requirements in RFC 9147 and draft-ietf-tls-rfc9147bi
 - **Amplification limit**: enforced from first ClientHello until client address verified (RFC 9147 §5.1).
 - **bis-specific changes**: record any requirements from the bis draft not yet addressed.
 
+##### RFC 9147 Compliance Audit Results (completed 2026-03-31)
+
+**COMPLIANT — all items verified:**
+
+| Area | §  | Status | Notes |
+|------|----|--------|-------|
+| No epoch=0 after epoch≥2 | §4.1 | ✓ | epoch validation in ssl_parse_record_header |
+| Unified header C bit (CID present) | §4.1 | ✓ | `0x10` mask in header construction |
+| Unified header S bit (long_seq) | §4.1 | ✓ | hardcoded 16-bit (S=1); see note below |
+| Epoch reconstruction (2-bit → full) | §4.2.2 | ✓ | ssl_parse_dtls13_record_header:4524 |
+| Seq reconstruction (8/16-bit) | §4.2.2 | ✓ | both modes, SNE applied before use |
+| Anti-replay sliding window | §4.2 | ✓ | single window reset per `set_inbound_transform`; correct |
+| sn_key derivation via HKDF-Expand-Label("sn") | §4.2.3 | ✓ | ssl_dtls13_derive_sne_keys |
+| AES mask = AES-ECB(sn_key, sample[0:16])[0:2] | §4.2.3 | ✓ | PSA ECB_NO_PADDING |
+| ChaCha20 mask = ChaCha20(key, nonce, LE32(ctr))[0:2] | §4.2.3 | ✓ | mbedtls_chacha20_crypt |
+| SNE: applied after AEAD (send), removed before AEAD (recv) | §4.2.3 | ✓ | ssl_msg.c:3536, 5190 |
+| legacy_cookie zero-length in DTLS 1.3 ClientHello | §5.3 | ✓ | ssl_client.c:540 |
+| Compatibility mode prohibited (no CCS) | §5 | ✓ | skipped when transport==DATAGRAM |
+| legacy_session_id_echo zero-length in ServerHello | §5.4 | ✓ | written zero; client aborts if non-zero |
+| HRR cookie in `cookie` extension (not legacy field) | §5.6 | ✓ | parsed from ext, echoed in second CH |
+| message_seq per message (not per fragment) | §5.2 | ✓ | out_msg_seq increments once per message |
+| Post-handshake message_seq separate counter starting at 0 | §5.2 | ✓ | dtls13_post_hs_msg_seq |
+| Address verification via cookie (HRR path) | §5.1 | ✓ | f_cookie_write/f_cookie_check callbacks |
+| ACK sent for last flight of handshake | §7 | ✓ | dtls13_ack_pending=1 after Finished verify |
+| ACK format: list of (epoch, seq) 8-byte pairs | §7 | ✓ | ssl_dtls13_write_ack |
+| Server ACKs client's final Finished | §7.2.1 | ✓ | ssl_tls13_process_client_finished |
+| Client ACKs server's final flight | §7.2 | ✓ | dtls13_ack_pending=1 in multiple paths |
+| Post-handshake messages require ACK | §7 | ✓ | KeyUpdate, NewConnectionId both tracked |
+| Partial flight ACK: retransmit only unacked items | §7.3 | ✓ | flight item `acked` flag |
+| ACK triggers: full flight / partial+timer / out-of-order | §7.2 | ✓ | all three cases handled |
+| CID extension in ClientHello/ServerHello | §9 | ✓ | mbedtls_ssl_write_cid_ext |
+| NewConnectionId / RequestConnectionId | §9 | ✓ | ssl_msg.c:7713–7933 |
+| too_many_cids_requested alert | §9 | ✓ | threshold=4, MBEDTLS_SSL_ALERT_MSG_TOO_MANY_CIDS_REQUESTED |
+| DTLS 1.3 label prefix "dtls13" | §5.2 | ✓ | ssl_tls13_keys.c:84–89 |
+
+**GAPS / DEFERRED:**
+
+| Area | § | Status | Notes |
+|------|---|--------|-------|
+| Amplification limit (3× unverified data) | §5.1 | **NOT IMPLEMENTED** | No byte-count tracking. Mitigated by cookie-based address verification (f_cookie_write); operators using the cookie callback are effectively compliant. Operators not using it have no amplification protection. Flag for Phase 7 / API documentation. |
+| Downgrade sentinel (ServerHello→client) | RFC 8446 §4.1.3 | ✓ | Inherited from TLS 1.3: `ssl_tls13_is_downgrade_negotiation()` checks last 8 bytes of ServerHello random for `"DOWNGRD\x00"` / `"DOWNGRD\x01"`. No DTLS-specific addition exists in RFC 9147 or bis-01. A ClientHello-side sentinel (client→server direction) has not been proposed in any published draft. |
+| Per-epoch anti-replay windows | §4.2 (SHOULD) | **DEFERRED** | Tracked in Phase 7 item 5. Current implementation resets the single window on each `set_inbound_transform`; RFC uses SHOULD. |
+| S bit (16-bit seq) always on | §4.1 | **DESIGN CHOICE** | RFC allows 8-bit seq. We always send 16-bit (S=1). Conservative, safe, interoperable with all known implementations. |
+
 #### 6.2 Test Coverage
 
 **mbedtls coverage policy** (from `CONTRIBUTING.md`):
@@ -693,16 +732,123 @@ Equivalent CMake path: `cmake -DCMAKE_BUILD_TYPE=Coverage` then `make && make lc
 **Unit test suite**: new DTLS 1.3 logic should also appear in `tests/suites/test_suite_ssl.function` / `.data` for library-level (non-program) paths (record formatting, epoch arithmetic, sn_key mask). Check what unit coverage exists today and flag any pure-library paths exercised only via ssl-opt end-to-end tests.
 
 #### 6.3 DRY and Code Reuse
-- Identify DTLS 1.3 code that duplicates logic already present in TLS 1.3 (`ssl_tls13_*.c`) or DTLS 1.2 (`ssl_tls.c`, `ssl_msg.c`). Flag for extraction into shared helpers or direct reuse.
-- Identify DTLS 1.3-specific helpers that are structurally identical (e.g. post-hs seq increment in both directions, ACK pending flag management). Evaluate consolidation.
-- Review `ssl_msg.c` additions for inline vs. function decomposition — long functions with repeated epoch/transform lookup patterns are a smell.
-- Check whether the ACK send/receive path reuses or reimplements alert/handshake record framing.
+*Target: −1,100 net library lines (20% of ~5,500 added). Highest-yield items first.*
+
+- [ ] **a. `ssl_dtls13_sne_apply` defined twice** (`ssl_msg.c` lines 3384 and 4718).
+       One is a forward declaration region, the other the real body — or they are
+       near-identical. Audit and collapse to a single definition. Est. −100–200 lines.
+
+- [ ] **b. Repeated epoch/transform lookup boilerplate** in `ssl_msg.c`.
+       Pattern `ssl_dtls13_epoch_pool_lookup(ssl, epoch)` + null-check + error path
+       appears many times inline. Extract a `ssl_dtls13_get_transform_or_drop()` helper
+       that encapsulates the lookup + drop-with-log path. Est. −80–120 lines.
+
+- [ ] **c. Near-duplicate key derivation calls in `ssl_tls13_keys.c`** (+728 lines).
+       DTLS 1.3 label prefix switching added ~728 lines of near-copies of existing
+       TLS 1.3 derivation calls, differing only in the `"dtls13"` vs `"tls13 "` prefix.
+       Parameterize `ssl_tls13_derive_secret_with_prefix()` and replace all call-sites
+       that duplicate the TLS 1.3 version. Est. −200–300 lines.
+
+- [ ] **d. Post-handshake message_seq increment duplicated** across
+       `ssl_tls13_write_key_update`, `ssl_tls13_write_new_connection_id`,
+       `ssl_tls13_write_request_connection_id`. Extract a single
+       `ssl_dtls13_post_hs_msg_seq_next()` inline and reuse. Est. −30–50 lines.
+
+- [ ] **e. `ssl_tls13_server.c` / `ssl_tls13_client.c` epoch-wiring code** (+404/+382).
+       Version negotiation and epoch-wiring additions likely duplicate guards already
+       present for TLS 1.3. Audit for `#if DTLS` blocks that replicate adjacent
+       non-DTLS code paths and consolidate. Est. −150–250 lines.
+
+- [ ] **f. ACK record framing vs. existing record write path**.
+       Confirm whether `ssl_dtls13_write_ack` calls `mbedtls_ssl_write_record` or
+       reimplements header construction. If the latter, refactor to reuse the existing
+       path. Est. −50–100 lines.
+
+- [ ] **g. Comments / blank lines density in long functions**.
+       `process_ack` (~734 lines gap), `sne_apply` impl (~large). Review for
+       redundant multi-line block comments restating the code, and compress.
+       Est. −80–150 lines.
 
 #### 6.4 Code Complexity
 - Cyclomatic complexity audit of the five largest DTLS 1.3 code paths: record parsing (unified header), epoch lookup, ACK processing, post-hs dispatch, retransmit timer.
 - Flag any function exceeding ~60 lines or ~10 branches for refactoring consideration.
 - Review state machine transitions: are all `ssl->state` paths reachable and correctly guarded? Are there dead states or missing transitions?
 - Comment density: are non-obvious decisions (epoch arithmetic, sn_key mask construction, ACK flush timing) explained at the code level?
+
+##### State Machine Review (completed 2026-03-31)
+
+Two new DTLS 1.3-only states added beyond the standard TLS 1.3 states:
+
+```
+MBEDTLS_SSL_TLS1_3_NEW_SESSION_TICKET_WAIT_ACK   (server)
+MBEDTLS_SSL_TLS1_3_CLIENT_FINISHED_WAIT_ACK      (client)
+```
+
+**Server state machine (DTLS 1.3 path):**
+
+```
+NEW_SESSION_TICKET_FLUSH
+  ├─ DTLS 1.3: send_flight_completed() + arm retransmit timer
+  │   └─→ NEW_SESSION_TICKET_WAIT_ACK
+  └─ TLS 1.3: → HANDSHAKE_OVER
+
+NEW_SESSION_TICKET_WAIT_ACK
+  ├─ retransmit_state == RETRANS_FINISHED (at entry) → HANDSHAKE_OVER
+  ├─ read_record() → explicit ACK processed inside NON_FATAL loop
+  │   ├─ retransmit_state == RETRANS_FINISHED after read → HANDSHAKE_OVER
+  │   ├─ in_msgtype == APP_DATA or HANDSHAKE (implicit ACK, RFC 9147 §7.3)
+  │   │   → cancel timer, retransmit_state = FINISHED, keep_current_message = 1
+  │   │   → HANDSHAKE_OVER
+  │   ├─ WANT_READ / NON_FATAL → stay (retransmit timer drives resends)
+  │   └─ error → propagate
+  └─ retransmit timer fires → mbedtls_ssl_resend() retransmits NST flight
+```
+
+**Client state machine (DTLS 1.3 path):**
+
+```
+CLIENT_FINISHED (write)
+  ├─ DTLS 1.3: handshake_wrapup() (installs app keys, retires epoch-2 to pool)
+  │   arm retransmit timer, retransmit_state = RETRANS_WAITING
+  │   └─→ CLIENT_FINISHED_WAIT_ACK
+  └─ TLS 1.3: → FLUSH_BUFFERS
+
+CLIENT_FINISHED_WAIT_ACK
+  ├─ retransmit_state == RETRANS_FINISHED (at entry) → HANDSHAKE_OVER
+  ├─ read_record() → explicit ACK processed inside NON_FATAL loop
+  │   ├─ retransmit_state == RETRANS_FINISHED after read → HANDSHAKE_OVER
+  │   ├─ in_msgtype == HANDSHAKE or APP_DATA (implicit ACK, RFC 9147 §5.3)
+  │   │   → cancel timer, retransmit_state = FINISHED, keep_current_message = 1
+  │   │   → HANDSHAKE_OVER
+  │   ├─ WANT_READ / NON_FATAL → stay (retransmit timer drives resends)
+  │   └─ error (e.g. fatal alert from server) → propagate
+  └─ retransmit timer fires → mbedtls_ssl_resend() retransmits Finished flight
+```
+
+**Key design decisions:**
+
+- `retransmit_state` is checked *both* at entry and after `read_record()` because the ACK
+  handler runs inside `read_record`'s internal NON_FATAL loop and never surfaces to the
+  caller as a distinct return code. Without the post-read check, an ACK arriving on the
+  first read_record call would be silently processed but the state advance would only happen
+  on the *next* call.
+
+- Application keys are installed *before* entering `CLIENT_FINISHED_WAIT_ACK` (in
+  `write_client_finished`) so the client can decrypt the server's ACK which arrives at
+  epoch 3. The epoch-2 transform is retired to the pool so late-arriving handshake records
+  can still be decrypted.
+
+- The implicit ACK path (post-handshake message received before explicit ACK) is required
+  for NST interop: RFC 9147 §5.3 / §7.3 — receiving application data or a post-handshake
+  message from the peer proves it has processed our flight, so we must not stall waiting
+  for an explicit ACK that may never arrive. `keep_current_message = 1` preserves the
+  buffered record for delivery once `HANDSHAKE_OVER` is entered.
+
+**Correctness assessment:** All transitions are reachable and correctly guarded. No dead
+states. The double `retransmit_state` check is intentional. Alert handling (fatal error
+from peer) propagates correctly via the `ret != 0` branch. The two WAIT_ACK handlers are
+structurally identical; the duplication is accepted given the cross-file boundary
+(server.c vs client.c).
 
 #### 6.5 Memory Safety
 - Audit all buffer size calculations in record formatting and parsing: unified header length assumptions, CID length bounds, fragment reassembly buffer sizing.
@@ -734,12 +880,17 @@ Equivalent CMake path: `cmake -DCMAKE_BUILD_TYPE=Coverage` then `make && make lc
 - [ ] 3. `TLS_AES_128_CCM_8_SHA256`: enforce MUST NOT use without additional forgery
          protection; return a clear error or compile-time guard.
 - [ ] 4. Epoch wrap detection: terminate if sending epoch would exceed 2^48-1.
-- [ ] 5. Verify all Appendix C implementation pitfalls are covered:
+- [ ] 5. Per-epoch anti-replay sliding windows (moved from Phase 1.5).
+         Epoch pool allows maintaining separate windows per retained epoch;
+         existing `in_window`/`in_window_top` covers the active epoch only.
+         Test: integration test via udp_proxy that replays a record and verifies it
+         is silently dropped (no error surfaced to application, connection stays live).
+- [ ] 6. Verify all Appendix C implementation pitfalls are covered:
          - Multi-epoch key retention during key transitions.
          - Fragment reassembly correctness with out-of-order and overlapping fragments.
          - Explicit record length validation within datagram bounds.
          - Amplification limit enforced from the first ClientHello.
-- [ ] 6. Post-handshake idle timeout test.
+- [ ] 7. Post-handshake idle timeout test.
          mbedtls exposes liveness detection via the timer callback pair
          (`mbedtls_ssl_set_timer_cb`): after the handshake, the application arms
          a timer and `mbedtls_ssl_read` returns `MBEDTLS_ERR_SSL_TIMEOUT` when it
@@ -751,13 +902,13 @@ Equivalent CMake path: `cmake -DCMAKE_BUILD_TYPE=Coverage` then `make && make lc
          Note: RFC 6520 heartbeat is in a grey zone for TLS/DTLS 1.3 (not mentioned
          in RFC 9147, no update to 6520 covering 1.3). Application-layer keepalive
          via the timer mechanism is the standards-track approach.
-- [ ] 7. Fuzz testing: record parser (unified header, epoch reconstruction, fragment
+- [ ] 8. Fuzz testing: record parser (unified header, epoch reconstruction, fragment
          reassembly), ACK parser.
-- [ ] 8. Security review: cookie generation entropy, sn_key derivation ordering, epoch
+- [ ] 9. Security review: cookie generation entropy, sn_key derivation ordering, epoch
          wrap, failed AEAD counter enforcement, downgrade sentinel checks.
-- [ ] 9. Full interop suite against wolfSSL covering all implemented features.
-         See `reference-implementations.md`.
-- [ ] 10. Add OpenSSL interop when PR #26629 merges. See `reference-implementations.md`.
+- [ ] 10. Full interop suite against wolfSSL covering all implemented features.
+          See `reference-implementations.md`.
+- [ ] 11. Add OpenSSL interop when PR #26629 merges. See `reference-implementations.md`.
 
 ---
 
