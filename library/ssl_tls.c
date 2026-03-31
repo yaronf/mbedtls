@@ -8271,11 +8271,22 @@ int mbedtls_ssl_validate_ciphersuite(
     mbedtls_ssl_protocol_version min_tls_version,
     mbedtls_ssl_protocol_version max_tls_version)
 {
-    (void) ssl;
-
     if (suite_info == NULL) {
         return -1;
     }
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    /*
+     * RFC 9147 §4.5.3: TLS_AES_128_CCM_8_SHA256 MUST NOT be used in DTLS
+     * without additional forgery-protection safeguards (not implemented here).
+     */
+    if (ssl != NULL && ssl->conf != NULL &&
+        ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+        suite_info->id == MBEDTLS_TLS1_3_AES_128_CCM_8_SHA256) {
+        return -1;
+    }
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
+    (void) ssl;
 
     if ((suite_info->min_tls_version > max_tls_version) ||
         (suite_info->max_tls_version < min_tls_version)) {

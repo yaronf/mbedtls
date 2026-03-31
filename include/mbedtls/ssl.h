@@ -1618,6 +1618,13 @@ typedef struct {
     mbedtls_ssl_transform *transform; /*!< NULL when slot is empty           */
     uint64_t retired_at_ms;           /*!< monotonic ms when superseded      */
     unsigned char out_ctr[8];         /*!< outbound counter for this epoch   */
+    /* Per-epoch anti-replay window (RFC 9147 §4.2.1).
+     * Mirrors in_window / in_window_top in ssl_context but scoped to this
+     * epoch.  Initialised to 0/0 when a slot is created.  Updated after
+     * each successfully decrypted old-epoch record.  Both fields are 0 when
+     * the slot is empty (transform == NULL). */
+    uint64_t in_window;               /*!< replay bitmask for this epoch     */
+    uint64_t in_window_top;           /*!< highest seq seen in this epoch    */
 } mbedtls_ssl_dtls13_epoch_slot;
 #endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 

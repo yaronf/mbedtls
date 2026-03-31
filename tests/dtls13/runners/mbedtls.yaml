@@ -232,6 +232,12 @@ assertion_map:
   server_addr_not_migrated:
     flag: "-S"
     string: "Address migrated to new peer"
+  server_old_epoch_replayed_dropped:
+    flag: "-s"
+    string: "replayed old-epoch record"
+  client_old_epoch_replayed_dropped:
+    flag: "-c"
+    string: "replayed old-epoch record"
 
 requires_map:
   protocol:

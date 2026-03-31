@@ -2282,9 +2282,11 @@ int mbedtls_ssl_flush_output(mbedtls_ssl_context *ssl)
 /*
  * Append current handshake message to current outgoing flight
  */
-/* Forward declaration — defined later in this file (after epoch-pool helpers). */
+/* Forward declarations — defined later in this file (after epoch-pool helpers). */
 static mbedtls_ssl_dtls13_epoch_slot *ssl_dtls13_epoch_pool_lookup_slot(
     mbedtls_ssl_context *ssl, uint64_t epoch);
+static const mbedtls_ssl_dtls13_epoch_slot *ssl_dtls13_epoch_pool_lookup_slot_const(
+    const mbedtls_ssl_context *ssl, uint64_t epoch);
 
 MBEDTLS_CHECK_RETURN_CRITICAL
 static int ssl_flight_append(mbedtls_ssl_context *ssl)
@@ -5059,7 +5061,31 @@ static int ssl_parse_record_header(mbedtls_ssl_context const *ssl,
              */
             if (ssl->transform_in != NULL &&
                 ssl->transform_in->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
-                ssl_dtls13_epoch_pool_lookup(ssl, (uint64_t) rec_epoch) != NULL) {
+                ssl_dtls13_epoch_pool_lookup_slot_const(ssl, (uint64_t) rec_epoch) != NULL) {
+#if defined(MBEDTLS_SSL_DTLS_ANTI_REPLAY)
+                if (ssl->conf->anti_replay != MBEDTLS_SSL_ANTI_REPLAY_DISABLED) {
+                    /* Per-epoch anti-replay check (RFC 9147 §4.2.1).
+                     * rec->ctr[2..7] holds the 48-bit per-epoch sequence number
+                     * (rec->ctr[0..1] is the epoch, not part of the seq). */
+                    const mbedtls_ssl_dtls13_epoch_slot *slot =
+                        ssl_dtls13_epoch_pool_lookup_slot_const(ssl, (uint64_t) rec_epoch);
+                    uint64_t rec_seq = ssl_load_six_bytes(rec->ctr + 2);
+                    int is_replay = 0;
+                    if (rec_seq <= slot->in_window_top) {
+                        uint64_t bit = slot->in_window_top - rec_seq;
+                        if (bit < 64 && (slot->in_window & ((uint64_t) 1 << bit)) != 0) {
+                            is_replay = 1;
+                        }
+                    }
+                    if (is_replay) {
+                        MBEDTLS_SSL_DEBUG_MSG(1, ("replayed old-epoch record: "
+                                                  "epoch=%u seq=%06llx",
+                                                  (unsigned) rec_epoch,
+                                                  (unsigned long long) rec_seq));
+                        return MBEDTLS_ERR_SSL_UNEXPECTED_RECORD;
+                    }
+                }
+#endif /* MBEDTLS_SSL_DTLS_ANTI_REPLAY */
                 MBEDTLS_SSL_DEBUG_MSG(2, ("DTLS 1.3: record from old epoch %u "
                                           "found in pool, allowing decryption",
                                           (unsigned) rec_epoch));
@@ -5423,7 +5449,42 @@ static int ssl_prepare_record_content(mbedtls_ssl_context *ssl,
 
 #if defined(MBEDTLS_SSL_DTLS_ANTI_REPLAY)
     if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
-        mbedtls_ssl_dtls_replay_update(ssl);
+        /* Use rec->ctr (not ssl->in_ctr) for the epoch and sequence number:
+         * for DTLS 1.3 records, ssl->in_ctr still points into the receive
+         * buffer where the sequence field may be SNE-encrypted on the wire.
+         * rec->ctr[0..1] = epoch, rec->ctr[2..7] = plaintext seq (post-SNE). */
+        uint16_t rec_epoch = MBEDTLS_GET_UINT16_BE(rec->ctr, 0);
+        if (rec_epoch == ssl->in_epoch) {
+            /* Current epoch: update global window. */
+            mbedtls_ssl_dtls_replay_update(ssl);
+        }
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+        else if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+                 ssl->conf->anti_replay != MBEDTLS_SSL_ANTI_REPLAY_DISABLED) {
+            /* Old epoch: update the per-slot window (RFC 9147 §4.2.1).
+             * rec->ctr[2..7] is the post-SNE plaintext sequence number. */
+            mbedtls_ssl_dtls13_epoch_slot *slot =
+                ssl_dtls13_epoch_pool_lookup_slot(ssl, (uint64_t) rec_epoch);
+            if (slot != NULL) {
+                uint64_t rec_seq = ssl_load_six_bytes(rec->ctr + 2);
+                if (rec_seq > slot->in_window_top) {
+                    uint64_t shift = rec_seq - slot->in_window_top;
+                    if (shift >= 64) {
+                        slot->in_window = 1;
+                    } else {
+                        slot->in_window <<= shift;
+                        slot->in_window |= 1;
+                    }
+                    slot->in_window_top = rec_seq;
+                } else {
+                    uint64_t bit = slot->in_window_top - rec_seq;
+                    if (bit < 64) {
+                        slot->in_window |= (uint64_t) 1 << bit;
+                    }
+                }
+            }
+        }
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
     }
 #endif
 
@@ -8814,6 +8875,12 @@ void ssl_dtls13_epoch_pool_insert(mbedtls_ssl_context *ssl,
      * from a later epoch (e.g. WAIT_ACK with epoch=3 active) can continue
      * from where we left off rather than resetting to sequence 0. */
     memcpy(target->out_ctr, ssl->cur_out_ctr, sizeof(target->out_ctr));
+    /* Initialise the per-epoch inbound anti-replay window (RFC 9147 §4.2.1).
+     * The active-epoch window (ssl->in_window / in_window_top) is reset via
+     * mbedtls_ssl_dtls_replay_reset() when the epoch advances; here we start
+     * a fresh window for this (now-retired) epoch. */
+    target->in_window     = 0;
+    target->in_window_top = 0;
 }
 
 mbedtls_ssl_transform *ssl_dtls13_epoch_pool_lookup(
@@ -8839,6 +8906,21 @@ static mbedtls_ssl_dtls13_epoch_slot *ssl_dtls13_epoch_pool_lookup_slot(
 {
     int i;
     mbedtls_ssl_dtls13_epoch_slot *pool = ssl->dtls13_epoch_pool;
+
+    for (i = 0; i < MBEDTLS_SSL_DTLS13_EPOCH_POOL_SIZE; i++) {
+        if (pool[i].transform != NULL && pool[i].epoch == epoch) {
+            return &pool[i];
+        }
+    }
+    return NULL;
+}
+
+static const mbedtls_ssl_dtls13_epoch_slot *ssl_dtls13_epoch_pool_lookup_slot_const(
+    const mbedtls_ssl_context *ssl,
+    uint64_t epoch)
+{
+    int i;
+    const mbedtls_ssl_dtls13_epoch_slot *pool = ssl->dtls13_epoch_pool;
 
     for (i = 0; i < MBEDTLS_SSL_DTLS13_EPOCH_POOL_SIZE; i++) {
         if (pool[i].transform != NULL && pool[i].epoch == epoch) {

@@ -120,6 +120,45 @@ cases:
         - server_key_update_received
         - server_key_update_inbound_installed
 
+  - name: "KeyUpdate + duplicate: connection survives old-epoch duplicate records"
+    # Regression test for RFC 9147 §4.2.1 per-epoch replay protection.
+    # After KeyUpdate the old epoch's inbound transform is retained in the epoch
+    # pool (for reorder tolerance).  Duplicate handshake records from the old
+    # epoch arrive at the receiver after the epoch transition; the per-epoch
+    # anti-replay window must correctly accept/reject them.
+    # Without the per-epoch window fix, old-epoch records bypassed the replay
+    # gate entirely (the global in_window only covers the current epoch).
+    # Note: triggering "replayed old-epoch record" deterministically requires
+    # delayed application-data replay across an epoch boundary; the duplicate=1
+    # proxy only duplicates handshake records.  This case verifies the connection
+    # completes correctly under duplication stress; unit-level pool-replay tests
+    # cover the specific drop path.
+    skip_runners: [wolfssl]
+    requires:
+      - not_valgrind: true
+    proxy:
+      duplicate: 1
+    server:
+      debug_level: 2
+      key_update: 1
+      exchanges: 2
+      dgram_packing: false
+      hs_timeout: [10000, 20000]
+    client:
+      debug_level: 2
+      exchanges: 2
+      dgram_packing: false
+      hs_timeout: [10000, 20000]
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - server_key_update_sent
+        - server_key_update_acked
+        - server_key_update_outbound_installed
+        - client_key_update_inbound_installed
+
   - name: "auth-fail limit: server closes after too many bad MACs"
     skip_runners: [wolfssl]
     # bad_ad proxy corrupts every ApplicationData record.

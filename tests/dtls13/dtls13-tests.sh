@@ -372,6 +372,20 @@ run_test    "DTLS 1.3 KeyUpdate: AEAD limit auto-triggers KeyUpdate on client" \
             -s "KeyUpdate: new inbound transform installed"
 
 requires_protocol_version dtls13
+not_with_valgrind
+run_test    "DTLS 1.3 KeyUpdate: KeyUpdate + duplicate: connection survives old-epoch duplicate records" \
+            -p "$P_PXY duplicate=1" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=2 key_update=1 exchanges=2 dgram_packing=0 hs_timeout=10000-20000" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=2 exchanges=2 dgram_packing=0 hs_timeout=10000-20000" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -s "KeyUpdate sent" \
+            -s "ACK: KeyUpdate acknowledged" \
+            -s "KeyUpdate: new outbound transform installed" \
+            -c "KeyUpdate: new inbound transform installed"
+
+requires_protocol_version dtls13
 run_test    "DTLS 1.3 KeyUpdate: auth-fail limit: server closes after too many bad MACs" \
             -p "$P_PXY bad_ad=1" \
             "$P_SRV dtls=1 force_version=dtls13 debug_level=2 auth_fail_limit=1 exchanges=2" \
