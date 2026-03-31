@@ -235,3 +235,13 @@ if (NOT ${CMAKE_CURRENT_BINARY_DIR} STREQUAL ${CMAKE_CURRENT_SOURCE_DIR})
     link_to_source(dtls13)
     link_to_source(opt-testcases)
 endif()
+
+# DTLS 1.3 integration tests (ssl-opt-style script, separate from unit suites)
+if(UNIX)
+    add_test(NAME dtls13-integration-suite
+        COMMAND ${CMAKE_CURRENT_BINARY_DIR}/dtls13/dtls13-tests.sh
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/dtls13)
+    set_tests_properties(dtls13-integration-suite PROPERTIES
+        TIMEOUT 300
+        LABELS "dtls13")
+endif()
