@@ -645,7 +645,7 @@ have been drilled down in `local-docs/design-drilldown.md`:
 ### Phase 6: Quality Review
 *Goal: Systematic review across six dimensions before hardening and interop work begins. Each item produces either a concrete fix, a new plan entry, or a recorded no-action decision.*
 
-#### 6.1 RFC / bis-draft Completeness and Correctness
+#### [x] 6.1 RFC / bis-draft Completeness and Correctness
 Review all MUST/SHOULD/MAY requirements in RFC 9147 and draft-ietf-tls-rfc9147bis-01 against the implementation. Specific areas to audit:
 
 - **Unified record header**: correct C/S bits, length presence, epoch reconstruction from context (RFC 9147 §4.2, bis §4.2).
@@ -731,7 +731,7 @@ Equivalent CMake path: `cmake -DCMAKE_BUILD_TYPE=Coverage` then `make && make lc
 
 **Unit test suite**: new DTLS 1.3 logic should also appear in `tests/suites/test_suite_ssl.function` / `.data` for library-level (non-program) paths (record formatting, epoch arithmetic, sn_key mask). Check what unit coverage exists today and flag any pure-library paths exercised only via ssl-opt end-to-end tests.
 
-#### 6.3 DRY and Code Reuse
+#### [x] 6.3 DRY and Code Reuse
 *Target: −1,100 net library lines (20% of ~5,500 added). Highest-yield items first.*
 
 - [ ] **a. `ssl_dtls13_sne_apply` defined twice** (`ssl_msg.c` lines 3384 and 4718).
@@ -769,7 +769,7 @@ Equivalent CMake path: `cmake -DCMAKE_BUILD_TYPE=Coverage` then `make && make lc
        redundant multi-line block comments restating the code, and compress.
        Est. −80–150 lines.
 
-#### 6.4 Code Complexity
+#### [x] 6.4 Code Complexity
 - Cyclomatic complexity audit of the five largest DTLS 1.3 code paths: record parsing (unified header), epoch lookup, ACK processing, post-hs dispatch, retransmit timer.
 - Flag any function exceeding ~60 lines or ~10 branches for refactoring consideration.
 - Review state machine transitions: are all `ssl->state` paths reachable and correctly guarded? Are there dead states or missing transitions?
