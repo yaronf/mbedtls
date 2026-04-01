@@ -922,9 +922,11 @@ int mbedtls_ssl_write_client_hello(mbedtls_ssl_context *ssl)
     int ret = 0;
     unsigned char *buf;
     size_t buf_len, msg_len, binders_len;
-#if defined(MBEDTLS_SSL_PROTO_DTLS) && \
-    defined(MBEDTLS_SSL_PROTO_TLS1_3) && \
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && \
     defined(MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_SOME_PSK_ENABLED)
+    /* Set to 1 in the DTLS 1.3 + PSK path below after manually updating the
+     * transcript, so that write_handshake_msg_ext skips the redundant update.
+     * Defaults to 0 (always checksum) for non-DTLS or non-PSK builds. */
     int dtls13_psk_checksum_done = 0;
 #endif
 
@@ -1007,7 +1009,7 @@ int mbedtls_ssl_write_client_hello(mbedtls_ssl_context *ssl)
             int do_checksum = 1;
 #endif
             if ((ret = mbedtls_ssl_write_handshake_msg_ext(ssl, do_checksum, 1)) != 0) {
-                MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_write_handshake_msg", ret);
+                MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_write_handshake_msg_ext", ret);
                 return ret;
             }
         }
