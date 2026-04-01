@@ -42,189 +42,20 @@ Key differences from DTLS 1.2 (our implementation base):
 
 ---
 
-## Architecture Overview (Current mbedtls)
+## Architecture Overview
 
-Relevant files:
+Key files modified or extended for DTLS 1.3:
 
-- `library/ssl_tls.c` — core handshake state machine, DTLS retransmission
-- `library/ssl_msg.c` — record layer: read/write/encrypt/decrypt, flight buffering
-- `library/ssl_tls13_client.c`, `ssl_tls13_server.c` — TLS 1.3 handshake handlers
-- `library/ssl_tls13_generic.c` — shared TLS 1.3 message processing
-- `library/ssl_tls13_keys.c` — TLS 1.3 key derivation (HKDF schedule)
-- `library/ssl_misc.h` — all internal structs: `mbedtls_record`, `mbedtls_ssl_transform`, epoch/ctr handling
-- `include/mbedtls/ssl.h` — public API
-- `include/mbedtls/mbedtls_config.h` — config flags
+- `library/ssl_msg.c` — record layer: unified header parsing/serialization, SNE (sequence number encryption), DTLS 1.3 AEAD additional data, ACK injection, epoch anti-replay
+- `library/ssl_tls.c` — handshake state machine: DTLS 1.3 FSM states, ACK handling, post-handshake message sequencing, flight/epoch bookkeeping
+- `library/ssl_tls13_client.c`, `ssl_tls13_server.c` — TLS 1.3 handshake handlers extended for DTLS 1.3 specifics (HRR cookie, transcript hash exclusion of message_seq/fragment fields)
+- `library/ssl_tls13_generic.c` — shared TLS 1.3 message processing (minimal DTLS 1.3 changes)
+- `library/ssl_tls13_keys.c` — HKDF schedule: `"dtls13"` label prefix, `sn_key` derivation
+- `library/ssl_misc.h` — internal structs: `mbedtls_ssl_transform` extended with `sn_key`/`sn_key_len`/`dtls13_epoch`; `mbedtls_ssl_context` extended with epoch pool, anti-replay state, ACK pending flag, post-handshake msg_seq counters
+- `include/mbedtls/ssl.h` — `mbedtls_ssl_dtls13_epoch_slot` struct; context fields for DTLS 1.3 epoch management
+- `include/mbedtls/mbedtls_config.h` — no new config flags added; DTLS 1.3 is enabled by `MBEDTLS_SSL_PROTO_TLS1_3 && MBEDTLS_SSL_PROTO_DTLS`
 
-The DTLS 1.3 "not yet supported" guard is in `ssl_tls.c` at the transport=DATAGRAM + TLS1_3_only check.
-
----
-
-## What Needs to Be Built
-
-### 1. Record Layer (ssl_msg.c, ssl_misc.h)
-
-This is the deepest change. DTLS 1.3 has a completely new wire format for encrypted records.
-
-**1a. Unified header parsing/serialization**
-- Parse `DTLSCiphertext` unified header: first byte `001CSLЕЕ`, optional CID, 8 or 16-bit sequence number, optional length field.
-- Emit unified header on write.
-- Demux incoming records: type byte 32–63 → DTLSCiphertext; 21/22/26 → DTLSPlaintext; else reject.
-- Distinguish DTLS 1.2 records (type byte is a content type like 20/23/25) from DTLS 1.3 encrypted records (001... prefix).
-
-**1b. Epoch reconstruction**
-- Receiver has only 2 epoch bits and 8 or 16 seq bits in the ciphertext header.
-- Reconstruct full 64-bit epoch and sequence number per §4.2.2: pick the candidate closest to (highest_deprotected + 1).
-- Maintain per-epoch highest-deprotected sequence number.
-
-**1c. Sequence number encryption / decryption**
-- New `sn_key` derived via `HKDF-Expand-Label(Secret, "sn", "", key_length)` per epoch.
-- On write: encrypt the on-wire seq# bytes by XOR with AES-ECB(sn_key, ciphertext[0..15]) or ChaCha20(sn_key, ct[0..3], ct[4..15]).
-- On read: decrypt seq# with same mask (symmetric), then proceed with AEAD.
-- Must be applied only to `DTLSCiphertext`, not `DTLSPlaintext`.
-
-**1d. AEAD additional data change**
-- DTLS 1.2: `epoch || seq || type || version || length` (13 bytes).
-- DTLS 1.3: just the unified header bytes (2–N bytes, before seq# decryption). No epoch in AEAD nonce computation.
-- AEAD nonce: still uses the 64-bit sequence number (after reconstruction), XORed with the IV — same pattern as TLS 1.3.
-
-**1e. DTLSInnerPlaintext**
-- On write: serialize as `content || content_type || padding`.
-- On read: strip trailing zeros to find real content type.
-
-**1f. Multi-record datagrams**
-- Multiple records per datagram already partially supported. DTLS 1.3 adds the case where the last record can omit the length field. Need to handle this in the read loop.
-
-**1g. Anti-replay per epoch**
-- Already implemented for DTLS 1.2. Extend to maintain a per-epoch sliding window. On epoch transition, initialize a new window for the new epoch. Retain old windows per §4.2.1 guidance (up to MSL).
-
-### 2. Epoch Management (ssl_misc.h, ssl_tls.c)
-
-DTLS 1.3 has well-defined epoch semantics (0=plain, 1=early, 2=hs, 3=appdata, 4+=rekey). The current mbedtls epoch is a 2-byte field inside `ctr[0..1]` of `mbedtls_record`. This is sufficient for DTLS 1.2 but needs extension:
-
-- Track the full 64-bit epoch internally (wire format only shows 2 low-order bits in ciphertext, full 16-bit epoch in plaintext).
-- Install/activate keys at the right epoch transitions during handshake.
-- Support retaining keys from previous epochs for reordering window (SHOULD retain up to MSL).
-- `alt_transform_out` already exists for retransmission; may need generalization to support multiple retained epochs.
-
-### 3. Key Schedule Integration (ssl_tls13_keys.c)
-
-Mostly reuse, but:
-
-- Change HKDF label prefix from `"tls13 "` to `"dtls13"` when in DTLS mode. Add a flag/parameter to `HKDF-Expand-Label` wrappers, or use a per-context prefix string.
-- Add `sn_key` derivation (one per epoch, per direction).
-- Ensure `client_early_traffic_secret` maps to epoch 1; `[sender]_handshake_traffic_secret` to epoch 2; `[sender]_application_traffic_secret_0` to epoch 3; subsequent to 4+.
-
-### 4. Handshake State Machine (ssl_tls.c, ssl_tls13_client.c, ssl_tls13_server.c)
-
-Most TLS 1.3 handshake message handling can be reused directly. DTLS 1.3 divergences:
-
-**4a. Remove the "DTLS 1.3 not supported" guard.**
-
-**4b. No compatibility mode**
-- Skip sending/expecting ChangeCipherSpec.
-- Enforce `legacy_session_id_echo` is empty in ServerHello (abort with `illegal_parameter` if not).
-- Set `legacy_session_id` to zero-length in ClientHello for DTLS 1.3.
-- Set `legacy_cookie` to zero-length in ClientHello for DTLS 1.3.
-
-**4c. Cookie exchange via HelloRetryRequest**
-- Replace `HelloVerifyRequest` path with TLS 1.3 `HelloRetryRequest + cookie extension` path.
-- Server: on initial ClientHello without prior proof of reachability, generate stateless cookie (HMAC of client address + transcript hash), send HRR.
-- Client: on receiving HRR with cookie, re-send ClientHello with `cookie` extension.
-- Server: validate cookie, reject with `illegal_parameter` if invalid.
-- DTLS 1.3 client MUST abort on a second HRR in the same connection.
-
-**4d. EndOfEarlyData omission**
-- Do not send or expect EndOfEarlyData in DTLS 1.3 (epoch change signals end of early data).
-- Remove from transcript.
-
-**4e. Handshake transcript excludes DTLS framing fields**
-- The transcript hash is computed over TLS 1.3-style Handshake messages (no `message_seq`, `fragment_offset`, `fragment_length`). This is opposite of DTLS 1.2.
-- When feeding handshake messages into the transcript hash, strip the DTLS framing fields first.
-
-**4f. Version negotiation**
-- DTLS 1.3 version value is `0xfefc` in `supported_versions` extension.
-- `legacy_version` in ClientHello MUST be `{254, 253}` (DTLSv1.2).
-- Downgrade sentinels from TLS 1.3 apply.
-
-**4g. Retransmission / flight state machine**
-- DTLS 1.2 uses "retransmit entire flight on timer". DTLS 1.3 keeps this but adds selective retransmission based on ACKs: skip records that have been ACKed.
-- Need to track which record numbers were used for which handshake messages/fragments.
-- State machine: PREPARING → SENDING → WAITING → (FINISHED or back). Same shape as DTLS 1.2, but WAITING now has the ACK-based exit path in addition to timeout and next-flight-received.
-
-### 5. ACK Message (new)
-
-Content type 26 (`ack`). This is entirely new.
-
-**5a. Parsing**
-- `ACK { RecordNumber record_numbers<0..2^16-1> }` where `RecordNumber = { uint64 epoch; uint64 sequence_number }`.
-- Parse incoming ACK records in the record layer; deliver to handshake layer.
-
-**5b. Sending**
-- Send ACK when: (a) partial flight received (out-of-order fragment or delayed rest), (b) receiving the last flight (MUST ACK).
-- ACK uses the highest available sending epoch (but not epoch 1; use epoch 0 if stuck in early data).
-- Post-handshake: ACK each received-and-processed handshake record.
-
-**5c. Processing received ACKs**
-- Mark acknowledged records; remove from retransmission queue.
-- If partial ACK received, retransmit only unacknowledged records.
-- If full ACK received, cancel all retransmissions for that flight.
-
-### 6. Post-Handshake Messages
-
-DTLS 1.3 requires reliability for all post-handshake messages via independent per-message PREPARING/SENDING/WAITING state machines:
-
-- **NewSessionTicket**: server sends, client ACKs.
-- **KeyUpdate**: must be ACKed before sending with new epoch. Both sides must retain old keys until new-epoch traffic is successfully received. Epoch increments to 4+.
-- **NewConnectionId / RequestConnectionId**: new DTLS 1.3 messages (handshake types 10/9). Sender sends, receiver ACKs.
-- **Post-handshake client auth**: existing TLS 1.3 mechanism; needs ACK wrapping for DTLS.
-
-### 7. Connection ID Updates
-
-DTLS 1.3 CID is native in the unified header. RFC 9146 CID for DTLS 1.2 is a different mechanism. For DTLS 1.3:
-
-- Negotiate CID via `connection_id` extension in ClientHello/ServerHello.
-- CID in unified header via C bit.
-- `NewConnectionId` and `RequestConnectionId` post-handshake messages (new, not in DTLS 1.2).
-- `cid_immediate` vs `cid_spare` semantics.
-
-### 8. AEAD Limits
-
-- Track authenticated record count per epoch; initiate KeyUpdate before limit.
-- Track failed authentication attempts per epoch; close connection if exceeded (GCM/CHACHA: 2^36; CCM: 2^23.5).
-- `TLS_AES_128_CCM_8_SHA256`: MUST NOT be used without additional forgery protection. Flag or disallow.
-
-### 9. Config / Feature Flags
-
-- No new top-level config flag needed initially: DTLS 1.3 is enabled when both `MBEDTLS_SSL_PROTO_DTLS` and `MBEDTLS_SSL_PROTO_TLS1_3` are defined.
-- May want `MBEDTLS_SSL_DTLS13_SEQUENCE_NUMBER_ENCRYPTION` (on by default, but allow opt-out for constrained environments if spec allows? — actually the spec mandates it, so probably not).
-- `MBEDTLS_SSL_DTLS_CONNECTION_ID` already exists; extend to cover DTLS 1.3 unified-header CID.
-- New feature: `MBEDTLS_SSL_DTLS13_ACK` or just always-on when DTLS 1.3 is enabled.
-- Post-handshake CID management may be a separate flag.
-
-### 10. API Changes
-
-Minimal API changes desired. Likely additions:
-
-- New error codes: e.g., for epoch wrap, too_many_cids_requested.
-- Possibly expose ACK-related state for applications that need fine-grained control.
-- No new connect/accept API: DTLS 1.3 uses same `mbedtls_ssl_handshake()` entry point.
-
----
-
-## Detailed Design
-
-The three areas where the phase steps alone are insufficient to start coding
-have been drilled down in `local-docs/design-drilldown.md`:
-
-1. **Record layer integration** — exact dispatch point in `ssl_parse_record_header()`,
-   AAD change, new context fields (`dtls13_epoch_max_seq[4]`, `in_epoch_full`).
-2. **Transform slot model** — circular array of 4 `mbedtls_ssl_dtls13_epoch_slot`
-   entries on `mbedtls_ssl_context` for retaining past inbound epochs; outbound
-   retransmit model (`alt_transform_out`) unchanged.
-3. **ACK + retransmit surgery** — new fields on `mbedtls_ssl_flight_item`
-   (`sent_records[]`, `acked`), incoming record tracking for ACK content
-   (`dtls13_received_records[]`), non-blocking ACK injection via
-   `dtls13_ack_pending` flag, post-handshake FSM linked list design.
+DTLS 1.3 support is activated when both `MBEDTLS_SSL_PROTO_TLS1_3` and `MBEDTLS_SSL_PROTO_DTLS` are enabled. All DTLS 1.3–specific code paths are guarded by `#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS)`. On the wire, DTLS 1.3 encrypted records are identified by the `001CSLЕЕ` bit pattern in the first byte (distinct from DTLS 1.2 record headers) and are dispatched in `ssl_parse_record_header()` before the existing DTLS 1.2 path.
 
 ---
 
@@ -956,9 +787,20 @@ Audit completed 2026-03-31 (re-audited with Opus 4.6 1M context). Results:
          to directories; 3 DTLS 1.3 seeds per direction captured from real
          ssl_server2/ssl_client2 handshakes and validated against fuzz targets.
          Full record-parser fuzzing deferred (no dedicated stateless harness).
-- [ ] 10. Review specific security issues: cookie generation entropy, sn_key
+- [x] 10. Review specific security issues: cookie generation entropy, sn_key
           derivation ordering, epoch wrap, failed AEAD counter enforcement,
           downgrade sentinel checks.
+          **Reviewed 2026-04-01. All five areas clean — no code changes required.**
+          Cookie: PSA `psa_generate_key()` per server instance, stateless HMAC-SHA256
+          with timestamp + cli_id, proper entropy. sn_key: both directions derived
+          atomically with AEAD keys in same transform-construction call, no window
+          before install. Epoch wrap: UINT16_MAX guard on both inbound and outbound
+          KeyUpdate paths, returns error on breach. Failed AEAD counter: per-epoch
+          `in_auth_fail_count` (default limit 128) sends fatal alert on breach;
+          `out_record_count` triggers automatic KeyUpdate at limit (default 2^23);
+          both reset on epoch advance. Downgrade sentinels: client checks both 0x00
+          and 0x01 sentinels, aborts with ILLEGAL_PARAMETER if detected; server sets
+          TLS 1.2 sentinel when TLS 1.3 is enabled; applies on DTLS 1.3→1.2 fallback.
 - [ ] 11. Full interop suite against wolfSSL covering all implemented features.
           See `reference-implementations.md`.
 - [ ] 12. Add OpenSSL interop when PR #26629 merges. See `reference-implementations.md`.
@@ -994,10 +836,6 @@ Audit completed 2026-03-31 (re-audited with Opus 4.6 1M context). Results:
 
 ---
 
-### Pre-merge Cleanup
-*Items added as temporary debugging/development aids that MUST be removed before any upstream submission.*
-
-
 ---
 
 ## Key Invariants / Security Properties to Maintain
@@ -1031,25 +869,3 @@ highest-risk area: mandatory, novel, zero published vectors.
 | **wolfSSL** | Production since v5.4.0 (Jul 2022) | Primary interop target |
 | **OpenSSL** | In-progress PR #26629, not merged | Skip for now |
 
-### Plan
-
-- **Before Phase 1**: instrument BoringSSL's test runner to dump sn_key derivation
-  values and SNE mask outputs (AES and ChaCha20). Store as ground-truth unit test
-  vectors in `local-docs/test-vectors/`.
-- **End of Phase 3**: interop test against wolfSSL (full handshake, cert-based).
-- **End of Phase 4**: extend wolfSSL interop to PSK, resumption, 0-RTT.
-- **When OpenSSL PR merges**: add as second interop target.
-
----
-
-## Open Questions
-
-1. **API for ACK**: ACK send/receive should be fully internal and invisible to
-   the application. The non-blocking I/O interaction needs careful design: an ACK
-   may need to be sent before the application has called `mbedtls_ssl_write`, so
-   the record layer must be able to inject ACK records independently. Defer final
-   design to Phase 3 when the handshake FSM is being wired up.
-
-2. **`MBEDTLS_SSL_DTLS_SRTP` compatibility**: Likely unaffected (DTLS-SRTP uses
-   DTLS only for key establishment, then hands off to SRTP). Needs a short
-   research spike before Phase 6, not urgent.
