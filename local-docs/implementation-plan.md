@@ -754,18 +754,18 @@ Audit completed 2026-03-31 (re-audited with Opus 4.6 1M context). Results:
            bounds at two independent layers (ssl_parse_dtls13_record_header line 4576
            and ssl_parse_record_header line 5030). L=0 case (no length field) is
            trivially safe (length = remaining bytes). No bypass paths found.
-- [ ] 7. Post-handshake idle timeout test.
+- [x] 7. Post-handshake idle timeout test.
          mbedtls exposes liveness detection via the timer callback pair
          (`mbedtls_ssl_set_timer_cb`): after the handshake, the application arms
          a timer and `mbedtls_ssl_read` returns `MBEDTLS_ERR_SSL_TIMEOUT` when it
          fires.  mbedtls itself sets no post-handshake timer; the policy is entirely
          application-driven.
-         Test: complete a DTLS 1.3 handshake; application sets a short idle timer;
-         peer goes silent; verify `mbedtls_ssl_read` returns `MBEDTLS_ERR_SSL_TIMEOUT`
-         within the expected window without crashing or leaking state.
-         Note: RFC 6520 heartbeat is in a grey zone for TLS/DTLS 1.3 (not mentioned
-         in RFC 9147, no update to 6520 covering 1.3). Application-layer keepalive
-         via the timer mechanism is the standards-track approach.
+         **Done 2026-04-01**: `dtls13_post_hs_idle_timeout` in `test_suite_ssl`.
+         Completes DTLS 1.3 in-process handshake, drains post-handshake messages,
+         installs a mock timer that expires immediately on arm (no wall-clock delay),
+         sets `read_timeout=1ms` on client conf, verifies `ssl_read` returns
+         `MBEDTLS_ERR_SSL_TIMEOUT`, and checks `HANDSHAKE_OVER` state is preserved.
+         Mock timer helpers in `BEGIN_HEADER` section of `test_suite_ssl.function`.
 - [x] 8. Coverage gaps from Phase 6.2 (currently at 72.7% branch / target ≥70%; specific
          uncovered paths to close):
          - `ssl_tls13_server.c`: HRR+cookie write/check failure paths; EncryptedExtensions
