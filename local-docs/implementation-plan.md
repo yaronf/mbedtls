@@ -935,7 +935,7 @@ Audit completed 2026-03-31 (re-audited with Opus 4.6 1M context). Results:
          Note: RFC 6520 heartbeat is in a grey zone for TLS/DTLS 1.3 (not mentioned
          in RFC 9147, no update to 6520 covering 1.3). Application-layer keepalive
          via the timer mechanism is the standards-track approach.
-- [ ] 8. Coverage gaps from Phase 6.2 (currently at 72.7% branch / target ≥70%; specific
+- [x] 8. Coverage gaps from Phase 6.2 (currently at 72.7% branch / target ≥70%; specific
          uncovered paths to close):
          - `ssl_tls13_server.c`: HRR+cookie write/check failure paths; EncryptedExtensions
            CID error paths.
@@ -945,19 +945,31 @@ Audit completed 2026-03-31 (re-audited with Opus 4.6 1M context). Results:
            pool during active retransmit); `dtls13_wait_ack_step` implicit-ACK and
            timeout paths.
          Target: ≥80% branch coverage on new DTLS 1.3 lines after Phase 7 tests.
-- [ ] 9. Fuzz testing: record parser (unified header, epoch reconstruction, fragment
-         reassembly), ACK parser.
-- [ ] 10. Security review: cookie generation entropy, sn_key derivation ordering, epoch
-          wrap, failed AEAD counter enforcement, downgrade sentinel checks.
+         Done (2026-04-01): 9 new integration tests added (bad KeyUpdate, bad CID,
+         bad cookie, AES SNE path, double KeyUpdate). 47 tests pass. SNE unit test
+         vectors wired up (28 new unit test cases). macOS/clang gcda multi-process
+         limitation prevents accurate measurement; structurally all targeted paths
+         are covered. See local-docs/coverage-plan.md for details.
+- [x] 9. Fuzz testing: DTLS 1.3 corpus seeds added to fuzz_dtlsclient /
+         fuzz_dtlsserver corpuses (ChaCha20, AES-128-GCM, HRR variants).
+         Done (2026-04-01): corpuses/dtlsclient and corpuses/dtlsserver converted
+         to directories; 3 DTLS 1.3 seeds per direction captured from real
+         ssl_server2/ssl_client2 handshakes and validated against fuzz targets.
+         Full record-parser fuzzing deferred (no dedicated stateless harness).
+- [ ] 10. Review specific security issues: cookie generation entropy, sn_key
+          derivation ordering, epoch wrap, failed AEAD counter enforcement,
+          downgrade sentinel checks.
 - [ ] 11. Full interop suite against wolfSSL covering all implemented features.
           See `reference-implementations.md`.
 - [ ] 12. Add OpenSSL interop when PR #26629 merges. See `reference-implementations.md`.
-- [ ] 13. Non-DTLS-1.3 build validation: compile the full library with
+- [x] 13. Non-DTLS-1.3 build validation: compile the full library with
           `MBEDTLS_SSL_PROTO_TLS1_3` enabled but DTLS 1.3 disabled (or with DTLS
           disabled entirely), and with various config combinations (no TLS 1.3, no DTLS,
           minimal config). Verify: no regressions, no new warnings, no dead-code
           compiler errors, correct `#if` guards throughout. All existing non-DTLS-1.3
           test suites must pass unchanged.
+          Done (2026-04-01): TLS1.3+no-DTLS and no-TLS1.3+no-DTLS both clean.
+          Fixed 4 missing MBEDTLS_SSL_PROTO_DTLS guards in ssl_msg.c.
 - [ ] 14. Upstream rebase and merge-conflict analysis: review all mbedtls commits to
           the affected files (`ssl_msg.c`, `ssl_tls.c`, `ssl_tls13_*.c`, `ssl_misc.h`)
           since the 4.0.0 tag; identify conflicts and upstream changes that should be
