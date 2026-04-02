@@ -1080,8 +1080,6 @@ int mbedtls_test_move_handshake_to_state(mbedtls_ssl_context *ssl,
         return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
     }
 
-    unsigned char drain_buf[1];
-
     /* Perform communication via connected sockets */
     while ((ssl->state != state) && (--max_steps >= 0)) {
         /* Step second_ssl toward the target state.
@@ -1106,6 +1104,7 @@ int mbedtls_test_move_handshake_to_state(mbedtls_ssl_context *ssl,
             second_ssl->conf != NULL &&
             second_ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
             second_ssl->state == MBEDTLS_SSL_HANDSHAKE_OVER) {
+            unsigned char drain_buf[1];
             /* DTLS 1.3: flush deferred ACK by calling ssl_read. */
             ret = mbedtls_ssl_read(second_ssl, drain_buf, sizeof(drain_buf));
             if (ret != MBEDTLS_ERR_SSL_WANT_READ &&

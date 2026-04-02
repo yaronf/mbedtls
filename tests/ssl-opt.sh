@@ -9920,7 +9920,7 @@ run_test    "DTLS client reconnect from same port: no cookies" \
             "$P_SRV dtls=1 exchanges=2 read_timeout=1000 cookies=0" \
             "$P_CLI dtls=1 exchanges=2 debug_level=2 hs_timeout=500-8000 reconnect_hard=1" \
             0 \
-            -s "The operation timed out" \
+            -s "timed out waiting for client" \
             -S "Client initiated reconnection from same port"
 
 requires_config_enabled MBEDTLS_SSL_PROTO_TLS1_2

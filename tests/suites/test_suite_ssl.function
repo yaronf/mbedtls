@@ -424,6 +424,7 @@ exit:
  * mbedtls_ssl_read returns MBEDTLS_ERR_SSL_TIMEOUT deterministically without
  * any real wall-clock delay.
  */
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
 static void dtls13_mock_set_timer(void *ctx, uint32_t int_ms, uint32_t fin_ms)
 {
     int *state = (int *) ctx;
@@ -435,6 +436,7 @@ static int dtls13_mock_get_timer(void *ctx)
 {
     return *(int *) ctx;
 }
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 
 /* END_HEADER */
 
