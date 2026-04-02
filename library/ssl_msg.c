@@ -2284,10 +2284,12 @@ int mbedtls_ssl_flush_output(mbedtls_ssl_context *ssl)
  * Append current handshake message to current outgoing flight
  */
 /* Forward declarations — defined later in this file (after epoch-pool helpers). */
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
 static mbedtls_ssl_dtls13_epoch_slot *ssl_dtls13_epoch_pool_lookup_slot(
     mbedtls_ssl_context *ssl, uint64_t epoch);
 static const mbedtls_ssl_dtls13_epoch_slot *ssl_dtls13_epoch_pool_lookup_slot_const(
     const mbedtls_ssl_context *ssl, uint64_t epoch);
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 
 MBEDTLS_CHECK_RETURN_CRITICAL
 static int ssl_flight_append(mbedtls_ssl_context *ssl)
@@ -2531,6 +2533,11 @@ int mbedtls_ssl_flight_transmit(mbedtls_ssl_context *ssl)
         if (ssl->handshake->flight == NULL) {
             MBEDTLS_SSL_DEBUG_MSG(2, ("no flight to retransmit"));
             ssl->handshake->retransmit_state = MBEDTLS_SSL_RETRANS_WAITING;
+            /* RFC 9147 §5.8.1 item 1: after a timer expiry in WAITING state
+             * the timer MUST be re-armed so the endpoint keeps waiting.
+             * The timer was cancelled before this function was called; re-arm
+             * it here so that the next timeout fires as expected. */
+            mbedtls_ssl_set_timer(ssl, ssl->handshake->retransmit_timeout);
             ret = 0;
             goto cleanup;
         }
@@ -3957,13 +3964,49 @@ int mbedtls_ssl_prepare_handshake_record(mbedtls_ssl_context *ssl)
              * too many retransmissions.
              * Besides, No sane server ever retransmits HelloVerifyRequest.
              *
-             * DTLS 1.3: retransmits are ACK-driven, not triggered by receiving
-             * duplicates of the peer's previous flight.  Skip this path for
-             * DTLS 1.3; the else-branch below schedules an ACK instead. */
+             * DTLS 1.3: ACK-driven retransmits are the primary mechanism, but
+             * RFC 9147 §5.8.1 item 3 also mandates retransmitting the current
+             * outgoing flight when a retransmit of the peer's previous flight
+             * is received while in WAITING state.  This covers the HRR+cookie
+             * scenario where a delayed duplicate of CH[1] reaches the server
+             * after it has already sent its full server flight: without this
+             * path the server re-runs parse_client_hello on the duplicate,
+             * deriving fresh epoch=2 keys that don't match the client's — a
+             * key-mismatch that silently kills the connection (BUG A). */
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
-            if (ssl->tls_version != MBEDTLS_SSL_VERSION_TLS1_3 &&
-                recv_msg_seq == ssl->handshake->in_flight_start_seq - 1 &&
-                ssl->in_msg[0] != MBEDTLS_SSL_HS_HELLO_VERIFY_REQUEST) {
+            if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+                ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+                mbedtls_ssl_is_handshake_over(ssl) == 0 &&
+                ssl->handshake->retransmit_state == MBEDTLS_SSL_RETRANS_WAITING &&
+                ssl->handshake->flight != NULL &&
+                recv_msg_seq == ssl->handshake->in_msg_seq - 1) {
+                /* RFC 9147 §5.8.1 item 3: duplicate of the *last* message of
+                 * the peer's previous flight while in WAITING with an
+                 * unsatisfied outgoing flight → retransmit our flight.
+                 *
+                 * The recv_msg_seq == in_msg_seq - 1 guard mirrors the DTLS
+                 * 1.2 condition (in_flight_start_seq - 1) and ensures we only
+                 * retransmit on the final message of the peer's previous
+                 * flight, not on any stale mid-flight duplicate.
+                 *
+                 * The mbedtls_ssl_is_handshake_over() == 0 guard prevents
+                 * spurious flight retransmits from post-handshake states
+                 * (e.g. NST_WAIT_ACK) where both sides may still have live
+                 * flights and each other's Finished/NST duplicates would
+                 * otherwise create a retransmit feedback loop. */
+                MBEDTLS_SSL_DEBUG_MSG(2, ("DTLS 1.3: received duplicate %s (seq=%u, "
+                                          "last of peer's previous flight) in WAITING "
+                                          "state — retransmitting flight "
+                                          "(RFC 9147 §5.8.1 item 3)",
+                                          mbedtls_ssl_hs_type_name(ssl->in_msg[0]),
+                                          recv_msg_seq));
+                if ((ret = mbedtls_ssl_resend(ssl)) != 0) {
+                    MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_resend", ret);
+                    return ret;
+                }
+            } else if (ssl->tls_version != MBEDTLS_SSL_VERSION_TLS1_3 &&
+                       recv_msg_seq == ssl->handshake->in_flight_start_seq - 1 &&
+                       ssl->in_msg[0] != MBEDTLS_SSL_HS_HELLO_VERIFY_REQUEST) {
 #else
             if (recv_msg_seq == ssl->handshake->in_flight_start_seq - 1 &&
                 ssl->in_msg[0] != MBEDTLS_SSL_HS_HELLO_VERIFY_REQUEST) {
@@ -6376,6 +6419,14 @@ static int ssl_get_next_record(mbedtls_ssl_context *ssl)
 #if defined(MBEDTLS_SSL_RENEGOTIATION)
                 && (ssl->renego_status == MBEDTLS_SSL_INITIAL_HANDSHAKE)
 #endif
+                /* Only abort on unexpected records before any valid handshake
+                 * message has been received.  After CH[0] is consumed (e.g.
+                 * while waiting for CH[1] following an HRR), in_msg_seq > 0
+                 * and a replayed/unexpected record must be discarded, not
+                 * treated as fatal.  The comment above ("no valid message has
+                 * been received yet") only holds for in_msg_seq == 0. */
+                && (ssl->handshake != NULL &&
+                    ssl->handshake->in_msg_seq == 0)
                 ) {
                 return ret;
             }

@@ -979,7 +979,35 @@ static int ssl_handshake_init(mbedtls_ssl_context *ssl)
     /* Clear old handshake information if present */
 #if defined(MBEDTLS_SSL_PROTO_TLS1_2)
     if (ssl->transform_negotiate) {
-        mbedtls_ssl_transform_free(ssl->transform_negotiate);
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+        /* DTLS renegotiation: ssl_handshake_wrapup skips wrapup_free_hs_transform
+         * when a flight is pending (to allow retransmit of the Finished flight).
+         * That means transform_negotiate is NOT promoted to ssl->transform and NOT
+         * nulled — it remains aliased by transform_out.  By the time we get here
+         * for the next handshake, the flight has been implicitly acknowledged (the
+         * peer sent a new ClientHello in the post-handshake epoch), so we can
+         * safely complete the deferred promotion now.
+         *
+         * If we were to simply free transform_negotiate, transform_out would become
+         * a dangling pointer into zeroed freed memory, causing ssl_swap_epochs to
+         * skip the epoch swap and mbedtls_ssl_get_record_expansion to fail with
+         * psa_alg==0 (INTERNAL_ERROR). */
+        if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+            ssl->transform_out == ssl->transform_negotiate) {
+            /* Complete the promotion that wrapup deferred. */
+            if (ssl->transform) {
+                mbedtls_ssl_transform_free(ssl->transform);
+                mbedtls_free(ssl->transform);
+            }
+            ssl->transform = ssl->transform_negotiate;
+            ssl->transform_negotiate = NULL;
+            /* ssl->transform_out continues pointing to the promoted struct. */
+        } else
+#endif /* MBEDTLS_SSL_PROTO_DTLS */
+        {
+            mbedtls_ssl_transform_free(ssl->transform_negotiate);
+            ssl->transform_negotiate = NULL;
+        }
     }
 #endif /* MBEDTLS_SSL_PROTO_TLS1_2 */
     if (ssl->session_negotiate) {
