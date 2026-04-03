@@ -232,33 +232,3 @@ wolfSSL cert SAN includes `dNSName=example.com` and `iPAddress=127.0.0.1`.
 | `DTLS 1.3 wolfSSL interop Direction B: B: application data exchange`              | pass |
 | `DTLS 1.3 wolfSSL interop Direction B: B: mbedtls client sends KeyUpdate (update_not_requested)` | pass |
 
----
-
-## Coverage Gaps / Known Missing Unit Tests
-
-Integration tests cover all major features behaviorally. The following lack
-dedicated unit tests:
-
-- **Per-epoch anti-replay window**: sliding-window logic in `ssl_msg.c` is
-  exercised by the `KeyUpdate + duplicate` integration test but has no unit
-  test verifying accept/reject at specific sequence numbers.
-
-- **AEAD limit computation**: the limit-triggered KeyUpdate is covered by the
-  `AEAD limit auto-triggers KeyUpdate` integration tests; no unit test for the
-  arithmetic (limit value, per-epoch counter increment).
-
-- **Epoch pool retain/lookup**: `dtls13_epoch_pool` slot management has no
-  dedicated unit test; covered implicitly by all epoch-switching integration tests.
-
-- **Transcript hash DTLS field stripping**: no unit test verifying that
-  `message_seq`, `fragment_offset`, and `fragment_length` are excluded from
-  the handshake transcript hash (RFC 9147 §5.2). Covered implicitly by all
-  passing interop tests.
-
-- **HRR+cookie: client abandons after HRR**: server timeout/state-free path
-  is hard to test deterministically; requires a proxy drop rule or synthetic
-  client. No test exists.
-
-### Won't implement
-
-- **Amplification limit**: decided not to implement; see implementation plan.
