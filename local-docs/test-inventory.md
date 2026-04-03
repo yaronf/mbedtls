@@ -234,26 +234,31 @@ wolfSSL cert SAN includes `dNSName=example.com` and `iPAddress=127.0.0.1`.
 
 ---
 
-## Coverage Gaps / Known Missing Tests
+## Coverage Gaps / Known Missing Unit Tests
 
-- **Anti-replay (Phase 1.5)**: per-epoch sliding windows not yet implemented.
-  Test (replayed record silently dropped) pending implementation.
+Integration tests cover all major features behaviorally. The following lack
+dedicated unit tests:
 
-- **AEAD limit / KeyUpdate trigger**: automatic KeyUpdate when record count
-  approaches AEAD confidentiality limit is tested (AEAD limit tests above).
-  No separate unit test for the limit computation.
+- **Per-epoch anti-replay window**: sliding-window logic in `ssl_msg.c` is
+  exercised by the `KeyUpdate + duplicate` integration test but has no unit
+  test verifying accept/reject at specific sequence numbers.
 
-- **Epoch pool correctness**: no dedicated unit test for `dtls13_epoch_pool`
-  retain/lookup logic.
+- **AEAD limit computation**: the limit-triggered KeyUpdate is covered by the
+  `AEAD limit auto-triggers KeyUpdate` integration tests; no unit test for the
+  arithmetic (limit value, per-epoch counter increment).
 
-- **HRR+cookie: client abandons after HRR**: server must time out and free state.
-  Hard to test deterministically; requires proxy drop rule or synthetic client.
+- **Epoch pool retain/lookup**: `dtls13_epoch_pool` slot management has no
+  dedicated unit test; covered implicitly by all epoch-switching integration tests.
 
-- **Transcript hash correctness**: no unit test verifying DTLS framing fields are
-  stripped before hashing.
+- **Transcript hash DTLS field stripping**: no unit test verifying that
+  `message_seq`, `fragment_offset`, and `fragment_length` are excluded from
+  the handshake transcript hash (RFC 9147 §5.2). Covered implicitly by all
+  passing interop tests.
 
-- **Handshake fragmentation for large outgoing messages**: write path does not
-  fragment messages exceeding MTU (server Certificate hits INTERNAL_ERROR with
-  small MTU). Needs its own implementation phase.
+- **HRR+cookie: client abandons after HRR**: server timeout/state-free path
+  is hard to test deterministically; requires a proxy drop rule or synthetic
+  client. No test exists.
+
+### Won't implement
 
 - **Amplification limit**: decided not to implement; see implementation plan.
