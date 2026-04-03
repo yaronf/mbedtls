@@ -893,3 +893,15 @@ highest-risk area: mandatory, novel, zero published vectors.
 | **wolfSSL** | Production since v5.4.0 (Jul 2022) | Primary interop target |
 | **OpenSSL** | In-progress PR #26629, not merged | Skip for now |
 
+
+---
+
+## Gaps
+
+Known gaps not yet addressed:
+
+- **Build with `MBEDTLS_SSL_DTLS_CONNECTION_ID` disabled, DTLS 1.3 enabled**: 47 guard
+  sites across `ssl_msg.c`, `ssl_tls.c`, `ssl_tls13_client.c`, `ssl_tls13_server.c`.
+  No dedicated build has verified this configuration compiles and passes tests cleanly.
+  The Phase 7 build matrix covered no-DTLS and no-TLS1.3, but not CID-off with
+  everything else on.
