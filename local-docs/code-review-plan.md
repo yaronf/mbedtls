@@ -9,7 +9,7 @@ Areas are ordered roughly by risk — start at the top.
 
 ---
 
-## Area 1: Unified Record Header — parsing and construction (RFC 9147 §4.1)
+## Area 1: Unified Record Header — parsing and construction (RFC 9147 §4.1) ✓ DONE
 
 **Focus:** Is the epoch extraction, CID flag, and sequence number reconstruction
 correct for all combinations of header bits?
