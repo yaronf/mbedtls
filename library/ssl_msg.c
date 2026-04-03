@@ -4866,7 +4866,7 @@ static int ssl_dtls13_sne_apply(
  * With DTLS, mbedtls_ssl_read_record() will:
  * 1. proceed with the record if this function returns 0
  * 2. drop only the current record if this function returns UNEXPECTED_RECORD
- * 3. return CLIENT_RECONNECT if this function return that value
+ * 3. return CLIENT_RECONNECT if this function returns that value
  * 4. drop the whole datagram if this function returns anything else.
  * Point 2 is needed when the peer is resending, and we have already received
  * the first record from a datagram but are still waiting for the others.
@@ -4885,10 +4885,16 @@ static int ssl_parse_record_header(mbedtls_ssl_context const *ssl,
      * DTLSPlaintext header:           first byte is a ContentType (20-26).
      * TLS-over-TCP records:           not reachable here (DTLS transport only).
      *
-     * For DTLS 1.3, when the connection is using TLS 1.3 and epoch > 0, the
-     * peer uses the unified header.  We accept unified headers any time the
-     * first byte has the 0b001CSLЕЕ pattern, regardless of negotiated version,
-     * so that early packets (e.g. from a DTLS 1.3 peer) are handled correctly.
+     * A DTLS 1.3 peer uses the unified header for all epoch > 0 records.
+     * The ClientHello itself always uses the legacy plaintext header (for
+     * compatibility with DTLS 1.2 servers per RFC 9147 §5.3), so unified
+     * headers never appear before keys are established.  However, a client
+     * may receive unified-header records (e.g. encrypted server flight
+     * records) before version negotiation is complete on its side — RFC 9147
+     * §5.3 anticipates this.  We therefore accept unified headers based solely
+     * on the 0b001CSLЕЕ bit pattern, regardless of the negotiated version.
+     * Safety: the actual security boundary is AEAD decryption; a record with
+     * a wrong epoch or bad keys will fail decryption and be discarded.
      */
     if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
         len >= 1 && (buf[0] & 0xE0) == 0x20) {
