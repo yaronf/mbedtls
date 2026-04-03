@@ -1278,7 +1278,7 @@ wait_client_done() {
     CLI_DELAY=$(( $DOG_DELAY * $CLI_DELAY_FACTOR ))
     CLI_DELAY_FACTOR=1
 
-    ( sleep $CLI_DELAY; echo "===CLIENT_TIMEOUT===" >> $CLI_OUT; kill $CLI_PID ) &
+    ( sleep $CLI_DELAY; echo "===CLIENT_TIMEOUT===" >> $CLI_OUT; kill $CLI_PID ) > /dev/null 2>&1 &
     DOG_PID=$!
 
     # For Ubuntu 22.04, `Terminated` message is outputed by wait command.
