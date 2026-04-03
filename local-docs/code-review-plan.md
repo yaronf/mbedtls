@@ -4,7 +4,7 @@
 **Created:** 2026-04-03
 **Status:** in progress
 
-Each area has a focus question, the primary files/functions to read, and what to look for.
+Each area has a focus question, specific line ranges to read, and what to look for.
 Areas are ordered roughly by risk — start at the top.
 
 ---
@@ -15,210 +15,195 @@ Areas are ordered roughly by risk — start at the top.
 correct for all combinations of header bits?
 
 **Primary code:**
-- `library/ssl_msg.c:4566–4692` — `ssl_parse_dtls13_record_header()`: inbound unified header parsing (epoch reconstruction, seq, CID, length)
-- `library/ssl_msg.c:3433–3681` — `mbedtls_ssl_write_record()`: outbound unified header construction (`dtls13_unified_hdr` block starting at line 3530)
-- `library/ssl_msg.c:4875–5214` — `ssl_parse_record_header()` DTLS path: dispatcher that calls `ssl_parse_dtls13_record_header()` and handles epoch filtering
-- `library/ssl_msg.c:808–1382` — `mbedtls_ssl_encrypt_buf()`: where `dtls13_unified_hdr` is built and passed to AEAD (lines 1083–1121)
-- `library/ssl_misc.h` — unified header bit constants
+- `ssl_msg.c:4566–4692` — `ssl_parse_dtls13_record_header()`: full inbound parsing
+- `ssl_msg.c:1083–1121` — outbound `dtls13_unified_hdr` construction (inside `mbedtls_ssl_encrypt_buf`)
+- `ssl_msg.c:4622–4650` — epoch reconstruction from 2-bit on-wire field (window arithmetic)
+- `ssl_msg.c:4875–4940` — `ssl_parse_record_header()` DTLS dispatcher: epoch accept/reject logic
 
 **What to look for:**
-- Epoch bits (bits 0–1 of byte 0): do we correctly distinguish epoch 0 (plaintext) from epochs 1–3?
-- Sequence number reconstruction: 8-bit or 16-bit on-wire seq expanded to 48-bit — is the window-based reconstruction correct?
-- CID field: present only when C bit set — does the parser handle absent vs. present correctly?
-- Length field: optional (L bit); missing length means record extends to end of datagram — is that handled?
-- Off-by-one in header offset arithmetic.
+- Epoch bits (bits 0–1 of byte 0): correctly distinguish epoch 0 (plaintext) from epochs 1–3?
+- Epoch reconstruction window arithmetic (4622–4650): off-by-one at boundaries (e.g. epoch 3→4 transition)?
+- Outbound header byte (1107): bit packing of C/S/L/epoch bits matches RFC §4.3.3 Figure 4?
+- Length field: absent means record runs to end of datagram (4662–4664) — handled correctly?
+- CID read (4673–4676): `cid_len` from conf, not packet — already verified safe.
 
 ---
 
 ## Area 2: Sequence Number Encryption (SNE) — key derivation and mask application (RFC 9147 §4.2.3)
 
-**Focus:** Is the SNE key derived with the correct label and applied at the right
-point on both encrypt and decrypt paths?
+**Focus:** Is the SNE key derived with the correct label, and is the mask applied
+at the right point (after AEAD) on both encrypt and decrypt paths?
 
 **Primary code:**
-- `library/ssl_tls13_keys.c` — `mbedtls_ssl_dtls13_hkdf_expand_label()`, SNE key derivation
-- `library/ssl_msg.c` — outbound XOR (encrypt), inbound XOR (decrypt)
-- `library/ssl_misc.h` — `sn_key`/`sn_key_len` in `mbedtls_ssl_transform`
+- `ssl_tls13_keys.c:226–289` — `mbedtls_ssl_dtls13_hkdf_expand_label()`: label prefix
+- `ssl_msg.c:4709–4812` — `ssl_dtls13_sne_compute_mask()`: AES-ECB and ChaCha20 mask generation
+- `ssl_msg.c:4829–4852` — `ssl_dtls13_sne_apply()`: XOR application
+- `ssl_msg.c:3417–3432` — outbound SNE apply call site (after AEAD encrypt)
+- `ssl_msg.c:5330–5360` — inbound SNE apply call site (before seq reconstruction)
 
 **What to look for:**
-- Label must be `"dtls13 sn"` (not `"tls13 ..."`) — check exact string.
-- Ciphertext sample offset: for AES-GCM the sample starts at byte 0 of ciphertext; for
-  ChaCha20-Poly1305 it starts at byte 0 too — verify against RFC §4.2.3 Figure 5.
-- XOR must cover exactly the on-wire seq bytes (byte 1, and byte 2 if S=1) — not the epoch bits.
-- Decrypt: mask is derived from ciphertext *before* AEAD decryption — order of operations matters.
-- SNE key zeroized on transform free.
+- Label string: must be `"dtls13 sn"` — check exact bytes in `ssl_tls13_keys.c:226–289`.
+- Ciphertext sample: AES uses first 16 bytes of ciphertext; ChaCha20 uses bytes 0–15 as counter/nonce input — matches RFC §4.2.3?
+- Order of operations on encrypt: AAD computed with plaintext seq, AEAD runs, *then* SNE XORs the on-wire header — is this ordering preserved?
+- Order on decrypt: SNE XOR applied *before* AEAD decryption — is that correct here?
+- `sn_key` zeroized on transform free.
 
 ---
 
 ## Area 3: Epoch Pool — lifetime, eviction, and counter integrity (RFC 9147 §4.2.1)
 
 **Focus:** Are retired transforms correctly retained and evicted, and are their
-sequence counters preserved for retransmit?
+sequence counters preserved accurately for retransmit?
 
 **Primary code:**
-- `library/ssl_msg.c` — epoch pool insert, lookup, free
-- `library/ssl_misc.h` — `mbedtls_ssl_dtls13_epoch_pool_t`, pool API
-- `library/ssl_tls.c` — pool teardown on connection close
+- `ssl_msg.c:9102–9155` — `ssl_dtls13_epoch_pool_insert()`: slot eviction and insert
+- `ssl_msg.c:9174–9216` — `ssl_dtls13_epoch_pool_lookup_slot()` / `ssl_dtls13_epoch_pool_free()`
+- `ssl_msg.c:7555–7565` — call site where old transform is retired into pool
+- `ssl_msg.c:9238–9260` — `mbedtls_ssl_set_inbound_transform()`: `in_epoch_full` sync
 
 **What to look for:**
-- Pool capacity: 4 slots. Overflow evicts oldest — is eviction of an epoch still needed for retransmit safe?
-- Counter sync: when a slot is inserted, is the current `out_ctr` for that epoch saved correctly?
-- On retransmit epoch switch (`ssl_dtls13_retx_epoch_switch`): does restoring the counter correctly resume from where retransmit left off without replaying?
-- Epoch-0 counter: tracked separately in `dtls13_epoch0_out_ctr` — is it saved/restored correctly across handshake epoch transitions?
-- All pool slots freed on connection teardown (no transform leak).
+- Eviction policy: oldest slot evicted on overflow — could the evicted epoch still be needed for retransmit of an in-flight message?
+- Counter preservation: when a slot is inserted, is the `out_ctr` for that epoch saved correctly so retransmit can resume without replaying?
+- `in_epoch_full` (9250): updated only when `dtls13_epoch != 0` — does this correctly handle the DTLS 1.2 fallback case?
+- All slots freed on connection teardown — no transform leak on early abort?
 
 ---
 
 ## Area 4: KeyUpdate — ACK-pending guard and secret lifecycle (RFC 9147 §8)
 
-**Focus:** Is the guard against double-KeyUpdate enforced, and is the pending
-secret handled safely from derivation through installation through zeroization?
+**Focus:** Is a second KeyUpdate correctly blocked while one is pending, and is the
+pending secret handled safely from derivation through installation through zeroization?
 
 **Primary code:**
-- `library/ssl_tls13_keys.c` — `mbedtls_ssl_tls13_compute_key_update_transform()`
-- `library/ssl_msg.c` — KeyUpdate send, ACK reception, new epoch installation
-- `library/ssl_misc.h` — `dtls13_ku_ack_pending`, `dtls13_ku_pending_secret`
+- `ssl_msg.c:7615–7737` — `ssl_tls13_write_key_update()`: send path, sets `dtls13_ku_ack_pending`
+- `ssl_msg.c:7746–7872` — `ssl_tls13_handle_key_update()`: receive path, inbound epoch install
+- `ssl_msg.c:7636` — guard: block send if `dtls13_ku_ack_pending` already set
+- `ssl_msg.c:7013–7035` — ACK receive: clears `dtls13_ku_ack_pending`, installs new outbound epoch
+- `ssl_tls13_keys.c:2299–2400` — `mbedtls_ssl_tls13_compute_key_update_transform()`: secret derivation
 
 **What to look for:**
-- Guard: is a second KeyUpdate blocked while `dtls13_ku_ack_pending` is set?
-- Label: `HKDF-Expand-Label(secret, "traffic upd", "", hash_len)` — exact string check.
-- Pending secret: stored in `dtls13_ku_pending_secret`; must be zeroized immediately after
-  new transform installation — even on error paths.
-- New epoch installed only after ACK received (not immediately after send).
-- Inbound KeyUpdate from peer: old inbound epoch must stay in pool long enough for
-  reordered records; when is it evicted?
-- `update_not_requested` vs `update_requested`: does the peer-initiated path correctly
-  trigger a reciprocal KeyUpdate when requested?
+- Guard at 7636: is it checked before every KeyUpdate send, including the auto-trigger path?
+- Label: `HKDF-Expand-Label(secret, "traffic upd", "", hash_len)` — exact string in `ssl_tls13_keys.c`.
+- Pending secret: zeroized immediately after new transform installation — including on error paths?
+- New outbound epoch installed only after ACK received (7013–7035), not at send time?
+- Peer-initiated KeyUpdate (7746–7872): when `update_requested`, does the reciprocal send go through the same guard?
 
 ---
 
 ## Area 5: ACK Generation and Matching (RFC 9147 §7)
 
-**Focus:** Is the ACK record correctly constructed, and does the matching logic
-correctly clear only the acknowledged flight items?
+**Focus:** Is the ACK record correctly constructed and do received ACKs correctly
+clear only the matching flight items?
 
 **Primary code:**
-- `library/ssl_msg.c` — ACK frame construction, transmission, reception/matching
-- `library/ssl_misc.h` — `dtls13_received_records`, `dtls13_ack_pending`
+- `ssl_msg.c:6663–6733` — `ssl_dtls13_write_ack()`: ACK frame construction and send
+- `ssl_msg.c:6783–6901` — `ssl_dtls13_process_ack()`: ACK receive and flight-item matching
+- `ssl_msg.c:6830` — KeyUpdate ACK match
+- `ssl_msg.c:7013–7035` — outbound epoch install after ACK clears KeyUpdate pending
 
 **What to look for:**
-- ACK record format: list of (epoch, seq_no) pairs — matches RFC §7.3?
-- Buffer: 16-entry fixed array; overflow silently drops oldest — is this acceptable?
-  Could an attacker force ACK loss by flooding?
-- Matching: on receipt of an ACK, does the code match by (epoch, seq) of the *sent*
-  record, not the message? (ACKs are record-level, not message-level.)
-- Handshake ACK (`dtls13_ack_pending`) vs post-handshake ACK (`dtls13_post_hs_ack`):
-  are both paths exercised and consistent?
-- Deferred ACK: after Finished verify, ACK must be sent before application data —
-  is the ordering guaranteed?
+- ACK format: list of (epoch, seq_no) pairs — matches RFC §7.3?
+- Matching: ACKs are record-level (epoch + seq of the *sent record*), not message-level — is the match key correct?
+- Partial ACK: if only some flight items are ACKed, only those are dropped — no premature state clear?
+- Handshake ACK (`dtls13_ack_pending`) vs post-handshake ACK: are both paths consistent?
+- Deferred Finished ACK: sent before any application data — ordering guaranteed?
 
 ---
 
 ## Area 6: Post-Handshake Message Sequencing (RFC 9147 §5.2)
 
-**Focus:** Is `message_seq` correctly maintained across the handshake/post-handshake
-boundary, and are duplicate/out-of-order messages correctly handled?
+**Focus:** Is `message_seq` correctly continuous across the handshake/post-handshake
+boundary, and are duplicates and out-of-order messages handled correctly?
 
 **Primary code:**
-- `library/ssl_msg.c` — outbound `message_seq` stamping, inbound validation
-- `library/ssl_misc.h` — `dtls13_post_hs_in_msg_seq`, `dtls13_post_hs_msg_seq`
-- `library/ssl_tls13_generic.c` — seq advance after message consume
+- `ssl_msg.c:3017–3025` — outbound post-HS `message_seq` stamping and increment
+- `ssl_msg.c:3928–3952` — inbound `message_seq` validation
+- `ssl_msg.c:8506` — inbound seq advance after message consume
+- `ssl_tls.c` — `mbedtls_ssl_handshake_set_state()`: sync of `dtls13_post_hs_in_msg_seq` at `HANDSHAKE_OVER`
 
 **What to look for:**
-- RFC 9147: `message_seq` is *not* reset between handshake and post-handshake phases —
-  is the transition correctly handled (no reset)?
-- Duplicate detection: same `message_seq` received twice must be silently dropped,
-  not cause an error.
-- Out-of-order: seq gap ≤ MBEDTLS_SSL_MAX_BUFFERED_HS (6) — is the window check correct?
-- Double-increment bug: on fragmented resend, `message_seq` must not be incremented again.
-- Interaction with KeyUpdate and NewConnectionId: do those post-HS messages correctly
-  advance the seq counter?
+- RFC 9147 §5.2: `message_seq` must NOT reset at handshake end — is the sync-from-handshake correct?
+- Duplicate detection: same seq received twice must be silently dropped, not error?
+- Fragment resume (`dtls13_frag_off > 0`, line 3031): `message_seq` must not re-increment on retry?
+- KeyUpdate and NewConnectionId post-HS messages: do they correctly advance the seq counter?
 
 ---
 
 ## Area 7: Fragmentation and Retransmit Epoch Switching
 
 **Focus:** On retransmit, is the correct epoch and counter restored, and does
-fragment-resume correctly skip seq/epoch-stamp steps?
+fragment-resume skip the epoch-stamp and seq-increment steps?
 
 **Primary code:**
-- `library/ssl_msg.c` — `ssl_dtls13_retx_epoch_switch()`, epoch stamping on first send,
-  `dtls13_frag_off` resume logic
-- `library/ssl_misc.h` — flight item epoch/counter fields
+- `ssl_msg.c:2433–2495` — `ssl_dtls13_retx_epoch_switch()`: save active epoch, install flight epoch
+- `ssl_msg.c:2499–2515` — `ssl_dtls13_retx_epoch_restore()`: restore after retransmit
+- `ssl_msg.c:2288–2336` — epoch stamping on first send (the `dtls13_send_epoch` field)
+- `ssl_msg.c:3031–3255` — fragment send loop: `dtls13_frag_off` resume guards
 
 **What to look for:**
-- Epoch stamping: must happen exactly once per message on first send — is there a guard
-  preventing re-stamp on retransmit?
-- Retransmit epoch switch: saves active epoch, installs flight item's epoch, sends,
-  restores — does the restore happen on all code paths including error?
-- Fragment resume (`dtls13_frag_off`): on WANT_WRITE retry, resumes mid-fragment without
-  re-incrementing `out_msg_seq` or re-stamping epoch — verify.
-- Flight item list: freed on handshake completion — any leak on early connection abort?
+- Epoch stamping: happens once on first send — is there a guard preventing re-stamp on retransmit?
+- Epoch restore: happens on all code paths out of retransmit loop, including error?
+- Fragment resume (3031): on WANT_WRITE retry, skips seq-stamp and epoch-stamp — does it also skip flight-item append?
+- Flight item list freed on connection abort — no leak?
 
 ---
 
 ## Area 8: AEAD and Auth-Fail Limits (RFC 9147 §4.5.2–4.5.3)
 
-**Focus:** Are the per-epoch counters correctly maintained, reset at epoch
-transitions, and do they fire at the right thresholds?
+**Focus:** Are per-epoch counters correctly maintained, reset at epoch transitions,
+and do they fire at the right thresholds?
 
 **Primary code:**
-- `library/ssl_msg.c` — outbound record count check, inbound auth-fail increment
-- `library/ssl_tls.c` — limit configuration APIs
-- `library/ssl_misc.h` — `out_record_count`, `in_auth_fail_count` in transform
+- `ssl_msg.c:1171` — `out_record_count++` (per encrypted record sent)
+- `ssl_msg.c:8865–8870` — auto-KeyUpdate trigger check
+- `ssl_msg.c:6582–6590` — `in_auth_fail_count` increment and limit check
+- `ssl_msg.c:9258` — `in_auth_fail_count` reset on new inbound epoch
+- `ssl_tls.c` — `mbedtls_ssl_dtls13_set_aead_limit()` / `mbedtls_ssl_dtls13_set_auth_fail_limit()`
 
 **What to look for:**
-- `out_record_count` incremented per encrypted record sent, not per byte — is that correct?
-- Auto-KeyUpdate threshold: 2^23 for AES-GCM, 2^36 for ChaCha20-Poly1305 (RFC §5.5) —
-  are the defaults correct per ciphersuite?
-- Counter reset: `out_record_count` resets at epoch advance; `in_auth_fail_count` resets
-  on new inbound epoch install — is both reset happening?
-- Auth-fail limit: connection terminated (not just alert) after limit — is the closure
-  clean (alert sent first)?
-- Integer overflow: are counters wide enough (64-bit) to reach 2^36 without wrapping?
+- `out_record_count` incremented per encrypted record (not per byte) — correct per RFC §4.5.1?
+- Default thresholds: 2^23 for AES-GCM, 2^36 for ChaCha20-Poly1305 — are defaults set correctly per ciphersuite?
+- Counter reset: `out_record_count` resets at epoch advance; `in_auth_fail_count` resets on new inbound epoch install — both happening?
+- Auth-fail closure: alert sent before connection close?
+- Counter width: are they 64-bit to safely reach 2^36?
 
 ---
 
 ## Area 9: NewConnectionId / RequestConnectionId (RFC 9147 §9)
 
 **Focus:** Is the single-outstanding-message invariant enforced, and is the CID
-correctly propagated to any subsequently installed transforms?
+propagated to subsequently installed transforms?
 
 **Primary code:**
-- `library/ssl_msg.c` — NewConnectionId send, ACK matching, RequestConnectionId handling
-- `library/ssl_misc.h` — `dtls13_cid_update_ack_pending`
-- `library/ssl_tls13_server.c`, `ssl_tls13_client.c` — CID update trigger points
+- `ssl_msg.c:7932–7987` — `ssl_tls13_write_new_connection_id()`: send and set pending flag
+- `ssl_msg.c:7993–8085` — `ssl_tls13_handle_new_connection_id()`: receive and apply new CID
+- `ssl_msg.c:8091–8118` — `ssl_tls13_write_request_connection_id()`: send request
+- `ssl_msg.c:8124–8161` — `ssl_tls13_handle_request_connection_id()`: respond with NewConnectionId
 
 **What to look for:**
 - Guard: second NewConnectionId blocked while `dtls13_cid_update_ack_pending` set?
-- CID propagation: when KeyUpdate follows a CID update, does the new transform carry
-  the updated CID?
-- RequestConnectionId response: server/client must respond with NewConnectionId —
-  is the response path wired?
-- CID length: 0-length CID is valid (means "stop using CID") — is that handled?
-- ACK matching: by (epoch, seq) of the NewConnectionId record — same mechanism as KeyUpdate ACK.
+- CID propagation: when KeyUpdate follows a CID update, does the new transform carry the updated CID?
+- 0-length CID: valid per RFC (means "stop using CID") — handled in handle path?
+- RequestConnectionId response path (8124–8161): always sends a NewConnectionId in reply?
+- ACK matching for CID update: same (epoch, seq) mechanism as KeyUpdate ACK?
 
 ---
 
-## Area 10: Handshake State Machine — WAIT_ACK States and Timer Logic (RFC 9147 §5.7–5.8)
+## Area 10: WAIT_ACK States and Timer Logic (RFC 9147 §5.7–5.8)
 
-**Focus:** Are the new WAIT_ACK states reachable and exitable on all code paths,
-and does the retransmit timer fire and reset correctly?
+**Focus:** Are the WAIT_ACK states reachable and exitable on all paths, and does
+the retransmit timer fire and reset correctly?
 
 **Primary code:**
-- `library/ssl_tls13_client.c` — `CLIENT_FINISHED_WAIT_ACK` state
-- `library/ssl_tls13_server.c` — `NST_WAIT_ACK`, server Finished WAIT_ACK
-- `library/ssl_msg.c` — `mbedtls_ssl_dtls13_wait_ack_step()`, flight ACK clearing
-- `include/mbedtls/ssl.h` — WAIT_ACK state enum values
+- `ssl_msg.c:9038–9086` — `mbedtls_ssl_dtls13_wait_ack_step()`: core WAIT_ACK loop
+- `ssl_tls13_client.c:3391–3420` — `CLIENT_FINISHED_WAIT_ACK` state handler
+- `ssl_tls13_server.c:3845–3880` — `NST_WAIT_ACK` state handler
+- `ssl_tls13_client.c:2935–2945` — entry into `CLIENT_FINISHED_WAIT_ACK`
+- `ssl_tls13_server.c:3833` — entry into `NST_WAIT_ACK`
 
 **What to look for:**
-- Both client and server enter WAIT_ACK after sending their final flight — is there a
-  path where the state is skipped (e.g., on immediate ACK)?
-- Timer: is `mbedtls_ssl_set_timer` called when entering WAIT_ACK, and cleared on exit?
-- Partial ACK: if only some flight items are ACKed, only those items are dropped from
-  the retransmit list — does the state machine handle partial ACK without deadlock?
-- Timeout: on timer expiry in WAIT_ACK, full flight retransmit — is the max retransmit
-  count respected?
-- NST (NewSessionTicket) WAIT_ACK: NST is optional — if client never ACKs, should the
-  connection still proceed? Is there a timeout fallback?
-- State cleanup: on connection abort while in WAIT_ACK, are flight items freed?
+- Timer: `mbedtls_ssl_set_timer` called on entry to WAIT_ACK, cleared on exit?
+- Partial ACK: only unACKed flight items retransmitted — no deadlock if ACK is lost entirely?
+- Timeout in WAIT_ACK: max retransmit count respected before giving up?
+- NST WAIT_ACK: if client never ACKs NST, does connection proceed anyway (NST is optional)?
+- State cleanup: flight items freed on connection abort while in WAIT_ACK?
