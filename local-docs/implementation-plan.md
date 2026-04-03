@@ -905,3 +905,7 @@ Known gaps not yet addressed:
   No dedicated build has verified this configuration compiles and passes tests cleanly.
   The Phase 7 build matrix covered no-DTLS and no-TLS1.3, but not CID-off with
   everything else on.
+  **Partial fix (2026-04-04)**: `ssl_parse_dtls13_record_header()` was silently treating
+  CID bytes as payload when CID was disabled (`cid_len` stayed 0, `hdr_len` unchanged).
+  Fixed to return `MBEDTLS_ERR_SSL_INVALID_RECORD` when C bit is set and CID is compiled
+  out. Full build validation still pending.
