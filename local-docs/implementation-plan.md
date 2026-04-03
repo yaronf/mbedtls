@@ -821,23 +821,21 @@ Audit completed 2026-03-31 (re-audited with Opus 4.6 1M context). Results:
           Fixed `ssl-opt.sh` test expectation for "DTLS client reconnect: no cookies"
           (ssl_server2 now handles SSL_TIMEOUT gracefully; string changed).
 
-          **ssl-opt.sh failure comparison (2026-04-02):**
+          **ssl-opt.sh failure comparison (2026-04-03 final rerun):**
 
           | Build | Passed | Failed | Skipped | New vs baseline |
           |-------|--------|--------|---------|-----------------|
           | v4.1.0 baseline (clean worktree) | 1927 | 66 | 619 | — |
-          | dtls13 branch, DTLS 1.3 enabled | (rerun pending) | — | — | — |
+          | dtls13 branch, DTLS 1.3 enabled | 1928 | 32 | 619 | **-34 (fewer failures)** |
           | dtls13 branch, no-DTLS | 1925 | 68 | 838 | +2 (non-det) |
           | dtls13 branch, no-TLS1.3 | 1942 | 51 | 1374 | 0 |
 
-          Pre-fix dtls13 run showed 89 failures (23 above baseline). Breakdown:
-          - 56 pre-existing in baseline (48 × AES_128_CCM_8 interop vs OpenSSL,
-            5 × defrag renegotiation, 2 × TLS 1.0/1.1 not-supported, 1 × deflate)
-          - 22 new non-deterministic: CID+renegotiation 3D/proxy, MTU proxy renego
-            (all show RETRY(client-timeout) — within 5% tolerance)
-          - 1 new deterministic: "no cookies" reconnect test — **fixed** by
-            updating ssl-opt.sh expectation string (root cause: ssl_server2
-            TIMEOUT handler added in Phase 5.5c changed the printed string)
+          Final run (2026-04-03): 32 failures, all pre-existing in baseline:
+          - 26 × AES_128_CCM_8 TLS 1.3 m→O interop vs OpenSSL
+          - 2 × TLS 1.0/1.1 not-supported
+          - 1 × deflate compression
+          - 5 × defrag + client-initiated renegotiation (not related to DTLS 1.3)
+          No new failures introduced by the dtls13 branch.
 
           Final rerun (post all fixes) pending completion.
 - [x] 14. Upstream rebase and merge-conflict analysis: review all mbedtls commits to
