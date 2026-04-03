@@ -836,7 +836,7 @@ Audit completed 2026-03-31 (re-audited with Opus 4.6 1M context). Results:
             TIMEOUT handler added in Phase 5.5c changed the printed string)
 
           Final rerun (post all fixes) pending completion.
-- [ ] 14. Upstream rebase and merge-conflict analysis: review all mbedtls commits to
+- [x] 14. Upstream rebase and merge-conflict analysis: review all mbedtls commits to
           the affected files (`ssl_msg.c`, `ssl_tls.c`, `ssl_tls13_*.c`, `ssl_misc.h`)
           since the 4.0.0 tag; identify conflicts and upstream changes that should be
           incorporated; assess branch stability and decide on approach (rebase onto

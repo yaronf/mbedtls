@@ -4160,25 +4160,12 @@ data_exchange:
 #endif
     }
 
-#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS)
-    /* Drain any incoming ACKs for a reciprocal KeyUpdate that was sent
-     * internally (e.g. update_requested=1 from the client), before we
-     * write the response.  The library returns WANT_READ as soon as the
-     * KU ACK is processed, so this loop exits promptly without needing
-     * a timeout. */
-    while (mbedtls_ssl_dtls13_key_update_pending(&ssl)) {
-        int drain_ret = mbedtls_ssl_read(&ssl, buf, sizeof(buf) - 1);
-        if (drain_ret == MBEDTLS_ERR_SSL_WANT_READ ||
-            drain_ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
-            continue;
-        }
-        if (drain_ret <= 0) {
-            break;
-        }
-        mbedtls_printf("  ! unexpected data while waiting "
-                       "for reciprocal KeyUpdate ACK (%d bytes)\n", drain_ret);
-    }
-#endif /* MBEDTLS_SSL_PROTO_TLS1_3 && MBEDTLS_SSL_PROTO_DTLS */
+    /* RFC 9147 §8: the sender MUST NOT use the new epoch until the KeyUpdate
+     * is ACKed, but MAY continue sending at the old epoch in the meantime.
+     * We send the HTTP response at the current (old) epoch.  The library
+     * installs the pending outbound transform transparently when the ACK
+     * arrives on the next ssl_read/ssl_write call (e.g. during exchanges>1
+     * or on the next connection).  No explicit drain needed here. */
 
     /*
      * 7a. Request renegotiation while client is waiting for input from us.

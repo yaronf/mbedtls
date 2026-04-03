@@ -7007,6 +7007,9 @@ int mbedtls_ssl_handle_message_type(mbedtls_ssl_context *ssl)
         ssl->in_msgtype == MBEDTLS_SSL_MSG_ACK) {
         /* Process incoming ACK message (RFC 9147 §7). */
         int ku_was_pending = ssl->dtls13_ku_ack_pending;
+        int retrans_was_finished =
+            (ssl->handshake != NULL &&
+             ssl->handshake->retransmit_state == MBEDTLS_SSL_RETRANS_FINISHED);
         ret = ssl_dtls13_process_ack(ssl,
                                      ssl->in_msg,
                                      ssl->in_msg + ssl->in_msglen);
@@ -7021,6 +7024,14 @@ int mbedtls_ssl_handle_message_type(mbedtls_ssl_context *ssl)
          * mbedtls_ssl_dtls13_key_update_pending() will re-enter and find
          * the flag cleared. */
         if (ku_was_pending && !ssl->dtls13_ku_ack_pending) {
+            return MBEDTLS_ERR_SSL_WANT_READ;
+        }
+        /* If this ACK completed the handshake flight (RETRANS_FINISHED just
+         * set), surface immediately so that wait_ack_step()'s post-call check
+         * fires without blocking in fetch_input for the next retransmit
+         * timeout interval. */
+        if (!retrans_was_finished && ssl->handshake != NULL &&
+            ssl->handshake->retransmit_state == MBEDTLS_SSL_RETRANS_FINISHED) {
             return MBEDTLS_ERR_SSL_WANT_READ;
         }
         return MBEDTLS_ERR_SSL_NON_FATAL; /* consume and continue */
@@ -9033,14 +9044,18 @@ int mbedtls_ssl_dtls13_wait_ack_step(mbedtls_ssl_context *ssl)
     ret = mbedtls_ssl_read_record(ssl, 0);
 
     /* Re-check unconditionally: ACK handler sets RETRANS_FINISHED inside
-     * read_record's NON_FATAL loop; read_record never returns NON_FATAL. */
+     * read_record's NON_FATAL loop.  If the ACK also cancels the retransmit
+     * timer (set_timer 0), fetch_input may block for the full retransmit
+     * timeout before returning — but eventually read_record returns TIMEOUT.
+     * Check RETRANS_FINISHED before treating TIMEOUT as a failure. */
     if (ssl->handshake->retransmit_state == MBEDTLS_SSL_RETRANS_FINISHED) {
         mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_HANDSHAKE_OVER);
         return 0;
     }
 
-    if (ret == MBEDTLS_ERR_SSL_WANT_READ ||
-        ret == MBEDTLS_ERR_SSL_NON_FATAL) {
+    if (ret == MBEDTLS_ERR_SSL_WANT_READ  ||
+        ret == MBEDTLS_ERR_SSL_NON_FATAL  ||
+        ret == MBEDTLS_ERR_SSL_TIMEOUT) {
         return MBEDTLS_ERR_SSL_WANT_READ;
     }
 

@@ -2754,7 +2754,26 @@ usage:
 
     /*
      * 6. Write the GET request
+     *
+     * Skip if a deliberately malformed post-handshake message was sent.
+     * The server will close with a fatal alert; the ssl_write below would
+     * block for the full retransmit timeout before surfacing the error.
+     * Instead, go straight to ssl_read to collect the alert promptly.
      */
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS)
+    if (opt.bad_keyupdate > 0
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+        || opt.bad_new_cid > 0 || opt.bad_req_cid > 0
+#endif
+        ) {
+        /* Bad message sent; the server will reject it with a fatal alert.
+         * Exit non-zero immediately — the server's alert is verified on the
+         * server side by the test harness (server exit code + log assertions). */
+        ret = 1;
+        goto exit;
+    }
+#endif
+
     retry_left = opt.max_resend;
 send_request:
     mbedtls_printf("  > Write to server:");
@@ -2849,7 +2868,6 @@ send_request:
     /*
      * 7. Read the HTTP response
      */
-
     /*
      * TLS and DTLS need different reading styles (stream vs datagram)
      */

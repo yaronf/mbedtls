@@ -395,8 +395,6 @@ run_test    "DTLS 1.3 KeyUpdate: client sends KeyUpdate (update_requested) — s
             -c "KeyUpdate sent" \
             -s "KeyUpdate received" \
             -s "KeyUpdate sent" \
-            -s "ACK: KeyUpdate acknowledged" \
-            -s "KeyUpdate: new outbound transform installed" \
             -c "KeyUpdate received" \
             -c "KeyUpdate: new inbound transform installed"
 
