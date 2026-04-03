@@ -15,7 +15,10 @@ Areas are ordered roughly by risk — start at the top.
 correct for all combinations of header bits?
 
 **Primary code:**
-- `library/ssl_msg.c` — `ssl_parse_dtls13_record_header()`, `dtls13_unified_hdr` construction
+- `library/ssl_msg.c:4566–4692` — `ssl_parse_dtls13_record_header()`: inbound unified header parsing (epoch reconstruction, seq, CID, length)
+- `library/ssl_msg.c:3433–3681` — `mbedtls_ssl_write_record()`: outbound unified header construction (`dtls13_unified_hdr` block starting at line 3530)
+- `library/ssl_msg.c:4875–5214` — `ssl_parse_record_header()` DTLS path: dispatcher that calls `ssl_parse_dtls13_record_header()` and handles epoch filtering
+- `library/ssl_msg.c:808–1382` — `mbedtls_ssl_encrypt_buf()`: where `dtls13_unified_hdr` is built and passed to AEAD (lines 1083–1121)
 - `library/ssl_misc.h` — unified header bit constants
 
 **What to look for:**
