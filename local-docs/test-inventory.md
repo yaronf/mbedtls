@@ -1,6 +1,6 @@
 # DTLS 1.3 Test Inventory
 
-**Last updated:** 2026-04-03 (post-renegotiation-fix; all integration tests passing)
+**Last updated:** 2026-04-03 (Direction B wolfSSL interop added; all tests passing)
 **Branch:** `dtls13`
 
 Tests are grouped by type. Status: `pass` = currently passing, `fail` = currently failing (expected), `todo` = not yet written.
@@ -77,7 +77,7 @@ Tests are defined as YAML case files under `tests/dtls13/cases/` and
 generated into `dtls13-tests.sh` and `dtls13-wolfssl-tests.sh` via
 `python3 tests/dtls13/generate.py`.
 
-**Total: 47 mbedtls-only + 12 wolfSSL = 59 integration tests, all passing**
+**Total: 47 mbedtls-only + 12 wolfSSL Direction A + 3 wolfSSL Direction B = 62 integration tests, all passing**
 (wolfSSL tests require `WOLFSSL_DIR=~/misc/wolfssl`)
 
 ### Handshake (`cases/handshake.yaml`)
@@ -179,20 +179,18 @@ generated into `dtls13-tests.sh` and `dtls13-wolfssl-tests.sh` via
 
 ---
 
-## wolfSSL Interop Tests — `tests/dtls13/dtls13-wolfssl-tests.sh`
+## wolfSSL Interop Tests
+
+### Direction A — `tests/dtls13/dtls13-wolfssl-tests.sh`
+
+mbedtls server ↔ wolfSSL client.
 
 Run with:
 ```
 cd build-dbg/tests/dtls13 && WOLFSSL_DIR=~/misc/wolfssl ./dtls13-wolfssl-tests.sh
 ```
 
-Direction A (wolfSSL client ↔ mbedtls server): **working, all tests pass**.
-Direction B (mbedtls client ↔ wolfSSL server): **handshake works** — the prior
-note "silently drops ClientHellos" was incorrect. The failure was a certificate
-trust mismatch (wolfSSL's test certs not trusted by mbedtls's default CA bundle).
-Formal Direction B test cases pending (see item 11 in implementation plan).
-
-### Shared handshake cases (run by both test scripts)
+#### Shared handshake cases
 
 | Test name                                        | Status |
 | ------------------------------------------------ | ------ |
@@ -206,7 +204,7 @@ Formal Direction B test cases pending (see item 11 in implementation plan).
 | `DTLS 1.3 PSK: external PSK, psk_ephemeral key exchange` | pass |
 | `DTLS 1.3 PSK: PSK with cookie enabled — no HRR/cookie exchange (RFC 9147 §5.1)` | pass |
 
-### wolfSSL-specific cases (`cases/interop-wolfssl.yaml`)
+#### wolfSSL-specific cases (`cases/interop-wolfssl.yaml`)
 
 | Test name                                                               | Status |
 | ----------------------------------------------------------------------- | ------ |
@@ -214,15 +212,29 @@ Formal Direction B test cases pending (see item 11 in implementation plan).
 | `DTLS 1.3 wolfSSL interop: A: reconnect after NewSessionTicket`         | pass |
 | `DTLS 1.3 wolfSSL interop: A: wolfSSL client sends KeyUpdate after handshake` | pass |
 
+### Direction B — `tests/dtls13/dtls13-wolfssl-dirb-tests.sh`
+
+wolfSSL server ↔ mbedtls client.
+
+Run with:
+```
+cd build-dbg/tests/dtls13 && WOLFSSL_DIR=~/misc/wolfssl ./dtls13-wolfssl-dirb-tests.sh
+```
+
+Connection params: `server_addr=127.0.0.1 server_name=example.com ca_file=$WOLFSSL_DIR/certs/ca-cert.pem`.
+wolfSSL cert SAN includes `dNSName=example.com` and `iPAddress=127.0.0.1`.
+
+#### Direction B cases (`cases/interop-wolfssl-dirb.yaml`)
+
+| Test name                                                                         | Status |
+| --------------------------------------------------------------------------------- | ------ |
+| `DTLS 1.3 wolfSSL interop Direction B: B: full 1-RTT handshake`                  | pass |
+| `DTLS 1.3 wolfSSL interop Direction B: B: application data exchange`              | pass |
+| `DTLS 1.3 wolfSSL interop Direction B: B: mbedtls client sends KeyUpdate (update_not_requested)` | pass |
+
 ---
 
 ## Coverage Gaps / Known Missing Tests
-
-- **Direction B interop (mbedtls client ↔ wolfSSL server)**: handshake confirmed
-  working when cert trust is configured. Need formal test cases in `interop-wolfssl.yaml`
-  with `wolfssl_hrr`, `wolfssl_keyupdate` etc. exercised against mbedtls client.
-  Currently investigating ACK/Finished completion hang (mbedtls client switches to
-  app keys but session doesn't fully close cleanly — wolfSSL sends epoch-0 retransmits).
 
 - **Anti-replay (Phase 1.5)**: per-epoch sliding windows not yet implemented.
   Test (replayed record silently dropped) pending implementation.
