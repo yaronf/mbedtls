@@ -1646,7 +1646,18 @@ do_run_test_once() {
 
     check_osrv_dtls
     printf '# %s\n%s\n' "$NAME" "$SRV_CMD" > $SRV_OUT
-    provide_input | $SRV_CMD >> $SRV_OUT 2>&1 &
+    # When $SRV_CMD is a compound shell command (contains &&, ||, or ;) it must
+    # be run through eval so the operators are interpreted.  For simple commands
+    # (the common case) avoid eval: bash/zsh exec-optimise the last command in
+    # a pipeline, making $! equal to the server's PID — eval blocks that.
+    case "$SRV_CMD" in
+        *"&&"*|*"||"*|*";"*)
+            provide_input | eval "$SRV_CMD" >> $SRV_OUT 2>&1 &
+            ;;
+        *)
+            provide_input | $SRV_CMD >> $SRV_OUT 2>&1 &
+            ;;
+    esac
     SRV_PID=$!
     wait_server_start "$THIS_SRV_PORT" "$SRV_PID"
 

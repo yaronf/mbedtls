@@ -1,0 +1,224 @@
+# wolfSSL interop runner — Direction B: wolfSSL server ↔ mbedtls client.
+#
+# wolfSSL server with DTLS 1.3 (-u -v 4 -d -b -i).
+# mbedtls client connects with:
+#   server_addr=127.0.0.1   (actual IP — wolfSSL cert has 127.0.0.1 as SAN)
+#   server_name=example.com  (SNI — must match wolfSSL cert CN/SAN)
+#   ca_file=$WOLFSSL_DIR/certs/ca-cert.pem
+#
+# The wolfSSL server cert (certs/server-cert.pem) is signed by certs/ca-cert.pem
+# and has SAN dNSName=example.com + iPAddress=127.0.0.1.
+#
+# emit_path: output file when using --emit (relative to tests/dtls13/)
+emit_path: "dtls13-wolfssl-dirb-tests.sh"
+# case_glob: Direction B specific cases only.
+case_glob:
+  - "interop-wolfssl-dirb.yaml"
+
+# Every test in this runner requires wolfssl.
+runner_requires:
+  - wolfssl: true
+
+server_cmd: "cd $WOLFSSL_DIR && exec stdbuf -oL $WOLFSSL_SRV -u -v 4 -d -b -i -p $SRV_PORT"
+client_cmd: "$P_CLI dtls=1 force_version=dtls13 server_addr=127.0.0.1 server_name=example.com ca_file=$WOLFSSL_DIR/certs/ca-cert.pem"
+proxy_cmd:  "$P_PXY"
+
+# Suppress ssl-opt.sh auto-proxy for non-proxy cases.
+default_no_proxy: true
+
+# force_version is handled by the client_cmd directly (force_version=dtls13).
+force_version_override: false
+
+param_map:
+  # --- wolfSSL server params ---
+  debug_level:
+    skip: true
+  exchanges:
+    skip: true
+  auth_mode:
+    skip: true
+  dgram_packing:
+    skip: true
+  hs_timeout:
+    skip: true
+  mtu:
+    skip: true
+  key_update:
+    skip: true
+  aead_limit:
+    skip: true
+  auth_fail_limit:
+    skip: true
+  cid:
+    skip: true
+  cid_val:
+    skip: true
+  send_new_cid:
+    skip: true
+  request_cid:
+    skip: true
+  allow_addr_migration:
+    skip: true
+  cid_change_addr:
+    skip: true
+  migration_timeout_ms:
+    skip: true
+  cookies:
+    skip: true
+  anti_replay:
+    skip: true
+  groups:
+    skip: true
+  psk:
+    skip: true
+  psk_identity:
+    skip: true
+  crt_file:
+    skip: true
+  key_file:
+    skip: true
+  nbio:
+    skip: true
+  reconnect:
+    skip: true
+  skip_close_notify:
+    skip: true
+  read_timeout:
+    skip: true
+  max_resend:
+    skip: true
+  bad_keyupdate:
+    skip: true
+  bad_new_cid:
+    skip: true
+  bad_req_cid:
+    skip: true
+  double_keyupdate:
+    skip: true
+  wolfssl_hrr:
+    skip: true
+  wolfssl_resume:
+    skip: true
+  wolfssl_keyupdate:
+    skip: true
+  wolfssl_psk:
+    skip: true
+  wolfssl_ca:
+    skip: true
+  force_ciphersuite:
+    skip: true
+
+client_param_map:
+  debug_level:    "debug_level={value}"
+  exchanges:      "exchanges={value}"
+  key_update:     "key_update={value}"
+  aead_limit:     "aead_limit={value}"
+  auth_fail_limit: "auth_fail_limit={value}"
+  dgram_packing:  "dgram_packing={0 if not value else 1}"
+  hs_timeout:     "hs_timeout={value[0]}-{value[1]}"
+  groups:         "groups={value}"
+  force_ciphersuite: "force_ciphersuite={value}"
+  reconnect:      "reconnect={value}"
+  skip_close_notify: "skip_close_notify={value}"
+  read_timeout:   "read_timeout={value}"
+  max_resend:     "max_resend={value}"
+  # wolfSSL-specific client flags — not applicable for mbedtls client
+  wolfssl_hrr:
+    skip: true
+  wolfssl_resume:
+    skip: true
+  wolfssl_keyupdate:
+    skip: true
+  wolfssl_psk:
+    skip: true
+  wolfssl_ca:
+    skip: true
+  # server-side params not applicable to client
+  auth_mode:
+    skip: true
+  cookies:
+    skip: true
+  anti_replay:
+    skip: true
+  crt_file:
+    skip: true
+  key_file:
+    skip: true
+  nbio:
+    skip: true
+  mtu:
+    skip: true
+  cid:
+    skip: true
+  cid_val:
+    skip: true
+  send_new_cid:
+    skip: true
+  request_cid:
+    skip: true
+  allow_addr_migration:
+    skip: true
+  cid_change_addr:
+    skip: true
+  migration_timeout_ms:
+    skip: true
+  psk:
+    skip: true
+  psk_identity:
+    skip: true
+  bad_keyupdate:
+    skip: true
+  bad_new_cid:
+    skip: true
+  bad_req_cid:
+    skip: true
+  double_keyupdate:
+    skip: true
+
+proxy_param_map:
+  drop:       "drop={value}"
+  delay:      "delay={value}"
+  duplicate:  "duplicate={value}"
+  bad_ad:     "bad_ad={1 if value else 0}"
+  pack:       "pack={value}"
+  mtu:        "mtu={value}"
+
+assertion_map:
+  # mbedtls client assertions
+  client_dtls13_negotiated:
+    flag: "-c"
+    string: "Protocol is DTLSv1.3"
+  client_read_server_data:
+    flag: "-c"
+    string: "Read from server:"
+  client_key_update_sent:
+    flag: "-c"
+    string: "KeyUpdate sent"
+  client_key_update_acked:
+    flag: "-c"
+    string: "ACK: KeyUpdate acknowledged"
+  client_key_update_outbound_installed:
+    flag: "-c"
+    string: "KeyUpdate: new outbound transform installed"
+  client_key_update_received:
+    flag: "-c"
+    string: "KeyUpdate received"
+  client_key_update_inbound_installed:
+    flag: "-c"
+    string: "KeyUpdate: inbound transform installed"
+  client_ack_sent:
+    flag: "-c"
+    string: "=> write ACK"
+  # wolfSSL server assertions (wolfSSL output strings)
+  wolfssl_server_dtls13_negotiated:
+    flag: "-s"
+    string: "SSL version is DTLSv1.3"
+
+requires_map:
+  protocol:
+    dtls13: "requires_wolfssl"
+    dtls12: "requires_wolfssl"
+  wolfssl: "requires_wolfssl"
+  config:  "requires_config_enabled {value}"
+  max_content_len: "requires_max_content_len {value}"
+  not_valgrind: "not_with_valgrind"
