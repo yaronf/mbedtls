@@ -4583,8 +4583,12 @@ static int ssl_parse_dtls13_record_header(mbedtls_ssl_context *ssl,
     if (has_cid) {
 #if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
         cid_len = ssl->conf->cid_len;
-#endif
         hdr_len += cid_len;
+#else
+        /* CID support not compiled in — reject records with C bit set. */
+        MBEDTLS_SSL_DEBUG_MSG(1, ("DTLS 1.3: received CID record but CID support disabled"));
+        return MBEDTLS_ERR_SSL_INVALID_RECORD;
+#endif
     }
     if (has_len) {
         hdr_len += 2;
