@@ -29,6 +29,90 @@ cases:
         - client_dtls13_negotiated
         - client_read_server_data
 
+  - name: "B: client ACKs server Finished flight"
+    client:
+      debug_level: 2
+    expect:
+      exit: 0
+      assert:
+        - wolfssl_server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - client_ack_sent
+
+  - name: "B: HRR+cookie (wolfSSL sends cookie by default)"
+    # wolfSSL server always sends a HelloRetryRequest with cookie extension
+    # unless -J 1 is passed.  mbedtls client must handle HRR correctly.
+    client:
+      debug_level: 2
+    expect:
+      exit: 0
+      assert:
+        - wolfssl_server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - client_hrr_received
+
+  - name: "B: force AES-128-GCM ciphersuite"
+    server:
+      force_ciphersuite: TLS_AES_128_GCM_SHA256
+    client:
+      debug_level: 2
+      force_ciphersuite: TLS1-3-AES-128-GCM-SHA256
+    expect:
+      exit: 0
+      assert:
+        - wolfssl_server_dtls13_negotiated
+        - client_dtls13_negotiated
+
+  - name: "B: proxy — 3d, basic handshake"
+    requires:
+      - not_valgrind: true
+    proxy:
+      drop: 5
+      delay: 5
+      duplicate: 5
+    client:
+      debug_level: 2
+      hs_timeout: [1000, 10000]
+    expect:
+      exit: 0
+      assert:
+        - wolfssl_server_dtls13_negotiated
+        - client_dtls13_negotiated
+
+  - name: "B: loss recovery via retransmit"
+    requires:
+      - not_valgrind: true
+    proxy:
+      drop: 8
+      delay: 8
+      duplicate: 8
+    client:
+      debug_level: 2
+      hs_timeout: [1000, 16000]
+    expect:
+      exit: 0
+      assert:
+        - wolfssl_server_dtls13_negotiated
+        - client_dtls13_negotiated
+    slow: 2
+
+  - name: "B: external PSK"
+    # wolfSSL server PSK: identity=Client_identity, 32-byte key (see test.h).
+    # key bytes: 0x01 + 0x22*i (mod 0x100), wrapping at 0x01.
+    # debug_level=3 needed to log "Selected key exchange mode: psk_ephemeral".
+    server:
+      wolfssl_psk: true
+    client:
+      debug_level: 3
+      psk: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      psk_identity: "Client_identity"
+    expect:
+      exit: 0
+      assert:
+        - wolfssl_server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - client_psk_ephemeral
+
   - name: "B: mbedtls client sends KeyUpdate (update_not_requested)"
     client:
       debug_level: 2

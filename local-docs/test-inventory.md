@@ -1,6 +1,6 @@
 # DTLS 1.3 Test Inventory
 
-**Last updated:** 2026-04-03 (Direction B wolfSSL interop added; all tests passing)
+**Last updated:** 2026-04-03 (Direction B wolfSSL interop expanded to 9 cases; all tests passing)
 **Branch:** `dtls13`
 
 Tests are grouped by type. Status: `pass` = currently passing, `fail` = currently failing (expected), `todo` = not yet written.
@@ -77,7 +77,7 @@ Tests are defined as YAML case files under `tests/dtls13/cases/` and
 generated into `dtls13-tests.sh` and `dtls13-wolfssl-tests.sh` via
 `python3 tests/dtls13/generate.py`.
 
-**Total: 47 mbedtls-only + 12 wolfSSL Direction A + 3 wolfSSL Direction B = 62 integration tests, all passing**
+**Total: 47 mbedtls-only + 12 wolfSSL Direction A + 9 wolfSSL Direction B = 68 integration tests, all passing**
 (wolfSSL tests require `WOLFSSL_DIR=~/misc/wolfssl`)
 
 ### Handshake (`cases/handshake.yaml`)
@@ -226,9 +226,15 @@ wolfSSL cert SAN includes `dNSName=example.com` and `iPAddress=127.0.0.1`.
 
 #### Direction B cases (`cases/interop-wolfssl-dirb.yaml`)
 
-| Test name                                                                         | Status |
-| --------------------------------------------------------------------------------- | ------ |
-| `DTLS 1.3 wolfSSL interop Direction B: B: full 1-RTT handshake`                  | pass |
-| `DTLS 1.3 wolfSSL interop Direction B: B: application data exchange`              | pass |
-| `DTLS 1.3 wolfSSL interop Direction B: B: mbedtls client sends KeyUpdate (update_not_requested)` | pass |
+| Test name                                                                                         | Status | Notes |
+| ------------------------------------------------------------------------------------------------- | ------ | ----- |
+| `DTLS 1.3 wolfSSL interop Direction B: B: full 1-RTT handshake`                                  | pass | |
+| `DTLS 1.3 wolfSSL interop Direction B: B: application data exchange`                              | pass | |
+| `DTLS 1.3 wolfSSL interop Direction B: B: client ACKs server Finished flight`                    | pass | |
+| `DTLS 1.3 wolfSSL interop Direction B: B: HRR+cookie (wolfSSL sends cookie by default)`          | pass | |
+| `DTLS 1.3 wolfSSL interop Direction B: B: force AES-128-GCM ciphersuite`                         | pass | |
+| `DTLS 1.3 wolfSSL interop Direction B: B: proxy — 3d, basic handshake`                           | pass | occasionally flaky |
+| `DTLS 1.3 wolfSSL interop Direction B: B: loss recovery via retransmit`                          | pass | |
+| `DTLS 1.3 wolfSSL interop Direction B: B: external PSK`                                          | pass | |
+| `DTLS 1.3 wolfSSL interop Direction B: B: mbedtls client sends KeyUpdate (update_not_requested)` | pass | |
 

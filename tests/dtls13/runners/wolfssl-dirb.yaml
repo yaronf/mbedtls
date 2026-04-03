@@ -31,6 +31,11 @@ force_version_override: false
 
 param_map:
   # --- wolfSSL server params ---
+  # wolfssl_psk: adds -s (pre-shared key mode) to server cmd
+  wolfssl_psk:        "-s"
+  # force_ciphersuite: -l <name> selects cipher on wolfSSL server
+  force_ciphersuite:  "-l {value}"
+  # everything else is not supported on wolfSSL server side
   debug_level:
     skip: true
   exchanges:
@@ -101,11 +106,7 @@ param_map:
     skip: true
   wolfssl_keyupdate:
     skip: true
-  wolfssl_psk:
-    skip: true
   wolfssl_ca:
-    skip: true
-  force_ciphersuite:
     skip: true
 
 client_param_map:
@@ -162,10 +163,8 @@ client_param_map:
     skip: true
   migration_timeout_ms:
     skip: true
-  psk:
-    skip: true
-  psk_identity:
-    skip: true
+  psk:            "psk={value}"
+  psk_identity:   "psk_identity={value}"
   bad_keyupdate:
     skip: true
   bad_new_cid:
@@ -209,6 +208,15 @@ assertion_map:
   client_ack_sent:
     flag: "-c"
     string: "=> write ACK"
+  client_hrr_received:
+    flag: "-c"
+    string: "received HelloRetryRequest message"
+  client_psk_ephemeral:
+    flag: "-c"
+    string: "Selected key exchange mode: psk_ephemeral"
+  client_no_error:
+    flag: "-C"
+    string: "error"
   # wolfSSL server assertions (wolfSSL output strings)
   wolfssl_server_dtls13_negotiated:
     flag: "-s"
