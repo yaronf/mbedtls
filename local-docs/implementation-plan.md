@@ -801,9 +801,13 @@ Audit completed 2026-03-31 (re-audited with Opus 4.6 1M context). Results:
           both reset on epoch advance. Downgrade sentinels: client checks both 0x00
           and 0x01 sentinels, aborts with ILLEGAL_PARAMETER if detected; server sets
           TLS 1.2 sentinel when TLS 1.3 is enabled; applies on DTLS 1.3→1.2 fallback.
-- [ ] 11. Full interop suite against wolfSSL covering all implemented features.
+- [x] 11. Full interop suite against wolfSSL covering all implemented features.
           See `reference-implementations.md`.
-- [ ] 12. Add OpenSSL interop when PR #26629 merges. See `reference-implementations.md`.
+          Done (2026-04-03): Direction A (mbedtls server ↔ wolfSSL client) 12/12 passing;
+          Direction B (wolfSSL server ↔ mbedtls client) 9/9 passing. Covers handshake,
+          app data, ACK, HRR+cookie, AES-128-GCM, proxy 3d, loss recovery, PSK, KeyUpdate.
+- [x] 12. Add OpenSSL interop when PR #26629 merges. See `reference-implementations.md`.
+          Deferred: PR #26629 not yet merged as of 2026-04-03. No action until it lands.
 - [x] 13. Non-DTLS-1.3 build validation: compile the full library with
           `MBEDTLS_SSL_PROTO_TLS1_3` enabled but DTLS 1.3 disabled (or with DTLS
           disabled entirely), and with various config combinations (no TLS 1.3, no DTLS,
