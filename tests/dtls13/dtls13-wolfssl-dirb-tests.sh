@@ -70,7 +70,7 @@ SRV_DELAY_SECONDS=0
 # ======================================================================
 
 requires_wolfssl
-run_test    "DTLS 1.3 wolfSSL interop Direction B: B: full 1-RTT handshake" \
+run_test    "DTLS 1.3 wolfSSL interop Direction B: full 1-RTT handshake" \
             -p "" \
             "cd $WOLFSSL_DIR && exec stdbuf -oL $WOLFSSL_SRV -u -v 4 -d -b -i -p $SRV_PORT" \
             "$P_CLI dtls=1 force_version=dtls13 server_addr=127.0.0.1 server_name=example.com ca_file=$WOLFSSL_DIR/certs/ca-cert.pem debug_level=2" \
@@ -79,7 +79,7 @@ run_test    "DTLS 1.3 wolfSSL interop Direction B: B: full 1-RTT handshake" \
             -c "Protocol is DTLSv1.3"
 
 requires_wolfssl
-run_test    "DTLS 1.3 wolfSSL interop Direction B: B: application data exchange" \
+run_test    "DTLS 1.3 wolfSSL interop Direction B: application data exchange" \
             -p "" \
             "cd $WOLFSSL_DIR && exec stdbuf -oL $WOLFSSL_SRV -u -v 4 -d -b -i -p $SRV_PORT" \
             "$P_CLI dtls=1 force_version=dtls13 server_addr=127.0.0.1 server_name=example.com ca_file=$WOLFSSL_DIR/certs/ca-cert.pem debug_level=2" \
@@ -89,7 +89,7 @@ run_test    "DTLS 1.3 wolfSSL interop Direction B: B: application data exchange"
             -c "Read from server:"
 
 requires_wolfssl
-run_test    "DTLS 1.3 wolfSSL interop Direction B: B: client ACKs server Finished flight" \
+run_test    "DTLS 1.3 wolfSSL interop Direction B: client ACKs server Finished flight" \
             -p "" \
             "cd $WOLFSSL_DIR && exec stdbuf -oL $WOLFSSL_SRV -u -v 4 -d -b -i -p $SRV_PORT" \
             "$P_CLI dtls=1 force_version=dtls13 server_addr=127.0.0.1 server_name=example.com ca_file=$WOLFSSL_DIR/certs/ca-cert.pem debug_level=2" \
@@ -99,7 +99,7 @@ run_test    "DTLS 1.3 wolfSSL interop Direction B: B: client ACKs server Finishe
             -c "=> write ACK"
 
 requires_wolfssl
-run_test    "DTLS 1.3 wolfSSL interop Direction B: B: HRR+cookie (wolfSSL sends cookie by default)" \
+run_test    "DTLS 1.3 wolfSSL interop Direction B: HRR+cookie (wolfSSL sends cookie by default)" \
             -p "" \
             "cd $WOLFSSL_DIR && exec stdbuf -oL $WOLFSSL_SRV -u -v 4 -d -b -i -p $SRV_PORT" \
             "$P_CLI dtls=1 force_version=dtls13 server_addr=127.0.0.1 server_name=example.com ca_file=$WOLFSSL_DIR/certs/ca-cert.pem debug_level=2" \
@@ -109,7 +109,7 @@ run_test    "DTLS 1.3 wolfSSL interop Direction B: B: HRR+cookie (wolfSSL sends 
             -c "received HelloRetryRequest message"
 
 requires_wolfssl
-run_test    "DTLS 1.3 wolfSSL interop Direction B: B: force AES-128-GCM ciphersuite" \
+run_test    "DTLS 1.3 wolfSSL interop Direction B: force AES-128-GCM ciphersuite" \
             -p "" \
             "cd $WOLFSSL_DIR && exec stdbuf -oL $WOLFSSL_SRV -u -v 4 -d -b -i -p $SRV_PORT -l TLS_AES_128_GCM_SHA256" \
             "$P_CLI dtls=1 force_version=dtls13 server_addr=127.0.0.1 server_name=example.com ca_file=$WOLFSSL_DIR/certs/ca-cert.pem debug_level=2 force_ciphersuite=TLS1-3-AES-128-GCM-SHA256" \
@@ -119,7 +119,7 @@ run_test    "DTLS 1.3 wolfSSL interop Direction B: B: force AES-128-GCM ciphersu
 
 requires_wolfssl
 not_with_valgrind
-run_test    "DTLS 1.3 wolfSSL interop Direction B: B: proxy — 3d, basic handshake" \
+run_test    "DTLS 1.3 wolfSSL interop Direction B: proxy — 3d, basic handshake" \
             -p "$P_PXY drop=5 delay=5 duplicate=5" \
             "cd $WOLFSSL_DIR && exec stdbuf -oL $WOLFSSL_SRV -u -v 4 -d -b -i -p $SRV_PORT" \
             "$P_CLI dtls=1 force_version=dtls13 server_addr=127.0.0.1 server_name=example.com ca_file=$WOLFSSL_DIR/certs/ca-cert.pem debug_level=2 hs_timeout=1000-10000" \
@@ -130,7 +130,7 @@ run_test    "DTLS 1.3 wolfSSL interop Direction B: B: proxy — 3d, basic handsh
 requires_wolfssl
 not_with_valgrind
 client_needs_more_time 2
-run_test    "DTLS 1.3 wolfSSL interop Direction B: B: loss recovery via retransmit" \
+run_test    "DTLS 1.3 wolfSSL interop Direction B: loss recovery via retransmit" \
             -p "$P_PXY drop=8 delay=8 duplicate=8" \
             "cd $WOLFSSL_DIR && exec stdbuf -oL $WOLFSSL_SRV -u -v 4 -d -b -i -p $SRV_PORT" \
             "$P_CLI dtls=1 force_version=dtls13 server_addr=127.0.0.1 server_name=example.com ca_file=$WOLFSSL_DIR/certs/ca-cert.pem debug_level=2 hs_timeout=1000-16000" \
@@ -139,7 +139,7 @@ run_test    "DTLS 1.3 wolfSSL interop Direction B: B: loss recovery via retransm
             -c "Protocol is DTLSv1.3"
 
 requires_wolfssl
-run_test    "DTLS 1.3 wolfSSL interop Direction B: B: external PSK" \
+run_test    "DTLS 1.3 wolfSSL interop Direction B: external PSK" \
             -p "" \
             "cd $WOLFSSL_DIR && exec stdbuf -oL $WOLFSSL_SRV -u -v 4 -d -b -i -p $SRV_PORT -s" \
             "$P_CLI dtls=1 force_version=dtls13 server_addr=127.0.0.1 server_name=example.com ca_file=$WOLFSSL_DIR/certs/ca-cert.pem debug_level=3 psk=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef psk_identity=Client_identity" \
@@ -149,7 +149,7 @@ run_test    "DTLS 1.3 wolfSSL interop Direction B: B: external PSK" \
             -c "Selected key exchange mode: psk_ephemeral"
 
 requires_wolfssl
-run_test    "DTLS 1.3 wolfSSL interop Direction B: B: mbedtls client sends KeyUpdate (update_not_requested)" \
+run_test    "DTLS 1.3 wolfSSL interop Direction B: mbedtls client sends KeyUpdate (update_not_requested)" \
             -p "" \
             "cd $WOLFSSL_DIR && exec stdbuf -oL $WOLFSSL_SRV -u -v 4 -d -b -i -p $SRV_PORT" \
             "$P_CLI dtls=1 force_version=dtls13 server_addr=127.0.0.1 server_name=example.com ca_file=$WOLFSSL_DIR/certs/ca-cert.pem debug_level=2 key_update=1" \

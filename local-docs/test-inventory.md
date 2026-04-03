@@ -228,13 +228,13 @@ wolfSSL cert SAN includes `dNSName=example.com` and `iPAddress=127.0.0.1`.
 
 | Test name                                                                                         | Status | Notes |
 | ------------------------------------------------------------------------------------------------- | ------ | ----- |
-| `DTLS 1.3 wolfSSL interop Direction B: B: full 1-RTT handshake`                                  | pass | |
-| `DTLS 1.3 wolfSSL interop Direction B: B: application data exchange`                              | pass | |
-| `DTLS 1.3 wolfSSL interop Direction B: B: client ACKs server Finished flight`                    | pass | |
-| `DTLS 1.3 wolfSSL interop Direction B: B: HRR+cookie (wolfSSL sends cookie by default)`          | pass | |
-| `DTLS 1.3 wolfSSL interop Direction B: B: force AES-128-GCM ciphersuite`                         | pass | |
-| `DTLS 1.3 wolfSSL interop Direction B: B: proxy — 3d, basic handshake`                           | pass | occasionally flaky |
-| `DTLS 1.3 wolfSSL interop Direction B: B: loss recovery via retransmit`                          | pass | |
-| `DTLS 1.3 wolfSSL interop Direction B: B: external PSK`                                          | pass | |
-| `DTLS 1.3 wolfSSL interop Direction B: B: mbedtls client sends KeyUpdate (update_not_requested)` | pass | |
+| `DTLS 1.3 wolfSSL interop Direction B: full 1-RTT handshake`                                  | pass | |
+| `DTLS 1.3 wolfSSL interop Direction B: application data exchange`                              | pass | |
+| `DTLS 1.3 wolfSSL interop Direction B: client ACKs server Finished flight`                    | pass | |
+| `DTLS 1.3 wolfSSL interop Direction B: HRR+cookie (wolfSSL sends cookie by default)`          | pass | |
+| `DTLS 1.3 wolfSSL interop Direction B: force AES-128-GCM ciphersuite`                         | pass | |
+| `DTLS 1.3 wolfSSL interop Direction B: proxy — 3d, basic handshake`                           | pass | occasionally flaky |
+| `DTLS 1.3 wolfSSL interop Direction B: loss recovery via retransmit`                          | pass | |
+| `DTLS 1.3 wolfSSL interop Direction B: external PSK`                                          | pass | |
+| `DTLS 1.3 wolfSSL interop Direction B: mbedtls client sends KeyUpdate (update_not_requested)` | pass | |
 

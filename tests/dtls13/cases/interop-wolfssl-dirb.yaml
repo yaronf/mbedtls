@@ -9,7 +9,7 @@ requires:
 # wolfSSL cert SAN includes dNSName=example.com and iPAddress=127.0.0.1.
 
 cases:
-  - name: "B: full 1-RTT handshake"
+  - name: "full 1-RTT handshake"
     client:
       debug_level: 2
     expect:
@@ -18,7 +18,7 @@ cases:
         - wolfssl_server_dtls13_negotiated
         - client_dtls13_negotiated
 
-  - name: "B: application data exchange"
+  - name: "application data exchange"
     # wolfSSL server serves one request per connection; single exchange only.
     client:
       debug_level: 2
@@ -29,7 +29,7 @@ cases:
         - client_dtls13_negotiated
         - client_read_server_data
 
-  - name: "B: client ACKs server Finished flight"
+  - name: "client ACKs server Finished flight"
     client:
       debug_level: 2
     expect:
@@ -39,7 +39,7 @@ cases:
         - client_dtls13_negotiated
         - client_ack_sent
 
-  - name: "B: HRR+cookie (wolfSSL sends cookie by default)"
+  - name: "HRR+cookie (wolfSSL sends cookie by default)"
     # wolfSSL server always sends a HelloRetryRequest with cookie extension
     # unless -J 1 is passed.  mbedtls client must handle HRR correctly.
     client:
@@ -51,7 +51,7 @@ cases:
         - client_dtls13_negotiated
         - client_hrr_received
 
-  - name: "B: force AES-128-GCM ciphersuite"
+  - name: "force AES-128-GCM ciphersuite"
     server:
       force_ciphersuite: TLS_AES_128_GCM_SHA256
     client:
@@ -63,7 +63,7 @@ cases:
         - wolfssl_server_dtls13_negotiated
         - client_dtls13_negotiated
 
-  - name: "B: proxy — 3d, basic handshake"
+  - name: "proxy — 3d, basic handshake"
     requires:
       - not_valgrind: true
     proxy:
@@ -79,7 +79,7 @@ cases:
         - wolfssl_server_dtls13_negotiated
         - client_dtls13_negotiated
 
-  - name: "B: loss recovery via retransmit"
+  - name: "loss recovery via retransmit"
     requires:
       - not_valgrind: true
     proxy:
@@ -96,7 +96,7 @@ cases:
         - client_dtls13_negotiated
     slow: 2
 
-  - name: "B: external PSK"
+  - name: "external PSK"
     # wolfSSL server PSK: identity=Client_identity, 32-byte key (see test.h).
     # key bytes: 0x01 + 0x22*i (mod 0x100), wrapping at 0x01.
     # debug_level=3 needed to log "Selected key exchange mode: psk_ephemeral".
@@ -113,7 +113,7 @@ cases:
         - client_dtls13_negotiated
         - client_psk_ephemeral
 
-  - name: "B: mbedtls client sends KeyUpdate (update_not_requested)"
+  - name: "mbedtls client sends KeyUpdate (update_not_requested)"
     client:
       debug_level: 2
       key_update: 1
