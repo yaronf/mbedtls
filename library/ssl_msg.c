@@ -4722,7 +4722,14 @@ static int ssl_dtls13_sne_compute_mask(
     }
 
     if (ct_len < 16) {
-        /* Need at least 16 bytes of ciphertext as sample */
+        /* Need at least 16 bytes of ciphertext as SNE sample.
+         * This can only happen with AES-128-CCM-8 (taglen=8), which produces
+         * a minimum ciphertext of 9 bytes (8-byte tag + 1-byte content type).
+         * RFC 9147 does not list CCM-8 as a supported DTLS 1.3 ciphersuite,
+         * so this path should be unreachable in practice. */
+        MBEDTLS_SSL_DEBUG_MSG(1, ("SNE: ciphertext too short for sample (%u < 16)"
+                                  " — CCM-8 not supported with DTLS 1.3 SNE",
+                                  (unsigned) ct_len));
         return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
     }
 
