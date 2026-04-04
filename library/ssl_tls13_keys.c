@@ -1938,7 +1938,6 @@ static int ssl_dtls13_derive_sne_keys(
     if (ret != 0) {
         return ret;
     }
-    transform->sn_key_len = key_len;
 
     ret = mbedtls_ssl_dtls13_hkdf_expand_label(
         hash_alg,
@@ -1949,6 +1948,10 @@ static int ssl_dtls13_derive_sne_keys(
     if (ret != 0) {
         return ret;
     }
+
+    /* Set lengths only after both keys are successfully derived, so that a
+     * partial failure leaves both at zero and SNE is never half-armed. */
+    transform->sn_key_len     = key_len;
     transform->sn_key_enc_len = key_len;
 
     transform->dtls13_epoch = epoch;
