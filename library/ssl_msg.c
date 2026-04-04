@@ -3430,6 +3430,12 @@ static int ssl_dtls13_sne_apply(
  *  - ssl->out_msglen: length of the record content (excl headers)
  *  - ssl->out_msg: record content
  */
+
+/* Minimum ciphertext length required to provide a 16-byte SNE sample
+ * (RFC 9147 §4.2.3). AES-ECB needs exactly 16 bytes; ChaCha20 needs
+ * 16 bytes for nonce+counter extraction. */
+#define MBEDTLS_SSL_DTLS13_SNE_SAMPLE_LEN 16
+
 int mbedtls_ssl_write_record(mbedtls_ssl_context *ssl, int force_flush)
 {
     int ret, done = 0;
@@ -3559,7 +3565,8 @@ int mbedtls_ssl_write_record(mbedtls_ssl_context *ssl, int force_flush)
                  * AAD was already computed with plaintext seq; SNE only affects
                  * the on-wire seq, not the AEAD.
                  */
-                if (ssl->transform_out->sn_key_enc_len > 0 && len >= 16) {
+                if (ssl->transform_out->sn_key_enc_len > 0 &&
+                    len >= MBEDTLS_SSL_DTLS13_SNE_SAMPLE_LEN) {
                     /* Reuse sn_apply with a temporary transform that presents
                      * sn_key_enc as sn_key so ssl_dtls13_sne_apply can use it. */
                     mbedtls_ssl_transform tmp_transform;
@@ -4721,7 +4728,7 @@ static int ssl_dtls13_sne_compute_mask(
         return 0;
     }
 
-    if (ct_len < 16) {
+    if (ct_len < MBEDTLS_SSL_DTLS13_SNE_SAMPLE_LEN) {
         /* Need at least 16 bytes of ciphertext as SNE sample.
          * This can only happen with AES-128-CCM-8 (taglen=8), which produces
          * a minimum ciphertext of 9 bytes (8-byte tag + 1-byte content type).
@@ -5340,7 +5347,7 @@ static int ssl_prepare_record_content(mbedtls_ssl_context *ssl,
             transform_in->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
             transform_in->sn_key_len > 0 &&
             rec->buf_len >= 1 && (rec->buf[0] & 0xE0) == 0x20 &&
-            rec->data_len >= 16) {
+            rec->data_len >= MBEDTLS_SSL_DTLS13_SNE_SAMPLE_LEN) {
             int long_seq  = (rec->buf[0] >> 3) & 1;
             size_t seq_len = long_seq ? 2 : 1;
             /* seq bytes in header start at offset 1 (after type byte) */
