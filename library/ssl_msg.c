@@ -4727,9 +4727,6 @@ static int ssl_dtls13_sne_compute_mask(
          * a minimum ciphertext of 9 bytes (8-byte tag + 1-byte content type).
          * RFC 9147 does not list CCM-8 as a supported DTLS 1.3 ciphersuite,
          * so this path should be unreachable in practice. */
-        MBEDTLS_SSL_DEBUG_MSG(1, ("SNE: ciphertext too short for sample (%u < 16)"
-                                  " — CCM-8 not supported with DTLS 1.3 SNE",
-                                  (unsigned) ct_len));
         return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
     }
 
@@ -4773,10 +4770,17 @@ static int ssl_dtls13_sne_compute_mask(
         mask[0] = 0;
         mask[1] = 0;
 #endif /* MBEDTLS_CHACHA20_C */
-    } else {
+    } else if (PSA_ALG_IS_AEAD(transform->psa_alg) &&
+               transform->psa_alg != PSA_ALG_CHACHA20_POLY1305) {
         /*
          * AES mask: AES-ECB(sn_key, sample)[0:2]
          * PSA: psa_cipher_encrypt with PSA_ALG_ECB_NO_PADDING, no IV.
+         *
+         * RFC 9147 §4.2.3 defines SNE only for AES and ChaCha20 ciphersuites.
+         * We reach this branch for AES-GCM and AES-CCM variants.
+         * The sn_key_len switch below rejects any key length that is not a
+         * valid AES key size, so future non-AES AEAD algorithms will fail
+         * there rather than silently producing a wrong mask.
          */
         unsigned char ecb_out[16];
         size_t ecb_out_len;
@@ -4813,6 +4817,9 @@ static int ssl_dtls13_sne_compute_mask(
 
         mask[0] = ecb_out[0];
         mask[1] = ecb_out[1];
+    } else {
+        /* Unknown algorithm — SNE is not defined for this ciphersuite. */
+        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
     }
 
     return 0;
