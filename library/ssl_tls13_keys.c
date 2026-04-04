@@ -223,6 +223,7 @@ cleanup:
 }
 
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
+MBEDTLS_CHECK_RETURN_CRITICAL
 int mbedtls_ssl_dtls13_hkdf_expand_label(
     psa_algorithm_t hash_alg,
     const unsigned char *secret, size_t secret_len,
