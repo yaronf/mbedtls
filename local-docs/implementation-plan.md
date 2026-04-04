@@ -829,6 +829,7 @@ Audit completed 2026-03-31 (re-audited with Opus 4.6 1M context). Results:
           | dtls13 branch, DTLS 1.3 enabled | 1928 | 32 | 619 | **-34 (fewer failures)** |
           | dtls13 branch, no-DTLS | 1925 | 68 | 838 | +2 (non-det) |
           | dtls13 branch, no-TLS1.3 | 1942 | 51 | 1374 | 0 |
+          | dtls13 branch, CID disabled | 34 dtls13 integration tests pass (CID tests skipped); build clean | — | — | 0 |
 
           Final run (2026-04-03): 32 failures, all pre-existing in baseline:
           - 26 × AES_128_CCM_8 TLS 1.3 m→O interop vs OpenSSL
@@ -892,20 +893,3 @@ highest-risk area: mandatory, novel, zero published vectors.
 | **BoringSSL** | Production, `main` branch | Technical reference; instrument `ssl/test/runner/dtls.go` to generate our test vectors |
 | **wolfSSL** | Production since v5.4.0 (Jul 2022) | Primary interop target |
 | **OpenSSL** | In-progress PR #26629, not merged | Skip for now |
-
-
----
-
-## Gaps
-
-Known gaps not yet addressed:
-
-- **Build with `MBEDTLS_SSL_DTLS_CONNECTION_ID` disabled, DTLS 1.3 enabled**: 47 guard
-  sites across `ssl_msg.c`, `ssl_tls.c`, `ssl_tls13_client.c`, `ssl_tls13_server.c`.
-  No dedicated build has verified this configuration compiles and passes tests cleanly.
-  The Phase 7 build matrix covered no-DTLS and no-TLS1.3, but not CID-off with
-  everything else on.
-  **Partial fix (2026-04-04)**: `ssl_parse_dtls13_record_header()` was silently treating
-  CID bytes as payload when CID was disabled (`cid_len` stayed 0, `hdr_len` unchanged).
-  Fixed to return `MBEDTLS_ERR_SSL_INVALID_RECORD` when C bit is set and CID is compiled
-  out. Full build validation still pending.

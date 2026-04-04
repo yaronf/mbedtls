@@ -4680,11 +4680,10 @@ static int ssl_parse_dtls13_record_header(mbedtls_ssl_context *ssl,
     if (has_cid && cid_len > 0) {
         rec->cid_len = (uint8_t) cid_len;
         memcpy(rec->cid, buf + 1 + seq_len, cid_len);
-    } else
-#endif
-    {
+    } else {
         rec->cid_len = 0;
     }
+#endif
 
     /* Content type: unknown until after decryption (DTLSInnerPlaintext) */
     rec->type = 0;
