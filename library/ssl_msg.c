@@ -7571,21 +7571,22 @@ static int ssl_tls13_session_hash_info(
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 && MBEDTLS_SSL_PROTO_DTLS */
 
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
-/* Retire a transform to the epoch pool (if not already present).
- * If *alias points to the same transform, it is NULLed to keep it in sync
- * with the pool's ownership.  Used during KeyUpdate on both inbound and
- * outbound paths, where transform_in or transform_out may alias the retiring
- * transform. */
+/* Retire *transform_p to the epoch pool (if not already present), NULLing
+ * *transform_p to transfer ownership.  If *alias_p points to the same object,
+ * it is also NULLed to prevent a double-free when the alias is later freed.
+ * Used during KeyUpdate where transform_in/out may alias transform_application. */
 static void ssl_dtls13_retire_transform_to_pool(
     mbedtls_ssl_context *ssl,
-    mbedtls_ssl_transform **alias,
-    mbedtls_ssl_transform *transform)
+    mbedtls_ssl_transform **alias_p,
+    mbedtls_ssl_transform **transform_p)
 {
-    if (*alias == transform) {
-        *alias = NULL;
+    if (*alias_p == *transform_p) {
+        *alias_p = NULL;
     }
-    if (!ssl_dtls13_epoch_pool_contains(ssl, transform)) {
-        ssl_dtls13_epoch_pool_insert(ssl, &transform);
+    if (!ssl_dtls13_epoch_pool_contains(ssl, *transform_p)) {
+        ssl_dtls13_epoch_pool_insert(ssl, transform_p);
+    } else {
+        *transform_p = NULL;
     }
 }
 
@@ -7600,8 +7601,7 @@ static void ssl_dtls13_key_update_install_outbound(mbedtls_ssl_context *ssl)
     size_t hash_len;
 
     ssl_dtls13_retire_transform_to_pool(
-        ssl, &ssl->transform_application, ssl->transform_out);
-    ssl->transform_out = NULL; /* set_outbound_transform will reassign */
+        ssl, &ssl->transform_application, &ssl->transform_out);
 
     /* Install the new outbound transform. */
     mbedtls_ssl_set_outbound_transform(ssl, ssl->dtls13_transform_pending_out);
@@ -7856,8 +7856,7 @@ static int ssl_tls13_handle_key_update(mbedtls_ssl_context *ssl)
     /* Retire old inbound transform to the epoch pool so reordered records
      * from the old epoch can still be decrypted. */
     ssl_dtls13_retire_transform_to_pool(
-        ssl, &ssl->transform_application, ssl->transform_in);
-    ssl->transform_in = NULL; /* pool owns it now; set_inbound_transform will reassign */
+        ssl, &ssl->transform_application, &ssl->transform_in);
 
     /* Install the new inbound transform. */
     mbedtls_ssl_set_inbound_transform(ssl, new_transform);
