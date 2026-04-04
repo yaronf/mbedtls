@@ -1280,12 +1280,12 @@ static inline int mbedtls_ssl_transform_uses_aead(
  */
 
 /**
- * \brief  Insert \p transform into the DTLS 1.3 epoch pool.
- *         Pool takes ownership; caller must null their owning pointer.
- *         May be called with transform == NULL (no-op).
+ * \brief  Insert \p *transform_p into the DTLS 1.3 epoch pool and set
+ *         \p *transform_p to NULL, transferring ownership to the pool.
+ *         May be called with transform_p == NULL or *transform_p == NULL (no-op).
  */
 void ssl_dtls13_epoch_pool_insert(mbedtls_ssl_context *ssl,
-                                  mbedtls_ssl_transform *transform);
+                                  mbedtls_ssl_transform **transform_p);
 
 /**
  * \brief  Look up a transform in the pool by full epoch number.

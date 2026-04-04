@@ -7582,9 +7582,8 @@ static void ssl_dtls13_retire_transform_to_pool(
     if (*alias == transform) {
         *alias = NULL;
     }
-    if (transform != NULL &&
-        !ssl_dtls13_epoch_pool_contains(ssl, transform)) {
-        ssl_dtls13_epoch_pool_insert(ssl, transform);
+    if (!ssl_dtls13_epoch_pool_contains(ssl, transform)) {
+        ssl_dtls13_epoch_pool_insert(ssl, &transform);
     }
 }
 
@@ -9120,23 +9119,25 @@ int mbedtls_ssl_dtls13_wait_ack_step(mbedtls_ssl_context *ssl)
  * The pool allows records from recently-superseded epochs to be decrypted even
  * after the session has transitioned to a newer epoch (RFC 9147 §4.2.1).
  *
- * Ownership: the pool owns every transform it holds.  Callers that insert
- * a transform MUST set their original owning pointer to NULL immediately
- * afterward to prevent a double-free in handshake / context teardown.
+ * Ownership: the pool owns every transform it holds.  ssl_dtls13_epoch_pool_insert()
+ * takes a pointer-to-pointer and NULLs the caller's pointer on success, transferring
+ * ownership atomically from the caller's perspective.
  */
 
 void ssl_dtls13_epoch_pool_insert(mbedtls_ssl_context *ssl,
-                                  mbedtls_ssl_transform *transform)
+                                  mbedtls_ssl_transform **transform_p)
 {
     int i;
     int evict;
     uint64_t oldest_ts;
     mbedtls_ssl_dtls13_epoch_slot *pool = ssl->dtls13_epoch_pool;
     mbedtls_ssl_dtls13_epoch_slot *target;
+    mbedtls_ssl_transform *transform;
 
-    if (transform == NULL) {
+    if (transform_p == NULL || *transform_p == NULL) {
         return;
     }
+    transform = *transform_p;
 
     /* Find an empty slot first. */
     target = NULL;
@@ -9178,6 +9179,9 @@ void ssl_dtls13_epoch_pool_insert(mbedtls_ssl_context *ssl,
      * a fresh window for this (now-retired) epoch. */
     target->in_window     = 0;
     target->in_window_top = 0;
+
+    /* Transfer ownership: NULL the caller's pointer. */
+    *transform_p = NULL;
 }
 
 mbedtls_ssl_transform *ssl_dtls13_epoch_pool_lookup(

@@ -3259,8 +3259,7 @@ static int ssl_tls13_process_end_of_early_data(mbedtls_ssl_context *ssl)
          */
         if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
             ssl->handshake->transform_earlydata != NULL) {
-            ssl_dtls13_epoch_pool_insert(ssl, ssl->handshake->transform_earlydata);
-            ssl->handshake->transform_earlydata = NULL;
+            ssl_dtls13_epoch_pool_insert(ssl, &ssl->handshake->transform_earlydata);
         }
 #endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
         mbedtls_ssl_set_inbound_transform(

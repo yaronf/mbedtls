@@ -1324,16 +1324,15 @@ void mbedtls_ssl_session_reset_msg_layer(mbedtls_ssl_context *ssl,
         /* Collect post-KeyUpdate transforms into the epoch pool before nulling
          * transform_in / transform_out.  If no KeyUpdate occurred these pointers
          * alias transform_application (freed below) and must not be freed here. */
-        mbedtls_ssl_transform *t;
-        t = ssl->transform_in;
-        if (t != NULL && t != ssl->transform_application &&
-            !ssl_dtls13_epoch_pool_contains(ssl, t)) {
-            ssl_dtls13_epoch_pool_insert(ssl, t);
+        if (ssl->transform_in != NULL &&
+            ssl->transform_in != ssl->transform_application &&
+            !ssl_dtls13_epoch_pool_contains(ssl, ssl->transform_in)) {
+            ssl_dtls13_epoch_pool_insert(ssl, &ssl->transform_in);
         }
-        t = ssl->transform_out;
-        if (t != NULL && t != ssl->transform_application &&
-            !ssl_dtls13_epoch_pool_contains(ssl, t)) {
-            ssl_dtls13_epoch_pool_insert(ssl, t);
+        if (ssl->transform_out != NULL &&
+            ssl->transform_out != ssl->transform_application &&
+            !ssl_dtls13_epoch_pool_contains(ssl, ssl->transform_out)) {
+            ssl_dtls13_epoch_pool_insert(ssl, &ssl->transform_out);
         }
     }
     ssl_dtls13_epoch_pool_free(ssl);
@@ -5284,18 +5283,15 @@ void mbedtls_ssl_free(mbedtls_ssl_context *ssl)
          * cleans them up.  Skip transforms already in the pool (the other
          * direction's pre-KU epoch) and transforms aliasing transform_application
          * (no-KU case — already freed above). */
-        mbedtls_ssl_transform *t;
-        t = ssl->transform_in;
-        if (t != NULL && t != ssl->transform_application &&
-            !ssl_dtls13_epoch_pool_contains(ssl, t)) {
-            ssl_dtls13_epoch_pool_insert(ssl, t);
-            ssl->transform_in = NULL;
+        if (ssl->transform_in != NULL &&
+            ssl->transform_in != ssl->transform_application &&
+            !ssl_dtls13_epoch_pool_contains(ssl, ssl->transform_in)) {
+            ssl_dtls13_epoch_pool_insert(ssl, &ssl->transform_in);
         }
-        t = ssl->transform_out;
-        if (t != NULL && t != ssl->transform_application &&
-            !ssl_dtls13_epoch_pool_contains(ssl, t)) {
-            ssl_dtls13_epoch_pool_insert(ssl, t);
-            ssl->transform_out = NULL;
+        if (ssl->transform_out != NULL &&
+            ssl->transform_out != ssl->transform_application &&
+            !ssl_dtls13_epoch_pool_contains(ssl, ssl->transform_out)) {
+            ssl_dtls13_epoch_pool_insert(ssl, &ssl->transform_out);
         }
     }
 

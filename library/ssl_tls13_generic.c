@@ -1266,8 +1266,7 @@ void mbedtls_ssl_tls13_handshake_wrapup(mbedtls_ssl_context *ssl)
     if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
         ssl->handshake != NULL &&
         ssl->handshake->transform_handshake != NULL) {
-        ssl_dtls13_epoch_pool_insert(ssl, ssl->handshake->transform_handshake);
-        ssl->handshake->transform_handshake = NULL;
+        ssl_dtls13_epoch_pool_insert(ssl, &ssl->handshake->transform_handshake);
     }
 #endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
     mbedtls_ssl_set_inbound_transform(ssl, ssl->transform_application);
