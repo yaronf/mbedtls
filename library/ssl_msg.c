@@ -7571,9 +7571,11 @@ static int ssl_tls13_session_hash_info(
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 && MBEDTLS_SSL_PROTO_DTLS */
 
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
-/* Retire a transform to the epoch pool (if not already present) and set any
- * aliasing pointer to NULL to prevent double-free.  Used during KeyUpdate on
- * both the inbound and outbound paths. */
+/* Retire a transform to the epoch pool (if not already present).
+ * If *alias points to the same transform, it is NULLed to keep it in sync
+ * with the pool's ownership.  Used during KeyUpdate on both inbound and
+ * outbound paths, where transform_in or transform_out may alias the retiring
+ * transform. */
 static void ssl_dtls13_retire_transform_to_pool(
     mbedtls_ssl_context *ssl,
     mbedtls_ssl_transform **alias,
