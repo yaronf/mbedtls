@@ -77,7 +77,7 @@ Tests are defined as YAML case files under `tests/dtls13/cases/` and
 generated into `dtls13-tests.sh` and `dtls13-wolfssl-tests.sh` via
 `python3 tests/dtls13/generate.py`.
 
-**Total: 47 mbedtls-only + 12 wolfSSL Direction A + 9 wolfSSL Direction B = 68 integration tests, all passing**
+**Total: 48 mbedtls-only + 12 wolfSSL Direction A + 9 wolfSSL Direction B = 69 integration tests, all passing**
 (wolfSSL tests require `WOLFSSL_DIR=~/misc/wolfssl`)
 
 ### Handshake (`cases/handshake.yaml`)
@@ -126,6 +126,7 @@ generated into `dtls13-tests.sh` and `dtls13-wolfssl-tests.sh` via
 | `DTLS 1.3: bad KeyUpdate: body too long triggers server decode_error`  | pass |
 | `DTLS 1.3: bad KeyUpdate: invalid update_requested value triggers illegal_parameter` | pass |
 | `DTLS 1.3: double KeyUpdate: second blocked by pending-ACK guard`      | pass |
+| `DTLS 1.3: KeyUpdate preserves CID across epoch transition`            | pass |
 
 ### CID (`cases/cid.yaml`)
 

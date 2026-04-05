@@ -50,7 +50,7 @@ at the right point (after AEAD) on both encrypt and decrypt paths?
 
 ---
 
-## Area 3: Epoch Pool — lifetime, eviction, and counter integrity (RFC 9147 §4.2.1)
+## Area 3: Epoch Pool — lifetime, eviction, and counter integrity (RFC 9147 §4.2.1) ✓ DONE
 
 **Focus:** Are retired transforms correctly retained and evicted, and are their
 sequence counters preserved accurately for retransmit?
@@ -69,7 +69,7 @@ sequence counters preserved accurately for retransmit?
 
 ---
 
-## Area 4: KeyUpdate — ACK-pending guard and secret lifecycle (RFC 9147 §8)
+## Area 4: KeyUpdate — ACK-pending guard and secret lifecycle (RFC 9147 §8) ✓ DONE
 
 **Focus:** Is a second KeyUpdate correctly blocked while one is pending, and is the
 pending secret handled safely from derivation through installation through zeroization?
