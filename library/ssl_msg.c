@@ -9131,7 +9131,7 @@ void ssl_dtls13_epoch_pool_insert(mbedtls_ssl_context *ssl,
 {
     int i;
     int evict;
-    uint64_t oldest_ts;
+    uint64_t oldest_epoch;
     mbedtls_ssl_dtls13_epoch_slot *pool = ssl->dtls13_epoch_pool;
     mbedtls_ssl_dtls13_epoch_slot *target;
     mbedtls_ssl_transform *transform;
@@ -9151,13 +9151,13 @@ void ssl_dtls13_epoch_pool_insert(mbedtls_ssl_context *ssl,
     }
 
     if (target == NULL) {
-        /* All slots occupied — evict the slot with the lowest retired_at_ms
+        /* All slots occupied — evict the slot with the lowest epoch number
          * (i.e. the oldest epoch, least likely to be needed for decryption). */
-        evict     = 0;
-        oldest_ts = pool[0].retired_at_ms;
+        evict      = 0;
+        oldest_epoch  = pool[0].retired_epoch;
         for (i = 1; i < MBEDTLS_SSL_DTLS13_EPOCH_POOL_SIZE; i++) {
-            if (pool[i].retired_at_ms < oldest_ts) {
-                oldest_ts = pool[i].retired_at_ms;
+            if (pool[i].retired_epoch < oldest_epoch) {
+                oldest_epoch = pool[i].retired_epoch;
                 evict     = i;
             }
         }
@@ -9169,8 +9169,8 @@ void ssl_dtls13_epoch_pool_insert(mbedtls_ssl_context *ssl,
 
     target->epoch         = transform->dtls13_epoch;
     target->transform     = transform;
-    /* Use epoch number as ordering key: lower epoch = older. */
-    target->retired_at_ms = (uint64_t) transform->dtls13_epoch;
+    /* Eviction key: lower epoch number = older = evicted first. */
+    target->retired_epoch = (uint64_t) transform->dtls13_epoch;
     /* Save the current outbound counter for this epoch so that retransmits
      * from a later epoch (e.g. WAIT_ACK with epoch=3 active) can continue
      * from where we left off rather than resetting to sequence 0. */

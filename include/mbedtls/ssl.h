@@ -1621,7 +1621,7 @@ struct mbedtls_ssl_config {
 typedef struct {
     uint64_t epoch;                   /*!< full 64-bit epoch value; 0=empty  */
     mbedtls_ssl_transform *transform; /*!< NULL when slot is empty           */
-    uint64_t retired_at_ms;           /*!< eviction key: epoch number (lower = older, evicted first); name is historical */
+    uint64_t retired_epoch;           /*!< eviction key: epoch number (lower = older, evicted first) */
     unsigned char out_ctr[8];         /*!< outbound counter for this epoch   */
     /* Per-epoch anti-replay window (RFC 9147 §4.2.1).
      * Mirrors in_window / in_window_top in ssl_context but scoped to this
@@ -1733,7 +1733,7 @@ struct mbedtls_ssl_context {
 
 #if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
     /** DTLS 1.3 epoch pool: retains old inbound transforms for reordered
-     *  records.  Indexed circularly; oldest retired_at_ms slot evicted first.
+     *  records.  Indexed circularly; oldest retired_epoch slot evicted first.
      *  Use ssl_dtls13_epoch_pool_*() helpers in library/ssl_misc.h. */
     mbedtls_ssl_dtls13_epoch_slot
         MBEDTLS_PRIVATE(dtls13_epoch_pool)[MBEDTLS_SSL_DTLS13_EPOCH_POOL_SIZE];
