@@ -7761,7 +7761,7 @@ cleanup:
 }
 
 /*
- * Handle a received KeyUpdate message (RFC 8446 §4.6.3).
+ * Handle a received KeyUpdate message (RFC 9147 §8 / RFC 8446 §4.6.3).
  *
  * Updates the inbound transform to the next epoch and, if update_requested=1,
  * sends a KeyUpdate(update_not_requested) in response.
