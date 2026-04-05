@@ -121,6 +121,12 @@ assertion_map:
   client_no_error:
     flag: "-C"
     string: "error"
+  server_no_cid_mismatch:
+    flag: "-S"
+    string: "CID mismatch"
+  client_no_cid_mismatch:
+    flag: "-C"
+    string: "CID mismatch"
   server_read_client_data:
     flag: "-s"
     string: "Read from client: 51 bytes read"

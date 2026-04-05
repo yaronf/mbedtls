@@ -493,6 +493,21 @@ run_test    "DTLS 1.3 KeyUpdate: double KeyUpdate: second blocked by pending-ACK
             -s "Protocol is DTLSv1.3" \
             -c "Protocol is DTLSv1.3"
 
+requires_protocol_version dtls13
+requires_config_enabled MBEDTLS_SSL_DTLS_CONNECTION_ID
+run_test    "DTLS 1.3 KeyUpdate: KeyUpdate preserves CID across epoch transition" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=2 cid=1 cid_val=deadbeef key_update=1 exchanges=3" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=2 cid=1 cid_val=cafebabe exchanges=3 aead_limit=1" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -s "KeyUpdate sent" \
+            -c "KeyUpdate sent" \
+            -C "error" \
+            -S "CID mismatch" \
+            -C "CID mismatch"
+
 # ======================================================================
 # Cases from: proxy-3d.yaml
 # ======================================================================

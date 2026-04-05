@@ -229,3 +229,37 @@ cases:
       assert:
         - server_dtls13_negotiated
         - client_dtls13_negotiated
+
+  - name: "KeyUpdate preserves CID across epoch transition"
+    skip_runners: [wolfssl]
+    requires:
+      - config: MBEDTLS_SSL_DTLS_CONNECTION_ID
+    # Regression test: CID must survive after transform_application is NULLed.
+    # The client sends a KeyUpdate (via aead_limit=1) before the first exchange,
+    # which NULLs transform_application on both sides.  The server then sends a
+    # KeyUpdate (via key_update=1) on exchange 2.  At that point
+    # transform_application is already NULL; the client's inbound transform must
+    # still carry the CID when it processes the server's KeyUpdate.
+    # A CID mismatch after the second KeyUpdate would appear as a decode error.
+    server:
+      debug_level: 2
+      cid: 1
+      cid_val: "deadbeef"
+      key_update: 1
+      exchanges: 3
+    client:
+      debug_level: 2
+      cid: 1
+      cid_val: "cafebabe"
+      exchanges: 3
+      aead_limit: 1
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - server_key_update_sent
+        - client_key_update_sent
+        - client_no_error
+        - server_no_cid_mismatch
+        - client_no_cid_mismatch

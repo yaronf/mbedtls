@@ -2376,13 +2376,15 @@ int mbedtls_ssl_tls13_compute_key_update_transform(
         }
 
 #if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
-        /* RFC 9147 §9: CIDs are stable across KeyUpdate — copy them. */
-        if (ssl->transform_application != NULL) {
-            transform->in_cid_len  = ssl->transform_application->in_cid_len;
-            memcpy(transform->in_cid, ssl->transform_application->in_cid,
+        /* RFC 9147 §9: CIDs are stable across KeyUpdate — copy from the
+         * current active inbound transform.  transform_application is NULLed
+         * after the first KeyUpdate so it cannot be used as the source. */
+        if (ssl->transform_in != NULL) {
+            transform->in_cid_len  = ssl->transform_in->in_cid_len;
+            memcpy(transform->in_cid, ssl->transform_in->in_cid,
                    transform->in_cid_len);
-            transform->out_cid_len = ssl->transform_application->out_cid_len;
-            memcpy(transform->out_cid, ssl->transform_application->out_cid,
+            transform->out_cid_len = ssl->transform_in->out_cid_len;
+            memcpy(transform->out_cid, ssl->transform_in->out_cid,
                    transform->out_cid_len);
         }
 #endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
