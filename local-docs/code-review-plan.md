@@ -75,11 +75,11 @@ sequence counters preserved accurately for retransmit?
 pending secret handled safely from derivation through installation through zeroization?
 
 **Primary code:**
-- `ssl_msg.c:7641–7763` — `ssl_tls13_write_key_update()`: send path, sets `dtls13_ku_ack_pending`
-- `ssl_msg.c:7772–7898` — `ssl_tls13_handle_key_update()`: receive path, inbound epoch install
-- `ssl_msg.c:7662` — guard: block send if `dtls13_ku_ack_pending` already set
-- `ssl_msg.c:7039–7056` — ACK receive: clears `dtls13_ku_ack_pending`, installs new outbound epoch
-- `ssl_tls13_keys.c:2299–2400` — `mbedtls_ssl_tls13_compute_key_update_transform()`: secret derivation
+- `ssl_msg.c:7643–7765` — `ssl_tls13_write_key_update()`: send path, sets `dtls13_ku_ack_pending`
+- `ssl_msg.c:7774–7899` — `ssl_tls13_handle_key_update()`: receive path, inbound epoch install
+- `ssl_msg.c:7664` — guard: block send if `dtls13_ku_ack_pending` already set
+- `ssl_msg.c:7040–7057` — ACK receive: clears `dtls13_ku_ack_pending`, installs new outbound epoch
+- `ssl_tls13_keys.c:2303–2404` — `mbedtls_ssl_tls13_compute_key_update_transform()`: secret derivation
 
 **What to look for:**
 - Guard at 7662: is it checked before every KeyUpdate send, including the auto-trigger path?
