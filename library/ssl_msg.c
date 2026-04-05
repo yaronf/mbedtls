@@ -7617,6 +7617,11 @@ static void ssl_dtls13_key_update_install_outbound(mbedtls_ssl_context *ssl)
             memcpy(ssl->session->app_secrets.server_application_traffic_secret_N,
                    ssl->dtls13_ku_pending_secret, hash_len);
         }
+    } else {
+        /* Should never happen post-handshake, but if it does the stored
+         * secret would be stale and future KeyUpdates would chain wrongly. */
+        MBEDTLS_SSL_DEBUG_MSG(1, ("KeyUpdate: failed to get session hash info "
+                                  "— stored secret not updated"));
     }
 
     mbedtls_platform_zeroize(ssl->dtls13_ku_pending_secret,
