@@ -8369,7 +8369,8 @@ static int ssl_tls13_handle_hs_message_post_handshake(mbedtls_ssl_context *ssl)
 
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
     /* KeyUpdate (RFC 9147 §8) — DTLS 1.3 only in this implementation. */
-    if (ssl->in_msg[0] == MBEDTLS_SSL_HS_KEY_UPDATE) {
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+        ssl->in_msg[0] == MBEDTLS_SSL_HS_KEY_UPDATE) {
         return ssl_tls13_handle_key_update(ssl);
     }
 #if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
