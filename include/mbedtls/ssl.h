@@ -1777,13 +1777,10 @@ struct mbedtls_ssl_context {
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
     /* DTLS 1.3 epoch tracking (§4.2.2 of RFC 9147 bis).
      *
-     * in_epoch_full holds the full 64-bit inbound epoch (in_epoch only holds
-     * the 16-bit wire value used by DTLS 1.2).
-     *
      * dtls13_epoch_max_seq[i] tracks the highest successfully deprotected
      * record sequence number for the epoch whose low 2 bits equal i.  Used
-     * for sequence number reconstruction.  Reset to 0 on epoch transition. */
-    uint64_t MBEDTLS_PRIVATE(in_epoch_full);
+     * for sequence number reconstruction.  Reset to 0 on epoch transition.
+     * Epoch reconstruction uses (uint64_t) in_epoch directly. */
     uint64_t MBEDTLS_PRIVATE(dtls13_epoch_max_seq)[4];
 
     /** Set when an ACK needs to be sent on the next I/O call (§7 of RFC 9147

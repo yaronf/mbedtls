@@ -4626,11 +4626,12 @@ static int ssl_parse_dtls13_record_header(mbedtls_ssl_context *ssl,
         rec->ctr[7] = buf[1];
     }
 
-    /* Epoch reconstruction: combine epoch_bits with in_epoch_full.
+    /* Epoch reconstruction: combine epoch_bits with in_epoch.
      *
      * The on-wire epoch is only the low 2 bits.  We reconstruct the full
-     * 64-bit epoch by combining those bits with the receiver's current epoch
-     * (in_epoch_full), choosing the candidate closest to in_epoch_full.
+     * epoch by combining those bits with the receiver's current epoch
+     * (in_epoch, widened to 64-bit for the arithmetic), choosing the
+     * candidate closest to in_epoch.
      * The period is 4 (2-bit epoch field), so valid candidates are:
      *   ..., base-2, base-1, base, base+1, ...  (modulo 4 ≡ epoch_bits)
      *
@@ -4645,7 +4646,7 @@ static int ssl_parse_dtls13_record_header(mbedtls_ssl_context *ssl,
      * preceding epoch (e.g. epoch=3 arriving after receiver advanced to
      * epoch=4 via KeyUpdate). */
     {
-        uint64_t base = ssl->in_epoch_full;
+        uint64_t base = (uint64_t) ssl->in_epoch;
         uint64_t candidate = (base & ~(uint64_t)0x03) | epoch_bits;
         if (candidate + 2 < base) {
             candidate += 4;
@@ -9271,14 +9272,13 @@ void mbedtls_ssl_set_inbound_transform(mbedtls_ssl_context *ssl,
 
 #if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
     /*
-     * DTLS 1.3: sync in_epoch / in_epoch_full from the transform's epoch.
+     * DTLS 1.3: sync in_epoch from the transform's epoch.
      * For DTLS 1.2 transforms dtls13_epoch == 0, so we leave in_epoch alone
      * (it is managed by the DTLS 1.2 epoch-increment path).
      */
     if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
         transform != NULL && transform->dtls13_epoch != 0) {
         ssl->in_epoch = transform->dtls13_epoch;
-        ssl->in_epoch_full = (uint64_t) transform->dtls13_epoch;
         /* Reset per-epoch max-seq tracker for this epoch's low 2 bits. */
         ssl->dtls13_epoch_max_seq[transform->dtls13_epoch & 0x03] = 0;
 #if defined(MBEDTLS_SSL_DTLS_ANTI_REPLAY)
