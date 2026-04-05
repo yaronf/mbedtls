@@ -7728,19 +7728,16 @@ static int ssl_tls13_write_key_update(mbedtls_ssl_context *ssl,
      * not done, a subsequent mbedtls_ssl_write() call will mistake leftover
      * output bytes for a partially-written application-data record and return
      * 'len' without actually writing the caller's data. */
-#if defined(MBEDTLS_SSL_PROTO_DTLS)
     if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
         if ((ret = mbedtls_ssl_flush_output(ssl)) != 0) {
             goto cleanup;
         }
     }
-#endif
 
     MBEDTLS_SSL_DEBUG_MSG(2, ("KeyUpdate sent (update_requested=%d, "
                               "new outbound epoch=%u)",
                               update_requested, (unsigned) new_epoch));
 
-#if defined(MBEDTLS_SSL_PROTO_DTLS)
     if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
         /* DTLS: must not use the new epoch until ACKed.  Hold the new
          * transform and stash the sent record's (epoch, seq) for matching. */
@@ -7753,7 +7750,6 @@ static int ssl_tls13_write_key_update(mbedtls_ssl_context *ssl,
         ssl->dtls13_ku_sent_seq   = ssl_dtls13_last_sent_seq(ssl);
         ssl->dtls13_ku_ack_pending = 1;
     }
-#endif /* MBEDTLS_SSL_PROTO_DTLS */
 
 cleanup:
     mbedtls_platform_zeroize(new_secret, sizeof(new_secret));
