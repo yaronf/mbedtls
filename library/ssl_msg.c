@@ -3415,7 +3415,9 @@ cleanup:
 /* Forward declaration: defined later in this file. */
 MBEDTLS_CHECK_RETURN_CRITICAL
 static int ssl_dtls13_sne_apply(
-    const mbedtls_ssl_transform *transform,
+    psa_algorithm_t psa_alg,
+    const unsigned char *sn_key,
+    size_t sn_key_len,
     unsigned char *seq_in_header,
     size_t seq_len,
     const unsigned char *ciphertext,
@@ -3567,20 +3569,12 @@ int mbedtls_ssl_write_record(mbedtls_ssl_context *ssl, int force_flush)
                  */
                 if (ssl->transform_out->sn_key_enc_len > 0 &&
                     len >= MBEDTLS_SSL_DTLS13_SNE_SAMPLE_LEN) {
-                    /* Reuse sn_apply with a temporary transform that presents
-                     * sn_key_enc as sn_key so ssl_dtls13_sne_apply can use it. */
-                    mbedtls_ssl_transform tmp_transform;
-                    memset(&tmp_transform, 0, sizeof(tmp_transform));
-                    tmp_transform.psa_alg    = ssl->transform_out->psa_alg;
-                    tmp_transform.sn_key_len = ssl->transform_out->sn_key_enc_len;
-                    memcpy(tmp_transform.sn_key,
-                           ssl->transform_out->sn_key_enc,
-                           ssl->transform_out->sn_key_enc_len);
-                    ret = ssl_dtls13_sne_apply(&tmp_transform,
-                                              ssl->out_hdr + 1, 2,
-                                              ssl->out_hdr + hdr_len, len);
-                    mbedtls_platform_zeroize(&tmp_transform,
-                                            sizeof(tmp_transform));
+                    ret = ssl_dtls13_sne_apply(
+                              ssl->transform_out->psa_alg,
+                              ssl->transform_out->sn_key_enc,
+                              ssl->transform_out->sn_key_enc_len,
+                              ssl->out_hdr + 1, 2,
+                              ssl->out_hdr + hdr_len, len);
                     if (ret != 0) {
                         MBEDTLS_SSL_DEBUG_RET(1, "ssl_dtls13_sne_apply(enc)", ret);
                         return ret;
@@ -4714,14 +4708,16 @@ static int ssl_parse_dtls13_record_header(mbedtls_ssl_context *ssl,
  */
 MBEDTLS_CHECK_RETURN_CRITICAL
 static int ssl_dtls13_sne_compute_mask(
-    const mbedtls_ssl_transform *transform,
+    psa_algorithm_t psa_alg,
+    const unsigned char *sn_key,
+    size_t sn_key_len,
     const unsigned char *ciphertext,
     size_t ct_len,
     unsigned char mask[2])
 {
     psa_status_t status;
 
-    if (transform->sn_key_len == 0) {
+    if (sn_key_len == 0) {
         /* SNE not active */
         mask[0] = 0;
         mask[1] = 0;
@@ -4737,7 +4733,7 @@ static int ssl_dtls13_sne_compute_mask(
         return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
     }
 
-    if (transform->psa_alg == PSA_ALG_CHACHA20_POLY1305) {
+    if (psa_alg == PSA_ALG_CHACHA20_POLY1305) {
 #if defined(MBEDTLS_CHACHA20_C)
         /*
          * ChaCha20 mask (RFC 9147 §4.2.3):
@@ -4760,7 +4756,7 @@ static int ssl_dtls13_sne_compute_mask(
             int chacha_ret;
 
             chacha_ret = mbedtls_chacha20_crypt(
-                transform->sn_key,   /* 32-byte key  */
+                sn_key,              /* 32-byte key  */
                 ciphertext + 4,      /* 12-byte nonce = sample[4..15] */
                 counter,
                 2,
@@ -4777,8 +4773,8 @@ static int ssl_dtls13_sne_compute_mask(
         mask[0] = 0;
         mask[1] = 0;
 #endif /* MBEDTLS_CHACHA20_C */
-    } else if (PSA_ALG_IS_AEAD(transform->psa_alg) &&
-               transform->psa_alg != PSA_ALG_CHACHA20_POLY1305) {
+    } else if (PSA_ALG_IS_AEAD(psa_alg) &&
+               psa_alg != PSA_ALG_CHACHA20_POLY1305) {
         /*
          * AES mask: AES-ECB(sn_key, sample)[0:2]
          * PSA: psa_cipher_encrypt with PSA_ALG_ECB_NO_PADDING, no IV.
@@ -4796,7 +4792,7 @@ static int ssl_dtls13_sne_compute_mask(
 
         /* Determine AES key type from sn_key length */
         psa_key_type_t key_type;
-        switch (transform->sn_key_len) {
+        switch (sn_key_len) {
             case 16: key_type = PSA_KEY_TYPE_AES; break;
             case 24: key_type = PSA_KEY_TYPE_AES; break;
             case 32: key_type = PSA_KEY_TYPE_AES; break;
@@ -4807,9 +4803,7 @@ static int ssl_dtls13_sne_compute_mask(
         psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_ENCRYPT);
         psa_set_key_algorithm(&attr, PSA_ALG_ECB_NO_PADDING);
 
-        status = psa_import_key(&attr,
-                                transform->sn_key, transform->sn_key_len,
-                                &key_id);
+        status = psa_import_key(&attr, sn_key, sn_key_len, &key_id);
         if (status != PSA_SUCCESS) {
             return PSA_TO_MBEDTLS_ERR(status);
         }
@@ -4848,7 +4842,9 @@ static int ssl_dtls13_sne_compute_mask(
  */
 MBEDTLS_CHECK_RETURN_CRITICAL
 static int ssl_dtls13_sne_apply(
-    const mbedtls_ssl_transform *transform,
+    psa_algorithm_t psa_alg,
+    const unsigned char *sn_key,
+    size_t sn_key_len,
     unsigned char *seq_in_header,
     size_t seq_len,
     const unsigned char *ciphertext,
@@ -4857,7 +4853,8 @@ static int ssl_dtls13_sne_apply(
     unsigned char mask[2];
     int ret;
 
-    ret = ssl_dtls13_sne_compute_mask(transform, ciphertext, ct_len, mask);
+    ret = ssl_dtls13_sne_compute_mask(psa_alg, sn_key, sn_key_len,
+                                      ciphertext, ct_len, mask);
     if (ret != 0) {
         return ret;
     }
@@ -5364,7 +5361,9 @@ static int ssl_prepare_record_content(mbedtls_ssl_context *ssl,
              * unified header with the *plaintext* sequence number (i.e. after
              * SNE reversal on receive), not the encrypted on-wire value.
              */
-            ret = ssl_dtls13_sne_apply(transform_in,
+            ret = ssl_dtls13_sne_apply(transform_in->psa_alg,
+                                       transform_in->sn_key,
+                                       transform_in->sn_key_len,
                                        seq_ptr, seq_len,
                                        ciphertext, rec->data_len);
             if (ret != 0) {
