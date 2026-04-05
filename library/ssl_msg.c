@@ -8374,11 +8374,13 @@ static int ssl_tls13_handle_hs_message_post_handshake(mbedtls_ssl_context *ssl)
         return ssl_tls13_handle_key_update(ssl);
     }
 #if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
-    /* NewConnectionId / RequestConnectionId (RFC 9147 §9) */
-    if (ssl->in_msg[0] == MBEDTLS_SSL_HS_NEW_CONNECTION_ID) {
+    /* NewConnectionId / RequestConnectionId (RFC 9147 §9) — DTLS 1.3 only. */
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+        ssl->in_msg[0] == MBEDTLS_SSL_HS_NEW_CONNECTION_ID) {
         return ssl_tls13_handle_new_connection_id(ssl);
     }
-    if (ssl->in_msg[0] == MBEDTLS_SSL_HS_REQUEST_CONNECTION_ID) {
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+        ssl->in_msg[0] == MBEDTLS_SSL_HS_REQUEST_CONNECTION_ID) {
         return ssl_tls13_handle_request_connection_id(ssl);
     }
 #endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
