@@ -90,7 +90,7 @@ pending secret handled safely from derivation through installation through zeroi
 
 ---
 
-## Area 5: ACK Generation and Matching (RFC 9147 §7)
+## Area 5: ACK Generation and Matching (RFC 9147 §7) ✓ DONE
 
 **Focus:** Is the ACK record correctly constructed and do received ACKs correctly
 clear only the matching flight items?
