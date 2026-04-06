@@ -1631,6 +1631,29 @@ typedef struct {
     uint64_t in_window;               /*!< replay bitmask for this epoch     */
     uint64_t in_window_top;           /*!< highest seq seen in this epoch    */
 } mbedtls_ssl_dtls13_epoch_slot;
+
+/** Type tag for a DTLS 1.3 standalone post-handshake message awaiting ACK.
+ *  Used in mbedtls_ssl_dtls13_pending_ack to dispatch on-ACK actions. */
+typedef enum {
+    MBEDTLS_SSL_DTLS13_PENDING_ACK_NONE = 0,  /*!< slot is empty */
+    MBEDTLS_SSL_DTLS13_PENDING_ACK_KEY_UPDATE, /*!< KeyUpdate (RFC 9147 §8) */
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+    MBEDTLS_SSL_DTLS13_PENDING_ACK_NEW_CONNECTION_ID, /*!< NewConnectionId (RFC 9147 §9) */
+#endif
+} mbedtls_ssl_dtls13_pending_ack_type_t;
+
+/** A pending-ACK slot for a standalone DTLS 1.3 post-handshake message.
+ *  Occupied when type != NONE; matched by (epoch, seq) of the sent record. */
+typedef struct {
+    mbedtls_ssl_dtls13_pending_ack_type_t type;
+    uint64_t sent_epoch;
+    uint64_t sent_seq;
+} mbedtls_ssl_dtls13_pending_ack;
+
+/** Maximum number of concurrent standalone post-handshake messages awaiting
+ *  ACK.  Currently 2: one KeyUpdate + one NewConnectionId. */
+#define MBEDTLS_SSL_DTLS13_MAX_PENDING_ACKS 2
+
 #endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 
 struct mbedtls_ssl_context {
@@ -1807,23 +1830,24 @@ struct mbedtls_ssl_context {
      */
     mbedtls_ssl_transform *MBEDTLS_PRIVATE(dtls13_transform_pending_out);
     unsigned char MBEDTLS_PRIVATE(dtls13_ku_pending_secret)[MBEDTLS_TLS1_3_MD_MAX_SIZE];
-    uint64_t MBEDTLS_PRIVATE(dtls13_ku_sent_epoch);
-    uint64_t MBEDTLS_PRIVATE(dtls13_ku_sent_seq);
-    uint8_t  MBEDTLS_PRIVATE(dtls13_ku_ack_pending); /* 1 while waiting for ACK */
+    uint8_t  MBEDTLS_PRIVATE(dtls13_ku_ack_pending); /*!< 1 while waiting for KeyUpdate ACK */
 
 #if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
-    /** DTLS 1.3 NewConnectionId pending-outbound state (RFC 9147 §9).
-     *
-     * Set while waiting for peer to ACK our NewConnectionId message.
-     * The RFC forbids having more than one NewConnectionId outstanding. */
+    /** Set while waiting for peer to ACK our NewConnectionId.
+     *  The RFC forbids more than one NewConnectionId outstanding. */
     uint8_t  MBEDTLS_PRIVATE(dtls13_cid_update_ack_pending);
-    uint64_t MBEDTLS_PRIVATE(dtls13_cid_sent_epoch);
-    uint64_t MBEDTLS_PRIVATE(dtls13_cid_sent_seq);
 
     /** Number of consecutive unanswered RequestConnectionId messages received.
      *  Used to enforce the too_many_cids_requested limit. */
     uint8_t  MBEDTLS_PRIVATE(dtls13_req_cid_count);
 #endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
+
+    /** Pending-ACK slots for standalone post-handshake messages (KeyUpdate,
+     *  NewConnectionId).  Each slot holds the (epoch, seq) of the sent record
+     *  and a type tag.  ssl_dtls13_process_ack() iterates this array to match
+     *  incoming ACKs and dispatch on-ACK actions. */
+    mbedtls_ssl_dtls13_pending_ack
+        MBEDTLS_PRIVATE(dtls13_pending_acks)[MBEDTLS_SSL_DTLS13_MAX_PENDING_ACKS];
 
     /** Lazily-allocated post-handshake ACK record list.
      *  NULL until the first post-handshake record requiring an ACK arrives.

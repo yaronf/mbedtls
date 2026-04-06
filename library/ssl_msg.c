@@ -6854,31 +6854,44 @@ static int ssl_dtls13_process_ack(mbedtls_ssl_context *ssl,
                                   (unsigned long long) epoch,
                                   (unsigned long long) seq));
 
-        /* Check if this ACK record matches a pending KeyUpdate send. */
-        if (ssl->dtls13_ku_ack_pending &&
-            epoch == ssl->dtls13_ku_sent_epoch &&
-            seq   == ssl->dtls13_ku_sent_seq) {
-            MBEDTLS_SSL_DEBUG_MSG(2, ("ACK: KeyUpdate acknowledged "
-                                      "(epoch=%llu seq=%llu) — installing "
-                                      "pending outbound transform",
-                                      (unsigned long long) epoch,
-                                      (unsigned long long) seq));
-            ssl_dtls13_key_update_install_outbound(ssl);
-        }
+        /* Check pending-ACK slots for standalone post-handshake messages. */
+        {
+            int s;
+            for (s = 0; s < MBEDTLS_SSL_DTLS13_MAX_PENDING_ACKS; s++) {
+                mbedtls_ssl_dtls13_pending_ack *slot = &ssl->dtls13_pending_acks[s];
+                if (slot->type == MBEDTLS_SSL_DTLS13_PENDING_ACK_NONE) {
+                    continue;
+                }
+                if (epoch != slot->sent_epoch || seq != slot->sent_seq) {
+                    continue;
+                }
 
+                /* Matched — dispatch on-ACK action and clear slot. */
+                switch (slot->type) {
+                    case MBEDTLS_SSL_DTLS13_PENDING_ACK_KEY_UPDATE:
+                        MBEDTLS_SSL_DEBUG_MSG(2, ("ACK: KeyUpdate acknowledged "
+                                                  "(epoch=%llu seq=%llu) — installing "
+                                                  "pending outbound transform",
+                                                  (unsigned long long) epoch,
+                                                  (unsigned long long) seq));
+                        ssl_dtls13_key_update_install_outbound(ssl);
+                        break;
 #if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
-        /* Check if this ACK matches a pending NewConnectionId send. */
-        if (ssl->dtls13_cid_update_ack_pending &&
-            epoch == ssl->dtls13_cid_sent_epoch &&
-            seq   == ssl->dtls13_cid_sent_seq) {
-            MBEDTLS_SSL_DEBUG_MSG(2, ("ACK: NewConnectionId acknowledged "
-                                      "(epoch=%llu seq=%llu)",
-                                      (unsigned long long) epoch,
-                                      (unsigned long long) seq));
-            ssl->dtls13_cid_update_ack_pending = 0;
-            ssl->dtls13_req_cid_count = 0;
-        }
+                    case MBEDTLS_SSL_DTLS13_PENDING_ACK_NEW_CONNECTION_ID:
+                        MBEDTLS_SSL_DEBUG_MSG(2, ("ACK: NewConnectionId acknowledged "
+                                                  "(epoch=%llu seq=%llu)",
+                                                  (unsigned long long) epoch,
+                                                  (unsigned long long) seq));
+                        ssl->dtls13_cid_update_ack_pending = 0;
+                        ssl->dtls13_req_cid_count = 0;
+                        break;
 #endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
+                    default:
+                        break;
+                }
+                slot->type = MBEDTLS_SSL_DTLS13_PENDING_ACK_NONE;
+            }
+        }
 
         if (hs != NULL && hs->flight != NULL) {
             newly_acked = newly_acked || ssl_dtls13_ack_mark_flight_item(ssl, hs, epoch, seq);
@@ -7547,6 +7560,36 @@ static uint64_t ssl_dtls13_last_sent_seq(const mbedtls_ssl_context *ssl)
                    & UINT64_C(0x0000FFFFFFFFFFFF);
     return seq > 0 ? seq - 1 : 0;
 }
+
+/* Register a pending-ACK slot for a just-sent standalone post-handshake
+ * message.  Records the (epoch, seq) of the sent record and the message type
+ * so that ssl_dtls13_process_ack() can match and dispatch the on-ACK action.
+ * Overwrites an existing slot of the same type if present (re-send case). */
+static void ssl_dtls13_register_pending_ack(
+    mbedtls_ssl_context *ssl,
+    mbedtls_ssl_dtls13_pending_ack_type_t type)
+{
+    int i;
+    mbedtls_ssl_dtls13_pending_ack *slots = ssl->dtls13_pending_acks;
+
+    /* Prefer an existing slot of the same type (re-send), then an empty slot. */
+    for (i = 0; i < MBEDTLS_SSL_DTLS13_MAX_PENDING_ACKS; i++) {
+        if (slots[i].type == type || slots[i].type == MBEDTLS_SSL_DTLS13_PENDING_ACK_NONE) {
+            break;
+        }
+    }
+    /* If no free slot, overwrite slot 0 (should not happen with MAX_PENDING_ACKS=2
+     * and only two message types, each guarded by its own pending flag). */
+    if (i == MBEDTLS_SSL_DTLS13_MAX_PENDING_ACKS) {
+        i = 0;
+    }
+
+    slots[i].type       = type;
+    slots[i].sent_epoch = MBEDTLS_GET_UINT16_BE(ssl->cur_out_ctr, 0);
+    slots[i].sent_seq   = ssl_dtls13_last_sent_seq(ssl);
+}
+
+
 #endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS)
@@ -7752,8 +7795,7 @@ static int ssl_tls13_write_key_update(mbedtls_ssl_context *ssl,
 
         memcpy(ssl->dtls13_ku_pending_secret, new_secret, hash_len);
 
-        ssl->dtls13_ku_sent_epoch = MBEDTLS_GET_UINT16_BE(ssl->cur_out_ctr, 0);
-        ssl->dtls13_ku_sent_seq   = ssl_dtls13_last_sent_seq(ssl);
+        ssl_dtls13_register_pending_ack(ssl, MBEDTLS_SSL_DTLS13_PENDING_ACK_KEY_UPDATE);
         ssl->dtls13_ku_ack_pending = 1;
     }
 
@@ -8007,8 +8049,7 @@ static int ssl_tls13_write_new_connection_id(mbedtls_ssl_context *ssl,
                               usage, (unsigned) cid_len));
 
     /* Record the (epoch, seq) of the sent message for ACK matching. */
-    ssl->dtls13_cid_sent_epoch = MBEDTLS_GET_UINT16_BE(ssl->cur_out_ctr, 0);
-    ssl->dtls13_cid_sent_seq   = ssl_dtls13_last_sent_seq(ssl);
+    ssl_dtls13_register_pending_ack(ssl, MBEDTLS_SSL_DTLS13_PENDING_ACK_NEW_CONNECTION_ID);
     ssl->dtls13_cid_update_ack_pending = 1;
 
 cleanup:

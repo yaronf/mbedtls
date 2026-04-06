@@ -54,6 +54,11 @@ void mbedtls_ssl_print_ticket_flags(const mbedtls_ssl_context *ssl,
                                     unsigned int flags);
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 && MBEDTLS_SSL_SESSION_TICKETS */
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+const char *mbedtls_ssl_dtls13_pending_ack_type_t_str(
+    mbedtls_ssl_dtls13_pending_ack_type_t in);
+#endif
+
 #define MBEDTLS_SSL_PRINT_EXTS(level, hs_msg_type, extensions_mask)            \
     mbedtls_ssl_print_extensions(ssl, level, __FILE__, __LINE__,       \
                                  hs_msg_type, extensions_mask, NULL)
