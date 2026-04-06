@@ -6919,7 +6919,7 @@ static int ssl_dtls13_process_ack(mbedtls_ssl_context *ssl,
         MBEDTLS_SSL_DEBUG_MSG(2, ("ACK: partial — retransmitting unacked items"));
         ssl_reset_retransmit_timeout(ssl);
         hs->cur_msg   = hs->flight;
-        hs->cur_msg_p = hs->flight->p + 12;
+        hs->cur_msg_p = hs->flight->p + mbedtls_ssl_hs_hdr_len(ssl);
         hs->retransmit_state = MBEDTLS_SSL_RETRANS_SENDING;
     } else {
         MBEDTLS_SSL_DEBUG_MSG(2, ("ACK: no new items acked — ignoring"));
