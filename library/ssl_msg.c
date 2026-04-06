@@ -6782,7 +6782,7 @@ static int ssl_dtls13_ack_mark_flight_item(
     uint64_t seq)
 {
     mbedtls_ssl_flight_item *item;
-    int newly_acked = 0;
+    int newly_acked = 0; /* bool */
 
     for (item = hs->flight; item != NULL; item = item->next) {
         uint8_t j;
@@ -6817,7 +6817,7 @@ static int ssl_dtls13_process_ack(mbedtls_ssl_context *ssl,
     uint16_t count;
     uint16_t i;
     int all_acked;
-    int newly_acked = 0;
+    int newly_acked = 0; /* bool */
     mbedtls_ssl_flight_item *item;
 
     /* Need at least 2 bytes for the length field. */
@@ -6881,7 +6881,7 @@ static int ssl_dtls13_process_ack(mbedtls_ssl_context *ssl,
 #endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
 
         if (hs != NULL && hs->flight != NULL) {
-            newly_acked |= ssl_dtls13_ack_mark_flight_item(ssl, hs, epoch, seq);
+            newly_acked = newly_acked || ssl_dtls13_ack_mark_flight_item(ssl, hs, epoch, seq);
         }
     }
 
