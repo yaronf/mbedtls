@@ -6722,18 +6722,21 @@ static int ssl_dtls13_write_ack(mbedtls_ssl_context *ssl)
     MBEDTLS_PUT_UINT16_BE((uint16_t)(count * 16), p, 0);
     p += 2;
 
+    MBEDTLS_SSL_DEBUG_MSG(2, ("=> write ACK (%u record numbers)", (unsigned) count));
+
     for (i = 0; i < count; i++) {
         uint64_t epoch = (hs != NULL) ? hs->dtls13_received_records[i].epoch
                                       : pa->records[i].epoch;
         uint64_t seq   = (hs != NULL) ? hs->dtls13_received_records[i].seq
                                       : pa->records[i].seq;
+        MBEDTLS_SSL_DEBUG_MSG(3, ("ACK: epoch=%llu seq=%llu",
+                                  (unsigned long long) epoch,
+                                  (unsigned long long) seq));
         MBEDTLS_PUT_UINT64_BE(epoch, p, 0);
         p += 8;
         MBEDTLS_PUT_UINT64_BE(seq, p, 0);
         p += 8;
     }
-
-    MBEDTLS_SSL_DEBUG_MSG(2, ("=> write ACK (%u record numbers)", (unsigned) count));
 
     ret = mbedtls_ssl_write_record(ssl, SSL_FORCE_FLUSH);
     if (ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
@@ -6754,7 +6757,6 @@ static int ssl_dtls13_write_ack(mbedtls_ssl_context *ssl)
     if (hs == NULL && pa != NULL) {
         pa->count = 0;
     }
-    MBEDTLS_SSL_DEBUG_MSG(2, ("<= write ACK"));
     return 0;
 }
 
