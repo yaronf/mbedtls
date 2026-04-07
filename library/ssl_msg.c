@@ -3958,6 +3958,12 @@ int mbedtls_ssl_prepare_handshake_record(mbedtls_ssl_context *ssl)
                                        (unsigned) ssl->in_msg[0],
                                        recv_msg_seq,
                                        expected_seq));
+                /* RFC 9147 §5.2 SHOULD: queue future messages rather than
+                 * discard.  We intentionally do not implement buffering here:
+                 * post-handshake messages are individually ACKed and the sender
+                 * will retransmit on timeout, so dropping adds at most one RTT
+                 * and avoids the complexity and memory cost of a reassembly
+                 * queue. */
                 return MBEDTLS_ERR_SSL_EARLY_MESSAGE;
             }
 
@@ -8568,14 +8574,22 @@ static int ssl_handle_hs_message_post_handshake(mbedtls_ssl_context *ssl)
         int ret = ssl_tls13_handle_hs_message_post_handshake(ssl);
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
         /* RFC 9147 §5.2: message_seq is NOT reset at handshake completion in
-         * DTLS 1.3.  dtls13_post_hs_in_msg_seq is initialised to
-         * handshake->in_msg_seq at HANDSHAKE_OVER, so incrementing it here
-         * correctly tracks the continuing sequence across post-hs messages.
-         * Only advance when truly post-handshake (not still-finishing states
-         * like TLS1_3_CLIENT_FINISHED_WAIT_ACK where handshake is still live). */
+         * DTLS 1.3.  Only advance dtls13_post_hs_in_msg_seq when the inbound
+         * message was validated against that counter — i.e. when state is
+         * exactly HANDSHAKE_OVER and the message type is a true post-handshake
+         * type (KeyUpdate / NewConnectionId / RequestConnectionId).
+         * This mirrors the validation condition at ssl_parse_record_header().
+         * Finishing-state messages (NST) use handshake->in_msg_seq and must
+         * not advance the post-hs counter. */
         if (ret == 0 &&
             ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
-            mbedtls_ssl_is_handshake_over(ssl)) {
+            ssl->state == MBEDTLS_SSL_HANDSHAKE_OVER &&
+            (ssl->in_msg[0] == MBEDTLS_SSL_HS_KEY_UPDATE
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+             || ssl->in_msg[0] == MBEDTLS_SSL_HS_NEW_CONNECTION_ID
+             || ssl->in_msg[0] == MBEDTLS_SSL_HS_REQUEST_CONNECTION_ID
+#endif
+            )) {
             ssl->dtls13_post_hs_in_msg_seq++;
         }
 #endif /* MBEDTLS_SSL_PROTO_DTLS */

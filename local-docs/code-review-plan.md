@@ -110,16 +110,16 @@ clear only the matching flight items?
 
 ---
 
-## Area 6: Post-Handshake Message Sequencing (RFC 9147 §5.2)
+## Area 6: Post-Handshake Message Sequencing (RFC 9147 §5.2) ✓ DONE
 
 **Focus:** Is `message_seq` correctly continuous across the handshake/post-handshake
 boundary, and are duplicates and out-of-order messages handled correctly?
 
 **Primary code:**
-- `ssl_msg.c:3022–3025` — outbound post-HS `message_seq` stamping and increment
-- `ssl_msg.c:3938–3955` — inbound `message_seq` validation
-- `ssl_msg.c:8532` — inbound seq advance after message consume
-- `ssl_tls.c` — `mbedtls_ssl_handshake_set_state()`: sync of `dtls13_post_hs_in_msg_seq` at `HANDSHAKE_OVER`
+- `ssl_msg.c:3022–3024` — outbound post-HS `message_seq` stamping and increment
+- `ssl_msg.c:3909–3961` — inbound `message_seq` validation and future-message handling
+- `ssl_msg.c:8582–8596` — inbound seq advance after message consume
+- `ssl_misc.h:1523–1549` — `mbedtls_ssl_dtls13_sync_post_hs_seq()` and `mbedtls_ssl_handshake_set_state()`: sync at `HANDSHAKE_OVER`
 
 **What to look for:**
 - RFC 9147 §5.2: `message_seq` must NOT reset at handshake end — is the sync-from-handshake correct?
@@ -137,8 +137,8 @@ fragment-resume skip the epoch-stamp and seq-increment steps?
 **Primary code:**
 - `ssl_msg.c:2433–2495` — `ssl_dtls13_retx_epoch_switch()`: save active epoch, install flight epoch
 - `ssl_msg.c:2499–2515` — `ssl_dtls13_retx_epoch_restore()`: restore after retransmit
-- `ssl_msg.c:2288–2336` — epoch stamping on first send (the `dtls13_send_epoch` field)
-- `ssl_msg.c:3031–3255` — fragment send loop: `dtls13_frag_off` resume guards
+- `ssl_msg.c:2294–2352` — epoch stamping on first send (the `dtls13_send_epoch` field, in `ssl_flight_append`)
+- `ssl_msg.c:3031–3331` — fragment send loop: `dtls13_frag_off` resume guards
 
 **What to look for:**
 - Epoch stamping: happens once on first send — is there a guard preventing re-stamp on retransmit?
@@ -155,9 +155,9 @@ and do they fire at the right thresholds?
 
 **Primary code:**
 - `ssl_msg.c:1171` — `out_record_count++` (per encrypted record sent)
-- `ssl_msg.c:8891–8896` — auto-KeyUpdate trigger check
-- `ssl_msg.c:6608–6615` — `in_auth_fail_count` increment and limit check
-- `ssl_msg.c:9284` — `in_auth_fail_count` reset on new inbound epoch
+- `ssl_msg.c:8948–8963` — auto-KeyUpdate trigger check
+- `ssl_msg.c:6615–6621` — `in_auth_fail_count` increment and limit check
+- `ssl_msg.c:9349` — `in_auth_fail_count` reset on new inbound epoch
 - `ssl_tls.c` — `mbedtls_ssl_dtls13_set_aead_limit()` / `mbedtls_ssl_dtls13_set_auth_fail_limit()`
 
 **What to look for:**
@@ -175,10 +175,10 @@ and do they fire at the right thresholds?
 propagated to subsequently installed transforms?
 
 **Primary code:**
-- `ssl_msg.c:7958–8013` — `ssl_tls13_write_new_connection_id()`: send and set pending flag
-- `ssl_msg.c:8019–8111` — `ssl_tls13_handle_new_connection_id()`: receive and apply new CID
-- `ssl_msg.c:8117–8144` — `ssl_tls13_write_request_connection_id()`: send request
-- `ssl_msg.c:8150–8187` — `ssl_tls13_handle_request_connection_id()`: respond with NewConnectionId
+- `ssl_msg.c:8009–8065` — `ssl_tls13_write_new_connection_id()`: send and set pending flag
+- `ssl_msg.c:8069–8163` — `ssl_tls13_handle_new_connection_id()`: receive and apply new CID
+- `ssl_msg.c:8167–8198` — `ssl_tls13_write_request_connection_id()`: send request
+- `ssl_msg.c:8200–8260` — `ssl_tls13_handle_request_connection_id()`: respond with NewConnectionId
 
 **What to look for:**
 - Guard: second NewConnectionId blocked while `dtls13_cid_update_ack_pending` set?
@@ -195,11 +195,11 @@ propagated to subsequently installed transforms?
 the retransmit timer fire and reset correctly?
 
 **Primary code:**
-- `ssl_msg.c:9064–9112` — `mbedtls_ssl_dtls13_wait_ack_step()`: core WAIT_ACK loop
+- `ssl_msg.c:9125–9173` — `mbedtls_ssl_dtls13_wait_ack_step()`: core WAIT_ACK loop
 - `ssl_tls13_client.c:3391–3420` — `CLIENT_FINISHED_WAIT_ACK` state handler
-- `ssl_tls13_server.c:3845–3880` — `NST_WAIT_ACK` state handler
+- `ssl_tls13_server.c:3844–3880` — `NST_WAIT_ACK` state handler
 - `ssl_tls13_client.c:2935–2945` — entry into `CLIENT_FINISHED_WAIT_ACK`
-- `ssl_tls13_server.c:3833` — entry into `NST_WAIT_ACK`
+- `ssl_tls13_server.c:3832` — entry into `NST_WAIT_ACK`
 
 **What to look for:**
 - Timer: `mbedtls_ssl_set_timer` called on entry to WAIT_ACK, cleared on exit?

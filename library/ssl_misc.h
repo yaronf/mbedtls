@@ -1516,6 +1516,24 @@ void mbedtls_ssl_handshake_wrapup(mbedtls_ssl_context *ssl);
 const char *mbedtls_ssl_states_str(mbedtls_ssl_states state);
 #endif
 
+/* RFC 9147 §5.2: message_seq is NOT reset at handshake completion in DTLS 1.3
+ * (unlike DTLS 1.2 renegotiation).  Synchronise the post-handshake counters
+ * from the handshake struct so the first post-HS message (e.g. KeyUpdate) is
+ * expected at the value the handshake left off at. */
+static inline void mbedtls_ssl_dtls13_sync_post_hs_seq(mbedtls_ssl_context *ssl)
+{
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    if (ssl->conf != NULL &&
+        ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+        ssl->handshake != NULL) {
+        ssl->dtls13_post_hs_in_msg_seq = ssl->handshake->in_msg_seq;
+        ssl->dtls13_post_hs_msg_seq    = ssl->handshake->out_msg_seq;
+    }
+#else
+    (void) ssl;
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
+}
+
 static inline void mbedtls_ssl_handshake_set_state(mbedtls_ssl_context *ssl,
                                                    mbedtls_ssl_states state)
 {
@@ -1524,19 +1542,9 @@ static inline void mbedtls_ssl_handshake_set_state(mbedtls_ssl_context *ssl,
                               (int) state, mbedtls_ssl_states_str(state)));
     ssl->state = (int) state;
 
-#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
-    /* RFC 9147 §5.2: message_seq is NOT reset at handshake completion in
-     * DTLS 1.3 (unlike DTLS 1.2 renegotiation).  Synchronise the
-     * post-handshake receive counter so the first post-HS message (e.g.
-     * KeyUpdate) is expected at the value the handshake left off at. */
-    if (state == MBEDTLS_SSL_HANDSHAKE_OVER &&
-        ssl->conf != NULL &&
-        ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
-        ssl->handshake != NULL) {
-        ssl->dtls13_post_hs_in_msg_seq  = ssl->handshake->in_msg_seq;
-        ssl->dtls13_post_hs_msg_seq     = ssl->handshake->out_msg_seq;
+    if (state == MBEDTLS_SSL_HANDSHAKE_OVER) {
+        mbedtls_ssl_dtls13_sync_post_hs_seq(ssl);
     }
-#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 }
 
 static inline void mbedtls_ssl_handshake_increment_state(mbedtls_ssl_context *ssl)
