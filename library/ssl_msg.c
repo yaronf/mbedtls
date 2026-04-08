@@ -6611,7 +6611,6 @@ static int ssl_get_next_record(mbedtls_ssl_context *ssl)
                 if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
                     ssl->state == MBEDTLS_SSL_HANDSHAKE_OVER &&
                     ssl->transform_in != NULL &&
-                    ssl->conf->dtls13_auth_fail_limit != 0 &&
                     ++ssl->transform_in->in_auth_fail_count
                         >= ssl->conf->dtls13_auth_fail_limit) {
                     MBEDTLS_SSL_DEBUG_MSG(1, ("DTLS 1.3: auth-fail limit reached "

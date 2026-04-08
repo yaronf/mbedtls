@@ -1501,7 +1501,8 @@ void mbedtls_ssl_conf_dtls13_aead_limit(mbedtls_ssl_config *conf,
 void mbedtls_ssl_conf_dtls13_auth_fail_limit(mbedtls_ssl_config *conf,
                                              uint32_t limit)
 {
-    conf->dtls13_auth_fail_limit = limit;
+    conf->dtls13_auth_fail_limit = (limit != 0) ? limit
+                                                : MBEDTLS_SSL_DTLS13_DEFAULT_AUTH_FAIL_LIMIT;
 }
 
 #endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */

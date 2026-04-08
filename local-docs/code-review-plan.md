@@ -129,7 +129,7 @@ boundary, and are duplicates and out-of-order messages handled correctly?
 
 ---
 
-## Area 7: Fragmentation and Retransmit Epoch Switching
+## Area 7: Fragmentation and Retransmit Epoch Switching ✓ DONE
 
 **Focus:** On retransmit, is the correct epoch and counter restored, and does
 fragment-resume skip the epoch-stamp and seq-increment steps?
@@ -148,7 +148,7 @@ fragment-resume skip the epoch-stamp and seq-increment steps?
 
 ---
 
-## Area 8: AEAD and Auth-Fail Limits (RFC 9147 §4.5.2–4.5.3)
+## Area 8: AEAD and Auth-Fail Limits (RFC 9147 §4.5.2–4.5.3) ✓ DONE
 
 **Focus:** Are per-epoch counters correctly maintained, reset at epoch transitions,
 and do they fire at the right thresholds?
@@ -158,7 +158,7 @@ and do they fire at the right thresholds?
 - `ssl_msg.c:8948–8963` — auto-KeyUpdate trigger check
 - `ssl_msg.c:6615–6621` — `in_auth_fail_count` increment and limit check
 - `ssl_msg.c:9349` — `in_auth_fail_count` reset on new inbound epoch
-- `ssl_tls.c` — `mbedtls_ssl_dtls13_set_aead_limit()` / `mbedtls_ssl_dtls13_set_auth_fail_limit()`
+- `ssl.h:3198` / `ssl.h:3212` — `mbedtls_ssl_conf_dtls13_aead_limit()` / `mbedtls_ssl_conf_dtls13_auth_fail_limit()`
 
 **What to look for:**
 - `out_record_count` incremented per encrypted record (not per byte) — correct per RFC §4.5.1?
