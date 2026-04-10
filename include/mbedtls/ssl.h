@@ -1616,6 +1616,22 @@ struct mbedtls_ssl_config {
  *  Override at runtime via mbedtls_ssl_conf_dtls13_auth_fail_limit(). */
 #define MBEDTLS_SSL_DTLS13_DEFAULT_AUTH_FAIL_LIMIT  128
 
+/** Number of inbound CID pool slots for DTLS 1.3 (RFC 9147 §9 / §11).
+ *  Pool size 2: one IMMEDIATE (active) CID + one SPARE for address migration. */
+#define MBEDTLS_SSL_DTLS13_CID_POOL_SIZE    2
+
+/** One slot in the DTLS 1.3 inbound CID pool (§9 / §11 of RFC 9147).
+ *  The pool holds up to #MBEDTLS_SSL_DTLS13_CID_POOL_SIZE CIDs that we
+ *  accept on inbound records.  The "active" slot (pointed to by
+ *  dtls13_own_cid_active_idx in mbedtls_ssl_context) is the CID we are
+ *  currently advertising; the other slot(s) are spares offered to the peer
+ *  so it can switch without a round trip on address migration. */
+typedef struct {
+    unsigned char cid[MBEDTLS_SSL_CID_IN_LEN_MAX]; /*!< CID bytes */
+    uint8_t       cid_len;  /*!< byte length of \c cid (0 = empty slot) */
+    uint8_t       active;   /*!< 1 = valid entry, 0 = empty slot        */
+} mbedtls_ssl_dtls13_cid_entry;
+
 /** DTLS 1.3 epoch pool entry (§4.2.1 of RFC 9147 bis). */
 #define MBEDTLS_SSL_DTLS13_EPOCH_POOL_SIZE 4
 typedef struct {
@@ -1840,6 +1856,21 @@ struct mbedtls_ssl_context {
     /** Number of consecutive unanswered RequestConnectionId messages received.
      *  Used to enforce the too_many_cids_requested limit. */
     uint8_t  MBEDTLS_PRIVATE(dtls13_req_cid_count);
+
+    /** DTLS 1.3 inbound CID pool (RFC 9147 §9 / §11).
+     *
+     *  Post-handshake only (initialised at HANDSHAKE_OVER).  All pool entries
+     *  are accepted on inbound records; transform->in_cid is updated to whichever
+     *  entry matches so the AEAD check passes.  The active slot (index
+     *  dtls13_own_cid_active_idx) is the CID advertised to the peer; spare slots
+     *  are offered via NewConnectionId so the peer can switch without a round trip.
+     *
+     *  Guards: dtls13_own_cid_pool_ready == 0 means the pool has not been
+     *  initialised yet (pre-handshake or DTLS 1.2). */
+    mbedtls_ssl_dtls13_cid_entry
+        MBEDTLS_PRIVATE(dtls13_own_cid_pool)[MBEDTLS_SSL_DTLS13_CID_POOL_SIZE];
+    uint8_t  MBEDTLS_PRIVATE(dtls13_own_cid_active_idx); /*!< index of IMMEDIATE CID */
+    uint8_t  MBEDTLS_PRIVATE(dtls13_own_cid_pool_ready); /*!< 1 once pool is initialised */
 #endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
 
     /** Pending-ACK slots for standalone post-handshake messages (KeyUpdate,
@@ -3211,6 +3242,24 @@ void mbedtls_ssl_conf_dtls13_aead_limit(mbedtls_ssl_config *conf,
  */
 void mbedtls_ssl_conf_dtls13_auth_fail_limit(mbedtls_ssl_config *conf,
                                              uint32_t limit);
+
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+/**
+ * \brief   Switch to the next spare inbound CID from the pool and send a
+ *          NewConnectionId to the peer offering a fresh spare.
+ *
+ *          Call this when a local address change is detected, to prevent
+ *          CID-based correlation across paths (RFC 9147 §9 / §11).
+ *
+ *          This is a no-op if CID was not negotiated, the pool has not been
+ *          initialised (pre-handshake), or a previous NewConnectionId is
+ *          still waiting for an ACK.
+ *
+ * \param ssl   SSL context (must be post-handshake DTLS 1.3 with CID).
+ * \return      0 on success or no-op, MBEDTLS_ERR_SSL_* on error.
+ */
+int mbedtls_ssl_dtls13_rotate_own_cid(mbedtls_ssl_context *ssl);
+#endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
 
 #endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 

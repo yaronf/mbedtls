@@ -57,6 +57,7 @@ param_map:
   bad_new_cid:       "bad_new_cid={value}"
   bad_req_cid:       "bad_req_cid={value}"
   double_keyupdate:  "double_keyupdate={1 if value else 0}"
+  rotate_cid:        "rotate_cid={value}"
 
 proxy_param_map:
   drop:       "drop={value}"
@@ -262,6 +263,31 @@ assertion_map:
   server_req_cid_not_accepted:
     flag: "-S"
     string: "RequestConnectionId received"
+  # CID pool / rotation assertions
+  client_cid_rotated:
+    flag: "-c"
+    string: "own CID rotated"
+  server_cid_rotated:
+    flag: "-s"
+    string: "own CID rotated"
+  client_pool_replenished:
+    flag: "-c"
+    string: "CID pool replenished"
+  server_pool_replenished:
+    flag: "-s"
+    string: "CID pool replenished"
+  client_spare_cid_consumed:
+    flag: "-c"
+    string: "peer switched to spare CID"
+  server_spare_cid_consumed:
+    flag: "-s"
+    string: "peer switched to spare CID"
+  client_new_cid_list_2:
+    flag: "-c"
+    string: "2 CIDs)"
+  server_new_cid_list_2:
+    flag: "-s"
+    string: "2 CIDs)"
   server_cookie_verification_failed:
     flag: "-s"
     string: "cookie verification failed"

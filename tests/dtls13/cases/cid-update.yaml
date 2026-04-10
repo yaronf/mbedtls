@@ -252,3 +252,130 @@ cases:
         - server_cid_negotiated
         - client_cid_negotiated
         - server_req_cid_not_accepted
+
+  - name: "CID pool: NewConnectionId sends 2 CIDs"
+    skip_runners: [wolfssl]
+    # After handshake the server initialises a 2-entry inbound CID pool and
+    # sends a NewConnectionId with both CIDs (IMMEDIATE + SPARE).
+    # Client log must show it received 2 CIDs in the list.
+    server:
+      debug_level: 3
+      cid: 1
+      cid_val: "deadbeef"
+      send_new_cid: 1
+      exchanges: 2
+    client:
+      debug_level: 3
+      cid: 1
+      cid_val: "cafebabe"
+      exchanges: 2
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - server_cid_negotiated
+        - client_cid_negotiated
+        - server_new_cid_list_2
+        - client_new_cid_received
+
+  - name: "CID pool: client rotates own CID — server sees new CID in use"
+    skip_runners: [wolfssl]
+    # Client calls rotate_own_cid after 2 exchanges: promotes spare to active,
+    # sends NewConnectionId(IMMEDIATE) with 2 CIDs.
+    # Server receives it, switches outbound CID, ACKs.
+    # Data exchange continues on the new CID.
+    server:
+      debug_level: 3
+      cid: 1
+      cid_val: "deadbeef"
+      exchanges: 5
+    client:
+      debug_level: 3
+      cid: 1
+      cid_val: "cafebabe"
+      rotate_cid: 2
+      exchanges: 5
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - server_cid_negotiated
+        - client_cid_negotiated
+        - client_cid_rotated
+        - server_new_cid_received
+        - client_new_cid_acked
+
+  - name: "CID pool: server rotates own CID — client sees new CID in use"
+    skip_runners: [wolfssl]
+    # Symmetric of the previous test: server rotates after 2 exchanges.
+    server:
+      debug_level: 3
+      cid: 1
+      cid_val: "deadbeef"
+      rotate_cid: 2
+      exchanges: 5
+    client:
+      debug_level: 3
+      cid: 1
+      cid_val: "cafebabe"
+      exchanges: 5
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - server_cid_negotiated
+        - client_cid_negotiated
+        - server_cid_rotated
+        - client_new_cid_received
+        - server_new_cid_acked
+
+  - name: "CID pool: rotate blocked by pending ACK (no-op guard)"
+    skip_runners: [wolfssl]
+    # Client calls rotate_own_cid after 2 exchanges, then send_new_cid=1 races
+    # before the ACK arrives.  The second NewConnectionId must be a no-op.
+    # Connection must remain healthy and exit cleanly.
+    server:
+      debug_level: 3
+      cid: 1
+      cid_val: "deadbeef"
+      exchanges: 5
+    client:
+      debug_level: 3
+      cid: 1
+      cid_val: "cafebabe"
+      rotate_cid: 2
+      send_new_cid: 1
+      exchanges: 5
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - server_cid_negotiated
+        - client_cid_negotiated
+        - client_cid_rotated
+
+  - name: "CID pool: bad NewConnectionId with 2-entry list — second entry truncated"
+    skip_runners: [wolfssl]
+    # Client sends a NewConnectionId whose cids list length advertises 2 entries
+    # but the second entry bytes are missing.  Server must reject with decode_error.
+    server:
+      debug_level: 2
+      cid: 1
+      cid_val: "deadbeef"
+    client:
+      debug_level: 2
+      cid: 1
+      cid_val: "cafebabe"
+      bad_new_cid: 4
+    expect:
+      exit: 1
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - server_cid_negotiated
+        - client_cid_negotiated
+        - server_new_cid_not_accepted

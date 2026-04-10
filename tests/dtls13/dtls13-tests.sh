@@ -213,6 +213,76 @@ run_test    "DTLS 1.3 CID update: bad RequestConnectionId: empty body triggers s
             -c "Use of Connection ID has been negotiated." \
             -S "RequestConnectionId received"
 
+requires_protocol_version dtls13
+requires_config_enabled MBEDTLS_SSL_DTLS_CONNECTION_ID
+run_test    "DTLS 1.3 CID update: CID pool: NewConnectionId sends 2 CIDs" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=3 cid=1 cid_val=deadbeef send_new_cid=1 exchanges=2" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=3 cid=1 cid_val=cafebabe exchanges=2" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -s "Use of Connection ID has been negotiated." \
+            -c "Use of Connection ID has been negotiated." \
+            -s "2 CIDs)" \
+            -c "NewConnectionId received"
+
+requires_protocol_version dtls13
+requires_config_enabled MBEDTLS_SSL_DTLS_CONNECTION_ID
+run_test    "DTLS 1.3 CID update: CID pool: client rotates own CID — server sees new CID in use" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=3 cid=1 cid_val=deadbeef exchanges=5" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=3 cid=1 cid_val=cafebabe rotate_cid=2 exchanges=5" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -s "Use of Connection ID has been negotiated." \
+            -c "Use of Connection ID has been negotiated." \
+            -c "own CID rotated" \
+            -s "NewConnectionId received" \
+            -c "ACK: NewConnectionId acknowledged"
+
+requires_protocol_version dtls13
+requires_config_enabled MBEDTLS_SSL_DTLS_CONNECTION_ID
+run_test    "DTLS 1.3 CID update: CID pool: server rotates own CID — client sees new CID in use" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=3 cid=1 cid_val=deadbeef rotate_cid=2 exchanges=5" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=3 cid=1 cid_val=cafebabe exchanges=5" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -s "Use of Connection ID has been negotiated." \
+            -c "Use of Connection ID has been negotiated." \
+            -s "own CID rotated" \
+            -c "NewConnectionId received" \
+            -s "ACK: NewConnectionId acknowledged"
+
+requires_protocol_version dtls13
+requires_config_enabled MBEDTLS_SSL_DTLS_CONNECTION_ID
+run_test    "DTLS 1.3 CID update: CID pool: rotate blocked by pending ACK (no-op guard)" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=3 cid=1 cid_val=deadbeef exchanges=5" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=3 cid=1 cid_val=cafebabe rotate_cid=2 send_new_cid=1 exchanges=5" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -s "Use of Connection ID has been negotiated." \
+            -c "Use of Connection ID has been negotiated." \
+            -c "own CID rotated"
+
+requires_protocol_version dtls13
+requires_config_enabled MBEDTLS_SSL_DTLS_CONNECTION_ID
+run_test    "DTLS 1.3 CID update: CID pool: bad NewConnectionId with 2-entry list — second entry truncated" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 debug_level=2 cid=1 cid_val=deadbeef" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=2 cid=1 cid_val=cafebabe bad_new_cid=4" \
+            1 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -s "Use of Connection ID has been negotiated." \
+            -c "Use of Connection ID has been negotiated." \
+            -S "NewConnectionId received"
+
 # ======================================================================
 # Cases from: cid.yaml
 # ======================================================================

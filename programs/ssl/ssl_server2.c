@@ -103,6 +103,7 @@ int main(void)
 #define DFL_BAD_COOKIE_ON_RETRY 0
 #define DFL_ALLOW_ADDR_MIGRATION    0
 #define DFL_MIGRATION_TIMEOUT_MS    1000
+#define DFL_ROTATE_CID          0
 #define DFL_AEAD_LIMIT          0
 #define DFL_AUTH_FAIL_LIMIT     0
 #define DFL_RENEGO_DELAY        -2
@@ -432,7 +433,10 @@ int main(void)
     "                             N>0: send RequestConnectionId(N) after HS\n"       \
     "    allow_addr_migration=%%d  default: 0 (disabled)\n"                          \
     "                             1: accept client address changes (CID must be on)\n" \
-    "    migration_timeout_ms=%%d  default: 1000 ms; 0 = commit immediately\n"
+    "    migration_timeout_ms=%%d  default: 1000 ms; 0 = commit immediately\n"        \
+    "    rotate_cid=%%d            default: 0 (disabled)\n"                           \
+    "                             N>0: call mbedtls_ssl_dtls13_rotate_own_cid()\n"    \
+    "                             after N application-data exchanges\n"
 #else
 #define USAGE_CID_UPDATE ""
 #endif
@@ -686,6 +690,7 @@ struct options {
     int request_cid;            /* send DTLS 1.3 RequestConnectionId after HS */
     int allow_addr_migration;   /* accept client address changes via CID    */
     long migration_timeout_ms;  /* ms of old-addr silence before migrating  */
+    int rotate_cid;             /* rotate own inbound CID after N exchanges */
     uint64_t aead_limit;        /* DTLS 1.3 AEAD record limit (0=default)   */
     uint32_t auth_fail_limit;   /* DTLS 1.3 auth-fail limit (0=default)     */
     int renego_delay;           /* delay before enforcing renegotiation     */
@@ -1938,6 +1943,7 @@ int main(int argc, char *argv[])
     opt.request_cid         = DFL_REQUEST_CID;
     opt.allow_addr_migration = DFL_ALLOW_ADDR_MIGRATION;
     opt.migration_timeout_ms = DFL_MIGRATION_TIMEOUT_MS;
+    opt.rotate_cid          = DFL_ROTATE_CID;
     opt.aead_limit          = DFL_AEAD_LIMIT;
     opt.auth_fail_limit     = DFL_AUTH_FAIL_LIMIT;
     opt.renego_delay        = DFL_RENEGO_DELAY;
@@ -2256,6 +2262,11 @@ usage:
         } else if (strcmp(p, "migration_timeout_ms") == 0) {
             opt.migration_timeout_ms = atol(q);
             if (opt.migration_timeout_ms < 0) {
+                goto usage;
+            }
+        } else if (strcmp(p, "rotate_cid") == 0) {
+            opt.rotate_cid = atoi(q);
+            if (opt.rotate_cid < 0) {
                 goto usage;
             }
         } else if (strcmp(p, "aead_limit") == 0) {
@@ -4511,6 +4522,19 @@ data_exchange:
      * 7c. Continue doing data exchanges?
      */
     if (--exchanges_left > 0) {
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS) && \
+    defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+        if (opt.rotate_cid > 0 && --opt.rotate_cid == 0) {
+            mbedtls_printf("  . Rotating own inbound CID...");
+            fflush(stdout);
+            if ((ret = mbedtls_ssl_dtls13_rotate_own_cid(&ssl)) != 0) {
+                mbedtls_printf(" failed\n  ! mbedtls_ssl_dtls13_rotate_own_cid"
+                               " returned -0x%x\n\n", (unsigned int) -ret);
+                goto exit;
+            }
+            mbedtls_printf(" ok\n");
+        }
+#endif /* TLS1_3 && DTLS && CID */
         goto data_exchange;
     }
 

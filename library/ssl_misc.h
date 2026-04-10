@@ -1519,7 +1519,12 @@ const char *mbedtls_ssl_states_str(mbedtls_ssl_states state);
 /* RFC 9147 §5.2: message_seq is NOT reset at handshake completion in DTLS 1.3
  * (unlike DTLS 1.2 renegotiation).  Synchronise the post-handshake counters
  * from the handshake struct so the first post-HS message (e.g. KeyUpdate) is
- * expected at the value the handshake left off at. */
+ * expected at the value the handshake left off at.
+ *
+ * Also initialises the DTLS 1.3 inbound CID pool (RFC 9147 §9 / §11) if CID
+ * was negotiated.  Pool slot 0 (IMMEDIATE) is seeded from own_cid; slot 1
+ * (SPARE) is filled with a fresh random CID of the same length.  The pool is
+ * only initialised once; subsequent calls are no-ops if pool_ready is set. */
 static inline void mbedtls_ssl_dtls13_sync_post_hs_seq(mbedtls_ssl_context *ssl)
 {
 #if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
@@ -1528,6 +1533,30 @@ static inline void mbedtls_ssl_dtls13_sync_post_hs_seq(mbedtls_ssl_context *ssl)
         ssl->handshake != NULL) {
         ssl->dtls13_post_hs_in_msg_seq = ssl->handshake->in_msg_seq;
         ssl->dtls13_post_hs_msg_seq    = ssl->handshake->out_msg_seq;
+
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+        /* Initialise inbound CID pool if CID was negotiated and pool not yet ready. */
+        if (!ssl->dtls13_own_cid_pool_ready &&
+            ssl->own_cid_len > 0 &&
+            ssl->handshake->cid_in_use == MBEDTLS_SSL_CID_ENABLED) {
+            /* Slot 0 (IMMEDIATE): current own_cid */
+            ssl->dtls13_own_cid_pool[0].cid_len = ssl->own_cid_len;
+            memcpy(ssl->dtls13_own_cid_pool[0].cid, ssl->own_cid, ssl->own_cid_len);
+            ssl->dtls13_own_cid_pool[0].active = 1;
+
+            /* Slot 1 (SPARE): fresh random CID of the same length.
+             * Failure is non-fatal: pool stays with one slot, spare is empty. */
+            ssl->dtls13_own_cid_pool[1].cid_len = ssl->own_cid_len;
+            ssl->dtls13_own_cid_pool[1].active = 0;
+            if (psa_generate_random(ssl->dtls13_own_cid_pool[1].cid,
+                                    ssl->own_cid_len) == PSA_SUCCESS) {
+                ssl->dtls13_own_cid_pool[1].active = 1;
+            }
+
+            ssl->dtls13_own_cid_active_idx = 0;
+            ssl->dtls13_own_cid_pool_ready = 1;
+        }
+#endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
     }
 #else
     (void) ssl;

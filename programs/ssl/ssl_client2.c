@@ -67,6 +67,7 @@ int main(void)
 #define DFL_BAD_NEW_CID         0
 #define DFL_BAD_REQ_CID         0
 #define DFL_CID_CHANGE_ADDR     0
+#define DFL_ROTATE_CID          0
 #define DFL_AEAD_LIMIT          0
 #define DFL_AUTH_FAIL_LIMIT     0
 #define DFL_EXCHANGES           1
@@ -327,10 +328,14 @@ int main(void)
     "                        1: send NewConnectionId with list_len=0\n"    \
     "                        2: send NewConnectionId with invalid usage\n" \
     "                        3: send NewConnectionId with cid_len too large\n" \
+    "                        4: send NewConnectionId with 2-entry list, second truncated\n" \
     "    bad_req_cid=%%d      default: 0 (disabled)\n"                     \
     "                        1: send RequestConnectionId with empty body\n" \
     "    cid_change_addr=%%d  default: 0 (disabled)\n"                     \
-    "                        N>0: rebind UDP socket N times (one per exchange)\n"
+    "                        N>0: rebind UDP socket N times (one per exchange)\n" \
+    "    rotate_cid=%%d       default: 0 (disabled)\n"                     \
+    "                        N>0: call mbedtls_ssl_dtls13_rotate_own_cid()\n" \
+    "                        after N application-data exchanges\n"
 #else
 #define USAGE_CID_UPDATE ""
 #endif
@@ -547,6 +552,7 @@ struct options {
     int bad_new_cid;            /* send malformed NewConnectionId (coverage) */
     int bad_req_cid;            /* send malformed RequestConnectionId       */
     int cid_change_addr;        /* rebind UDP socket N times mid-session    */
+    int rotate_cid;             /* rotate own inbound CID after N exchanges */
     uint64_t aead_limit;        /* DTLS 1.3 AEAD record limit (0=default)   */
     uint32_t auth_fail_limit;   /* DTLS 1.3 auth-fail limit (0=default)     */
     int exchanges;              /* number of data exchanges                 */
@@ -994,6 +1000,7 @@ int main(int argc, char *argv[])
     opt.bad_new_cid         = DFL_BAD_NEW_CID;
     opt.bad_req_cid         = DFL_BAD_REQ_CID;
     opt.cid_change_addr     = DFL_CID_CHANGE_ADDR;
+    opt.rotate_cid          = DFL_ROTATE_CID;
     opt.aead_limit          = DFL_AEAD_LIMIT;
     opt.auth_fail_limit     = DFL_AUTH_FAIL_LIMIT;
     opt.exchanges           = DFL_EXCHANGES;
@@ -1260,7 +1267,7 @@ usage:
             }
         } else if (strcmp(p, "bad_new_cid") == 0) {
             opt.bad_new_cid = atoi(q);
-            if (opt.bad_new_cid < 0 || opt.bad_new_cid > 3) {
+            if (opt.bad_new_cid < 0 || opt.bad_new_cid > 4) {
                 goto usage;
             }
         } else if (strcmp(p, "bad_req_cid") == 0) {
@@ -1271,6 +1278,11 @@ usage:
         } else if (strcmp(p, "cid_change_addr") == 0) {
             opt.cid_change_addr = atoi(q);
             if (opt.cid_change_addr < 0) {
+                goto usage;
+            }
+        } else if (strcmp(p, "rotate_cid") == 0) {
+            opt.rotate_cid = atoi(q);
+            if (opt.rotate_cid < 0) {
                 goto usage;
             }
         } else if (strcmp(p, "aead_limit") == 0) {
@@ -3263,6 +3275,16 @@ send_request:
                 mbedtls_printf("  . cid_change_addr: address changed\n");
                 --opt.cid_change_addr;
             }
+        }
+        if (opt.rotate_cid > 0 && --opt.rotate_cid == 0) {
+            mbedtls_printf("  . Rotating own inbound CID...");
+            fflush(stdout);
+            if ((ret = mbedtls_ssl_dtls13_rotate_own_cid(&ssl)) != 0) {
+                mbedtls_printf(" failed\n  ! mbedtls_ssl_dtls13_rotate_own_cid"
+                               " returned -0x%x\n\n", (unsigned int) -ret);
+                goto exit;
+            }
+            mbedtls_printf(" ok\n");
         }
 #endif /* TLS1_3 && DTLS && CID */
         goto send_request;
