@@ -8169,13 +8169,13 @@ static int ssl_tls13_write_new_connection_id(mbedtls_ssl_context *ssl,
     }
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 
-    if (num_cids_to_send > 0) {
-        /* 2-byte list_len + N × (1-byte len-prefix + cid_len bytes) + 1 usage */
-        body_len = 2 + num_cids_to_send * (1 + cid_len) + 1;
-    } else {
-        /* 2-byte list_len + 1 × (1-byte len-prefix + cid_len bytes) + 1 usage */
-        body_len = 2 + 1 + cid_len + 1;
+    /* If pool not ready, fall back to sending the single own_cid. */
+    if (num_cids_to_send == 0) {
+        num_cids_to_send = 1;
     }
+
+    /* 2-byte list_len + N × (1-byte len-prefix + cid_len bytes) + 1 usage */
+    body_len = 2 + num_cids_to_send * (1 + cid_len) + 1;
 
     MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_start_handshake_msg(
                              ssl, MBEDTLS_SSL_HS_NEW_CONNECTION_ID,
