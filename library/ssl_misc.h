@@ -1558,6 +1558,23 @@ static inline void mbedtls_ssl_dtls13_sync_post_hs_seq(mbedtls_ssl_context *ssl)
             ssl->dtls13_own_cid_active_idx = 0;
             ssl->dtls13_own_cid_pool_ready = 1;
         }
+
+        /* Initialise outbound CID pool from the peer's CID already installed in
+         * transform_out.  Spare slots start empty; they are filled when the peer
+         * sends a NewConnectionId with multiple CIDs. */
+        if (!ssl->dtls13_peer_cid_pool_ready &&
+            ssl->transform_out != NULL &&
+            ssl->transform_out->out_cid_len > 0) {
+            memset(ssl->dtls13_peer_cid_pool, 0, sizeof(ssl->dtls13_peer_cid_pool));
+            ssl->dtls13_peer_cid_pool[0].cid_len = ssl->transform_out->out_cid_len;
+            memcpy(ssl->dtls13_peer_cid_pool[0].cid,
+                   ssl->transform_out->out_cid,
+                   ssl->transform_out->out_cid_len);
+            ssl->dtls13_peer_cid_pool[0].active = 1;
+            /* Slots 1..N-1 start empty; filled on receipt of NewConnectionId. */
+            ssl->dtls13_peer_cid_active_idx = 0;
+            ssl->dtls13_peer_cid_pool_ready = 1;
+        }
 #endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
     }
 #else

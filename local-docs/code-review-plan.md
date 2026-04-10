@@ -172,20 +172,24 @@ and do they fire at the right thresholds?
 ## Area 9: NewConnectionId / RequestConnectionId (RFC 9147 §9)
 
 **Focus:** Is the single-outstanding-message invariant enforced, and is the CID
-propagated to subsequently installed transforms?
+propagated to subsequently installed transforms? Does the pool interact correctly
+with these paths (pool was added after the original plan)?
 
 **Primary code:**
-- `ssl_msg.c:8009–8065` — `ssl_tls13_write_new_connection_id()`: send and set pending flag
-- `ssl_msg.c:8069–8163` — `ssl_tls13_handle_new_connection_id()`: receive and apply new CID
-- `ssl_msg.c:8167–8198` — `ssl_tls13_write_request_connection_id()`: send request
-- `ssl_msg.c:8200–8260` — `ssl_tls13_handle_request_connection_id()`: respond with NewConnectionId
+- `ssl_msg.c:8123–8238` — `ssl_tls13_write_new_connection_id()`: count active pool slots, encode with offset loop, set pending flag
+- `ssl_msg.c:8239–8331` — `ssl_tls13_handle_new_connection_id()`: receive and apply new outbound CID
+- `ssl_msg.c:8337–8364` — `ssl_tls13_write_request_connection_id()`: send request
+- `ssl_msg.c:8370–8407` — `ssl_tls13_handle_request_connection_id()`: respond with NewConnectionId
+- `ssl_msg.c:6996–7003` — ACK dispatch: clear `dtls13_cid_update_ack_pending`
+- `ssl_msg.c:5451–5543` — secondary CID pool match
 
 **What to look for:**
-- Guard: second NewConnectionId blocked while `dtls13_cid_update_ack_pending` set?
-- CID propagation: when KeyUpdate follows a CID update, does the new transform carry the updated CID?
-- 0-length CID: valid per RFC (means "stop using CID") — handled in handle path?
-- RequestConnectionId response path (8150–8187): always sends a NewConnectionId in reply?
-- ACK matching for CID update: same (epoch, seq) mechanism as KeyUpdate ACK?
+- Guard: second NewConnectionId blocked while `dtls13_cid_update_ack_pending` set — checked in both `write_new_connection_id` (L8146) and `rotate_own_cid` (L8447)?
+- CID propagation: when KeyUpdate follows a CID update, does the new pending transform (`dtls13_transform_pending_out`) carry the updated CID? (L8316–8319)
+- 0-length CID: `cid_len == 0` is valid per RFC (signals "stop using CID on this direction") — is it accepted in the handle path, and does setting `out_cid_len = 0` have any downstream effect on subsequent records?
+- RequestConnectionId response (L8406): calls `write_new_connection_id(SPARE)` — but `write_new_connection_id` returns `INTERNAL_ERROR` if `dtls13_cid_update_ack_pending` is set, so a pending NCI causes the response to be silently dropped. Is this the right behaviour?
+- ACK matching: same `(epoch, seq)` mechanism as KeyUpdate — `ssl_dtls13_register_pending_ack` at L8228, cleared at L7001. Does `dtls13_req_cid_count` reset correctly on both the ACK path (L7002) and on receiving a NewConnectionId from the peer (L8324)?
+- Write loop correctness (L8191–8220): active slot count computed before buffer allocation; the encoding loop writes active_idx first then remaining active slots. Verify the `off` pointer cannot overrun `buf + body_len` if pool entries have varying cid_len (all slots share `ssl->own_cid_len` so this should be safe — confirm).
 
 ---
 
@@ -195,7 +199,7 @@ propagated to subsequently installed transforms?
 the retransmit timer fire and reset correctly?
 
 **Primary code:**
-- `ssl_msg.c:9125–9173` — `mbedtls_ssl_dtls13_wait_ack_step()`: core WAIT_ACK loop
+- `ssl_msg.c:9379–9427` — `mbedtls_ssl_dtls13_wait_ack_step()`: core WAIT_ACK loop
 - `ssl_tls13_client.c:3391–3420` — `CLIENT_FINISHED_WAIT_ACK` state handler
 - `ssl_tls13_server.c:3844–3880` — `NST_WAIT_ACK` state handler
 - `ssl_tls13_client.c:2935–2945` — entry into `CLIENT_FINISHED_WAIT_ACK`

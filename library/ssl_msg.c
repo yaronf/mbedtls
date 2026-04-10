@@ -8273,25 +8273,56 @@ static int ssl_tls13_handle_new_connection_id(mbedtls_ssl_context *ssl)
     }
     MBEDTLS_SSL_CHK_BUF_READ_PTR(p, end, (size_t) list_len + 1); /* list + usage byte */
 
-    /* We use only the first CID in the list (ignore extras per RFC). */
-    cid_len = *p++;
-    if (cid_len > MBEDTLS_SSL_CID_OUT_LEN_MAX) {
-        MBEDTLS_SSL_PEND_FATAL_ALERT(MBEDTLS_SSL_ALERT_MSG_ILLEGAL_PARAMETER,
-                                     MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER);
-        return MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER;
-    }
+    /* Parse all CID entries in the list and populate the outbound CID pool.
+     * The first entry is the IMMEDIATE CID (use now); subsequent entries are
+     * spares stored for use on local address change.  Entries beyond
+     * MBEDTLS_SSL_DTLS13_CID_POOL_SIZE are silently skipped — not an error. */
+    {
+        const unsigned char *list_end = p + list_len;
+        int slot = 0;
 
-    if (cid_len > list_len - 1) {
-        MBEDTLS_SSL_PEND_FATAL_ALERT(MBEDTLS_SSL_ALERT_MSG_DECODE_ERROR,
-                                     MBEDTLS_ERR_SSL_DECODE_ERROR);
-        return MBEDTLS_ERR_SSL_DECODE_ERROR;
-    }
-    MBEDTLS_SSL_CHK_BUF_READ_PTR(p, end, cid_len);
-    new_cid = p;
-    p += cid_len; /* advance past the CID we just captured */
+        memset(ssl->dtls13_peer_cid_pool, 0, sizeof(ssl->dtls13_peer_cid_pool));
 
-    /* Skip any remaining CID entries in the list. */
-    p += (size_t)(list_len - 1) - cid_len;
+        while (p < list_end) {
+            MBEDTLS_SSL_CHK_BUF_READ_PTR(p, list_end, 1);
+            cid_len = *p++;
+
+            if (cid_len > MBEDTLS_SSL_CID_OUT_LEN_MAX) {
+                MBEDTLS_SSL_PEND_FATAL_ALERT(MBEDTLS_SSL_ALERT_MSG_ILLEGAL_PARAMETER,
+                                             MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER);
+                return MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER;
+            }
+
+            MBEDTLS_SSL_CHK_BUF_READ_PTR(p, list_end, cid_len);
+
+            if (slot < MBEDTLS_SSL_DTLS13_CID_POOL_SIZE) {
+                ssl->dtls13_peer_cid_pool[slot].cid_len = cid_len;
+                memcpy(ssl->dtls13_peer_cid_pool[slot].cid, p, cid_len);
+                ssl->dtls13_peer_cid_pool[slot].active = 1;
+                slot++;
+            }
+            p += cid_len;
+        }
+
+        if (slot == 0) {
+            /* list_len > 0 was already validated above, so this shouldn't
+             * happen, but be defensive. */
+            MBEDTLS_SSL_PEND_FATAL_ALERT(MBEDTLS_SSL_ALERT_MSG_DECODE_ERROR,
+                                         MBEDTLS_ERR_SSL_DECODE_ERROR);
+            return MBEDTLS_ERR_SSL_DECODE_ERROR;
+        }
+
+        ssl->dtls13_peer_cid_active_idx = 0;
+        ssl->dtls13_peer_cid_pool_ready = 1;
+
+        /* The first (IMMEDIATE) CID is what we install on the transform. */
+        cid_len = ssl->dtls13_peer_cid_pool[0].cid_len;
+        new_cid = ssl->dtls13_peer_cid_pool[0].cid;
+
+        MBEDTLS_SSL_DEBUG_MSG(2, ("NewConnectionId received: %d CID(s) in pool",
+                                  slot));
+        p = list_end; /* consumed the whole list */
+    }
 
     /* p now at usage byte */
     MBEDTLS_SSL_CHK_BUF_READ_PTR(p, end, 1);
@@ -8303,11 +8334,10 @@ static int ssl_tls13_handle_new_connection_id(mbedtls_ssl_context *ssl)
         return MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER;
     }
 
-    MBEDTLS_SSL_DEBUG_MSG(2, ("NewConnectionId received: cid_len=%u usage=%u",
+    MBEDTLS_SSL_DEBUG_MSG(2, ("NewConnectionId: cid_len=%u usage=%u",
                               (unsigned) cid_len, (unsigned) usage));
 
-    /* Update the outbound CID on the active transform immediately.
-     * For cid_spare we still switch — we have only one spare slot. */
+    /* Update the outbound CID on the active transform to the IMMEDIATE entry. */
     ssl->transform_out->out_cid_len = cid_len;
     memcpy(ssl->transform_out->out_cid, new_cid, cid_len);
 
@@ -8479,7 +8509,44 @@ int mbedtls_ssl_dtls13_rotate_own_cid(mbedtls_ssl_context *ssl)
                               (unsigned) old_active_idx,
                               (unsigned) spare_idx));
 
-    /* Send NewConnectionId(IMMEDIATE) advertising both pool CIDs. */
+    /* Rotate outbound CID: promote a spare from the peer's CID pool so the
+     * outbound stream also switches CID, breaking linkability on both directions. */
+    if (ssl->dtls13_peer_cid_pool_ready) {
+        uint8_t peer_spare_idx = (ssl->dtls13_peer_cid_active_idx + 1)
+                                 % MBEDTLS_SSL_DTLS13_CID_POOL_SIZE;
+        if (ssl->dtls13_peer_cid_pool[peer_spare_idx].active) {
+            uint8_t peer_old_idx = ssl->dtls13_peer_cid_active_idx;
+            ssl->dtls13_peer_cid_active_idx = peer_spare_idx;
+
+            /* Vacate the old slot — peer will replenish via NewConnectionId. */
+            ssl->dtls13_peer_cid_pool[peer_old_idx].active = 0;
+
+            /* Update transform_out to the promoted CID. */
+            ssl->transform_out->out_cid_len =
+                ssl->dtls13_peer_cid_pool[peer_spare_idx].cid_len;
+            memcpy(ssl->transform_out->out_cid,
+                   ssl->dtls13_peer_cid_pool[peer_spare_idx].cid,
+                   ssl->dtls13_peer_cid_pool[peer_spare_idx].cid_len);
+
+            /* Also update the pending transform if one is waiting. */
+            if (ssl->dtls13_transform_pending_out != NULL) {
+                ssl->dtls13_transform_pending_out->out_cid_len =
+                    ssl->dtls13_peer_cid_pool[peer_spare_idx].cid_len;
+                memcpy(ssl->dtls13_transform_pending_out->out_cid,
+                       ssl->dtls13_peer_cid_pool[peer_spare_idx].cid,
+                       ssl->dtls13_peer_cid_pool[peer_spare_idx].cid_len);
+            }
+
+            MBEDTLS_SSL_DEBUG_MSG(2, ("outbound CID rotated (peer pool slot %u -> %u)",
+                                      (unsigned) peer_old_idx,
+                                      (unsigned) peer_spare_idx));
+        } else {
+            MBEDTLS_SSL_DEBUG_MSG(2, ("rotate_own_cid: no outbound spare available, "
+                                      "outbound CID unchanged"));
+        }
+    }
+
+    /* Send NewConnectionId(IMMEDIATE) advertising all active inbound pool CIDs. */
     ret = ssl_tls13_write_new_connection_id(ssl, SSL_CID_USAGE_IMMEDIATE);
     if (ret != 0) {
         MBEDTLS_SSL_DEBUG_RET(1, "ssl_tls13_write_new_connection_id", ret);

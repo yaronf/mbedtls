@@ -1871,6 +1871,21 @@ struct mbedtls_ssl_context {
         MBEDTLS_PRIVATE(dtls13_own_cid_pool)[MBEDTLS_SSL_DTLS13_CID_POOL_SIZE];
     uint8_t  MBEDTLS_PRIVATE(dtls13_own_cid_active_idx); /*!< index of IMMEDIATE CID */
     uint8_t  MBEDTLS_PRIVATE(dtls13_own_cid_pool_ready); /*!< 1 once pool is initialised */
+
+    /** DTLS 1.3 outbound CID pool (RFC 9147 §9 / §11).
+     *
+     *  Peer-provided CIDs received via NewConnectionId messages.  The active
+     *  slot (index dtls13_peer_cid_active_idx) mirrors transform_out->out_cid.
+     *  Spare slots are available for immediate use on local address change — call
+     *  mbedtls_ssl_dtls13_rotate_own_cid() to promote a spare and start sending
+     *  with the new CID without a round trip.
+     *
+     *  Guards: dtls13_peer_cid_pool_ready == 0 means the pool has not been
+     *  initialised yet (pre-handshake or DTLS 1.2). */
+    mbedtls_ssl_dtls13_cid_entry
+        MBEDTLS_PRIVATE(dtls13_peer_cid_pool)[MBEDTLS_SSL_DTLS13_CID_POOL_SIZE];
+    uint8_t  MBEDTLS_PRIVATE(dtls13_peer_cid_active_idx); /*!< index of active outbound CID */
+    uint8_t  MBEDTLS_PRIVATE(dtls13_peer_cid_pool_ready); /*!< 1 once pool is initialised */
 #endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
 
     /** Pending-ACK slots for standalone post-handshake messages (KeyUpdate,
