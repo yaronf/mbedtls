@@ -8149,34 +8149,29 @@ static int ssl_tls13_write_new_connection_id(mbedtls_ssl_context *ssl,
     }
 
     /*
-     * Determine how many CIDs to send.  If the pool is ready and has a valid
-     * spare slot, send 2 CIDs (IMMEDIATE + SPARE) so the peer can rotate on
-     * address migration.  Otherwise fall back to a single CID from own_cid.
+     * Count active pool slots to send.  If the pool is ready, send all active
+     * slots (active idx first, then the rest in order) so the peer can rotate
+     * on address migration.  Otherwise fall back to a single CID from own_cid.
      *
      * Wire format (RFC 9147 §9):
      *   uint16 cids_list_len;  // total byte length of the CID list
      *   struct { uint8 cid_len; opaque cid[cid_len]; } cids<1..2^16-1>;
      *   uint8 usage;
      */
-    int send_two =
+    size_t num_cids_to_send = 0;
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
-        ssl->dtls13_own_cid_pool_ready &&
-        ssl->dtls13_own_cid_pool[ssl->dtls13_own_cid_active_idx].active;
-#else
-        0;
-#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
-
-    if (send_two) {
-        /* Check that the spare slot is also active; if not, fall back to 1. */
-        uint8_t spare_idx = (ssl->dtls13_own_cid_active_idx == 0) ? 1 : 0;
-        if (!ssl->dtls13_own_cid_pool[spare_idx].active) {
-            send_two = 0;
+    if (ssl->dtls13_own_cid_pool_ready) {
+        for (int pi = 0; pi < MBEDTLS_SSL_DTLS13_CID_POOL_SIZE; pi++) {
+            if (ssl->dtls13_own_cid_pool[pi].active) {
+                num_cids_to_send++;
+            }
         }
     }
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 
-    if (send_two) {
-        /* 2-byte list_len + 2 × (1-byte len-prefix + cid_len bytes) + 1 usage */
-        body_len = 2 + 2 * (1 + cid_len) + 1;
+    if (num_cids_to_send > 0) {
+        /* 2-byte list_len + N × (1-byte len-prefix + cid_len bytes) + 1 usage */
+        body_len = 2 + num_cids_to_send * (1 + cid_len) + 1;
     } else {
         /* 2-byte list_len + 1 × (1-byte len-prefix + cid_len bytes) + 1 usage */
         body_len = 2 + 1 + cid_len + 1;
@@ -8188,26 +8183,31 @@ static int ssl_tls13_write_new_connection_id(mbedtls_ssl_context *ssl,
 
     MBEDTLS_SSL_CHK_BUF_PTR(buf, buf + buf_len, body_len);
 
-    if (send_two) {
+    if (num_cids_to_send > 0) {
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
         uint8_t active_idx = ssl->dtls13_own_cid_active_idx;
-        uint8_t spare_idx  = (active_idx == 0) ? 1 : 0;
-        const unsigned char *active_cid = ssl->dtls13_own_cid_pool[active_idx].cid;
-        const unsigned char *spare_cid  = ssl->dtls13_own_cid_pool[spare_idx].cid;
 
-        /* list_len covers both CID entries */
-        MBEDTLS_PUT_UINT16_BE(2 * (1 + cid_len), buf, 0);
-        /* IMMEDIATE entry */
-        buf[2] = (unsigned char) cid_len;
-        memcpy(buf + 3, active_cid, cid_len);
-        /* SPARE entry */
-        buf[3 + cid_len] = (unsigned char) cid_len;
-        memcpy(buf + 4 + cid_len, spare_cid, cid_len);
-        /* usage byte */
-        buf[4 + 2 * cid_len] = (unsigned char) usage;
+        /* list_len covers all N CID entries */
+        MBEDTLS_PUT_UINT16_BE((uint16_t)(num_cids_to_send * (1 + cid_len)), buf, 0);
 
-        MBEDTLS_SSL_DEBUG_MSG(2, ("NewConnectionId sent (usage=%d, cid_len=%u, 2 CIDs)",
-                                  usage, (unsigned) cid_len));
+        /* Write active slot first (IMMEDIATE), then remaining active slots. */
+        size_t off = 2;
+        buf[off++] = (unsigned char) cid_len;
+        memcpy(buf + off, ssl->dtls13_own_cid_pool[active_idx].cid, cid_len);
+        off += cid_len;
+        for (int pi = 0; pi < MBEDTLS_SSL_DTLS13_CID_POOL_SIZE; pi++) {
+            if (pi == active_idx || !ssl->dtls13_own_cid_pool[pi].active) {
+                continue;
+            }
+            buf[off++] = (unsigned char) cid_len;
+            memcpy(buf + off, ssl->dtls13_own_cid_pool[pi].cid, cid_len);
+            off += cid_len;
+        }
+        buf[off] = (unsigned char) usage;
+
+        MBEDTLS_SSL_DEBUG_MSG(2, ("NewConnectionId sent (usage=%d, cid_len=%u, %u CIDs)",
+                                  usage, (unsigned) cid_len,
+                                  (unsigned) num_cids_to_send));
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
     } else {
         /* Single CID from own_cid (fallback / pre-pool path). */
@@ -8450,8 +8450,8 @@ int mbedtls_ssl_dtls13_rotate_own_cid(mbedtls_ssl_context *ssl)
         return 0;
     }
 
-    /* Find a spare slot (any slot that is not the current active one). */
-    uint8_t spare_idx = (ssl->dtls13_own_cid_active_idx == 0) ? 1 : 0;
+    /* Find the next spare slot (first active slot that is not the current active one). */
+    uint8_t spare_idx = (ssl->dtls13_own_cid_active_idx + 1) % MBEDTLS_SSL_DTLS13_CID_POOL_SIZE;
 
     if (!ssl->dtls13_own_cid_pool[spare_idx].active) {
         MBEDTLS_SSL_DEBUG_MSG(2, ("rotate_own_cid: no spare slot available"));

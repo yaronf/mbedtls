@@ -1539,18 +1539,20 @@ static inline void mbedtls_ssl_dtls13_sync_post_hs_seq(mbedtls_ssl_context *ssl)
         if (!ssl->dtls13_own_cid_pool_ready &&
             ssl->own_cid_len > 0 &&
             ssl->handshake->cid_in_use == MBEDTLS_SSL_CID_ENABLED) {
-            /* Slot 0 (IMMEDIATE): current own_cid */
+            /* Slot 0 (IMMEDIATE): current own_cid. */
             ssl->dtls13_own_cid_pool[0].cid_len = ssl->own_cid_len;
             memcpy(ssl->dtls13_own_cid_pool[0].cid, ssl->own_cid, ssl->own_cid_len);
             ssl->dtls13_own_cid_pool[0].active = 1;
 
-            /* Slot 1 (SPARE): fresh random CID of the same length.
-             * Failure is non-fatal: pool stays with one slot, spare is empty. */
-            ssl->dtls13_own_cid_pool[1].cid_len = ssl->own_cid_len;
-            ssl->dtls13_own_cid_pool[1].active = 0;
-            if (psa_generate_random(ssl->dtls13_own_cid_pool[1].cid,
-                                    ssl->own_cid_len) == PSA_SUCCESS) {
-                ssl->dtls13_own_cid_pool[1].active = 1;
+            /* Slots 1..N-1 (SPARE): fresh random CIDs of the same length.
+             * Failures are non-fatal: affected slots stay inactive. */
+            for (int _pi = 1; _pi < MBEDTLS_SSL_DTLS13_CID_POOL_SIZE; _pi++) {
+                ssl->dtls13_own_cid_pool[_pi].cid_len = ssl->own_cid_len;
+                ssl->dtls13_own_cid_pool[_pi].active = 0;
+                if (psa_generate_random(ssl->dtls13_own_cid_pool[_pi].cid,
+                                        ssl->own_cid_len) == PSA_SUCCESS) {
+                    ssl->dtls13_own_cid_pool[_pi].active = 1;
+                }
             }
 
             ssl->dtls13_own_cid_active_idx = 0;
