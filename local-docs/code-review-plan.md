@@ -184,7 +184,7 @@ with these paths (pool was added after the original plan)?
 - `ssl_msg.c:5451–5543` — secondary CID pool match
 
 **What to look for:**
-- Guard: second NewConnectionId blocked while `dtls13_cid_update_ack_pending` set — checked in both `write_new_connection_id` (L8146) and `rotate_own_cid` (L8447)?
+- Guard: second NewConnectionId blocked while `dtls13_cid_update_ack_pending` set — checked in both `write_new_connection_id` (L8146) and `rotate_cids` (L8447)?
 - CID propagation: when KeyUpdate follows a CID update, does the new pending transform (`dtls13_transform_pending_out`) carry the updated CID? (L8316–8319)
 - 0-length CID: `cid_len == 0` is valid per RFC (signals "stop using CID on this direction") — is it accepted in the handle path, and does setting `out_cid_len = 0` have any downstream effect on subsequent records?
 - RequestConnectionId response (L8406): calls `write_new_connection_id(SPARE)` — but `write_new_connection_id` returns `INTERNAL_ERROR` if `dtls13_cid_update_ack_pending` is set, so a pending NCI causes the response to be silently dropped. Is this the right behaviour?

@@ -334,7 +334,7 @@ int main(void)
     "    cid_change_addr=%%d  default: 0 (disabled)\n"                     \
     "                        N>0: rebind UDP socket N times (one per exchange)\n" \
     "    rotate_cid=%%d       default: 0 (disabled)\n"                     \
-    "                        N>0: call mbedtls_ssl_dtls13_rotate_own_cid()\n" \
+    "                        N>0: call mbedtls_ssl_dtls13_rotate_cids()\n" \
     "                        after N application-data exchanges\n"
 #else
 #define USAGE_CID_UPDATE ""
@@ -552,7 +552,7 @@ struct options {
     int bad_new_cid;            /* send malformed NewConnectionId (coverage) */
     int bad_req_cid;            /* send malformed RequestConnectionId       */
     int cid_change_addr;        /* rebind UDP socket N times mid-session    */
-    int rotate_cid;             /* rotate own inbound CID after N exchanges */
+    int rotate_cid;             /* rotate CIDs after N exchanges */
     uint64_t aead_limit;        /* DTLS 1.3 AEAD record limit (0=default)   */
     uint32_t auth_fail_limit;   /* DTLS 1.3 auth-fail limit (0=default)     */
     int exchanges;              /* number of data exchanges                 */
@@ -3279,8 +3279,8 @@ send_request:
         if (opt.rotate_cid > 0 && --opt.rotate_cid == 0) {
             mbedtls_printf("  . Rotating own inbound CID...");
             fflush(stdout);
-            if ((ret = mbedtls_ssl_dtls13_rotate_own_cid(&ssl)) != 0) {
-                mbedtls_printf(" failed\n  ! mbedtls_ssl_dtls13_rotate_own_cid"
+            if ((ret = mbedtls_ssl_dtls13_rotate_cids(&ssl)) != 0) {
+                mbedtls_printf(" failed\n  ! mbedtls_ssl_dtls13_rotate_cids"
                                " returned -0x%x\n\n", (unsigned int) -ret);
                 goto exit;
             }

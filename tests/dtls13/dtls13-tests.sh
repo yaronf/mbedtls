@@ -238,7 +238,7 @@ run_test    "DTLS 1.3 CID update: CID pool: client rotates own CID — server se
             -c "Protocol is DTLSv1.3" \
             -s "Use of Connection ID has been negotiated." \
             -c "Use of Connection ID has been negotiated." \
-            -c "own CID rotated" \
+            -c "CIDs rotated" \
             -s "NewConnectionId received" \
             -c "ACK: NewConnectionId acknowledged"
 
@@ -253,7 +253,7 @@ run_test    "DTLS 1.3 CID update: CID pool: server rotates own CID — client se
             -c "Protocol is DTLSv1.3" \
             -s "Use of Connection ID has been negotiated." \
             -c "Use of Connection ID has been negotiated." \
-            -s "own CID rotated" \
+            -s "CIDs rotated" \
             -c "NewConnectionId received" \
             -s "ACK: NewConnectionId acknowledged"
 
@@ -268,7 +268,7 @@ run_test    "DTLS 1.3 CID update: CID pool: rotate blocked by pending ACK (no-op
             -c "Protocol is DTLSv1.3" \
             -s "Use of Connection ID has been negotiated." \
             -c "Use of Connection ID has been negotiated." \
-            -c "own CID rotated"
+            -c "CIDs rotated"
 
 requires_protocol_version dtls13
 requires_config_enabled MBEDTLS_SSL_DTLS_CONNECTION_ID

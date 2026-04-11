@@ -8478,7 +8478,7 @@ int mbedtls_ssl_dtls13_request_connection_id(mbedtls_ssl_context *ssl,
 /*
  * Public API: rotate to the spare inbound CID and offer a fresh spare to peer.
  */
-int mbedtls_ssl_dtls13_rotate_own_cid(mbedtls_ssl_context *ssl)
+int mbedtls_ssl_dtls13_rotate_cids(mbedtls_ssl_context *ssl)
 {
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
     int ret;
@@ -8490,13 +8490,13 @@ int mbedtls_ssl_dtls13_rotate_own_cid(mbedtls_ssl_context *ssl)
 
     /* No-op if pool not ready (CID not negotiated or pre-handshake). */
     if (!ssl->dtls13_own_cid_pool_ready) {
-        MBEDTLS_SSL_DEBUG_MSG(2, ("rotate_own_cid: pool not ready, skip"));
+        MBEDTLS_SSL_DEBUG_MSG(2, ("rotate_cids: pool not ready, skip"));
         return 0;
     }
 
     /* No-op if a NewConnectionId is already outstanding. */
     if (ssl->dtls13_cid_update_ack_pending) {
-        MBEDTLS_SSL_DEBUG_MSG(2, ("rotate_own_cid: NewConnectionId already "
+        MBEDTLS_SSL_DEBUG_MSG(2, ("rotate_cids: NewConnectionId already "
                                   "pending ACK, skip"));
         return 0;
     }
@@ -8505,7 +8505,7 @@ int mbedtls_ssl_dtls13_rotate_own_cid(mbedtls_ssl_context *ssl)
     uint8_t spare_idx = (ssl->dtls13_own_cid_active_idx + 1) % MBEDTLS_SSL_DTLS13_CID_POOL_SIZE;
 
     if (!ssl->dtls13_own_cid_pool[spare_idx].active) {
-        MBEDTLS_SSL_DEBUG_MSG(2, ("rotate_own_cid: no spare slot available"));
+        MBEDTLS_SSL_DEBUG_MSG(2, ("rotate_cids: no spare slot available"));
         return 0;
     }
 
@@ -8526,7 +8526,7 @@ int mbedtls_ssl_dtls13_rotate_own_cid(mbedtls_ssl_context *ssl)
     ssl->own_cid_len = ssl->dtls13_own_cid_pool[spare_idx].cid_len;
     memcpy(ssl->own_cid, ssl->dtls13_own_cid_pool[spare_idx].cid, ssl->own_cid_len);
 
-    MBEDTLS_SSL_DEBUG_MSG(2, ("own CID rotated (slot %u -> %u)",
+    MBEDTLS_SSL_DEBUG_MSG(2, ("CIDs rotated (slot %u -> %u)",
                               (unsigned) old_active_idx,
                               (unsigned) spare_idx));
 
@@ -8562,7 +8562,7 @@ int mbedtls_ssl_dtls13_rotate_own_cid(mbedtls_ssl_context *ssl)
                                       (unsigned) peer_old_idx,
                                       (unsigned) peer_spare_idx));
         } else {
-            MBEDTLS_SSL_DEBUG_MSG(2, ("rotate_own_cid: no outbound spare available, "
+            MBEDTLS_SSL_DEBUG_MSG(2, ("rotate_cids: no outbound spare available, "
                                       "outbound CID unchanged"));
         }
     }

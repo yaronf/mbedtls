@@ -1877,7 +1877,7 @@ struct mbedtls_ssl_context {
      *  Peer-provided CIDs received via NewConnectionId messages.  The active
      *  slot (index dtls13_peer_cid_active_idx) mirrors transform_out->out_cid.
      *  Spare slots are available for immediate use on local address change — call
-     *  mbedtls_ssl_dtls13_rotate_own_cid() to promote a spare and start sending
+     *  mbedtls_ssl_dtls13_rotate_cids() to promote a spare and start sending
      *  with the new CID without a round trip.
      *
      *  Guards: dtls13_peer_cid_pool_ready == 0 means the pool has not been
@@ -3260,11 +3260,23 @@ void mbedtls_ssl_conf_dtls13_auth_fail_limit(mbedtls_ssl_config *conf,
 
 #if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
 /**
- * \brief   Switch to the next spare inbound CID from the pool and send a
- *          NewConnectionId to the peer offering a fresh spare.
+ * \brief   Rotate both CIDs to prevent on-path observer correlation after a
+ *          local address change (RFC 9147 §9 / §11).
  *
- *          Call this when a local address change is detected, to prevent
- *          CID-based correlation across paths (RFC 9147 §9 / §11).
+ *          On the outbound direction: promotes a spare peer-provided CID to
+ *          active so the next record sent uses a fresh CID unknown to observers
+ *          on the old path.
+ *
+ *          On the inbound direction: promotes a spare own CID to active and
+ *          sends NewConnectionId to the peer, so subsequent records the peer
+ *          sends to our new address also carry a fresh CID.
+ *
+ *          Both rotations are needed because a passive on-path observer can
+ *          correlate a connection across an address change using either the
+ *          inbound or the outbound CID.
+ *
+ *          Call this immediately after detecting a local address change (NAT
+ *          rebind, interface switch, etc.).
  *
  *          This is a no-op if CID was not negotiated, the pool has not been
  *          initialised (pre-handshake), or a previous NewConnectionId is
@@ -3273,7 +3285,7 @@ void mbedtls_ssl_conf_dtls13_auth_fail_limit(mbedtls_ssl_config *conf,
  * \param ssl   SSL context (must be post-handshake DTLS 1.3 with CID).
  * \return      0 on success or no-op, MBEDTLS_ERR_SSL_* on error.
  */
-int mbedtls_ssl_dtls13_rotate_own_cid(mbedtls_ssl_context *ssl);
+int mbedtls_ssl_dtls13_rotate_cids(mbedtls_ssl_context *ssl);
 #endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
 
 #endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */

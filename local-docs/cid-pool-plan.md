@@ -27,7 +27,7 @@ With symmetric inbound + outbound pools of size N:
 - Symmetrically, when the peer sends us a NewConnectionId with multiple CIDs, we store
   their CIDs in our outbound pool; on our own address change we promote a spare from
   that pool and immediately start sending with the new CID.
-- A public API `mbedtls_ssl_dtls13_rotate_own_cid()` rotates **both** directions:
+- A public API `mbedtls_ssl_dtls13_rotate_cids()` rotates **both** directions:
   our inbound CID (preventing linkability of inbound stream) and our outbound CID
   (preventing linkability of outbound stream).
 
@@ -164,7 +164,7 @@ No changes needed here.
 
 ---
 
-### 6. rotate_own_cid — rotate both directions (to be extended)
+### 6. rotate_cids — rotate both directions (to be extended)
 
 Current implementation rotates only the inbound pool. Extend to:
 
@@ -228,7 +228,7 @@ heap-allocated). Confirm no separate free needed.
 | `include/mbedtls/ssl.h` | Add `dtls13_peer_cid_pool`, `dtls13_peer_cid_active_idx`, `dtls13_peer_cid_pool_ready` to `mbedtls_ssl_context` |
 | `library/ssl_misc.h` | Init outbound pool at HANDSHAKE_OVER from `transform_out->out_cid` |
 | `library/ssl_msg.c` | `ssl_tls13_handle_new_connection_id`: parse full list, populate outbound pool |
-| `library/ssl_msg.c` | `mbedtls_ssl_dtls13_rotate_own_cid`: add outbound rotation step |
+| `library/ssl_msg.c` | `mbedtls_ssl_dtls13_rotate_cids`: add outbound rotation step |
 
 No new test infrastructure needed beyond what was already added — the `rotate_cid`
 test cases (TC-2, TC-3, TC-5) already exercise the rotation path and will cover the
@@ -244,7 +244,7 @@ primary correctness test.
 - Pool init at HANDSHAKE_OVER (ssl_misc.h)
 - Secondary CID match in `ssl_prepare_record_content` (ssl_msg.c:5451–5543)
 - `ssl_tls13_write_new_connection_id` generalized to send all active pool slots
-- `mbedtls_ssl_dtls13_rotate_own_cid` (inbound rotation only)
+- `mbedtls_ssl_dtls13_rotate_cids` (inbound rotation only)
 - Forward declaration of `ssl_tls13_write_new_connection_id` before `ssl_prepare_record_content`
 - Test infrastructure: assertions, `rotate_cid=N` option in ssl_client2/ssl_server2
 - Test cases in `cid-update.yaml`
@@ -255,7 +255,7 @@ primary correctness test.
    `dtls13_peer_cid_pool_ready` to `mbedtls_ssl_context` (ssl.h)
 2. Init outbound pool at HANDSHAKE_OVER (ssl_misc.h)
 3. Parse full CID list in `handle_new_connection_id` and populate outbound pool (ssl_msg.c)
-4. Extend `rotate_own_cid` to also rotate outbound CID from pool (ssl_msg.c)
+4. Extend `rotate_cids` to also rotate outbound CID from pool (ssl_msg.c)
 
 ---
 

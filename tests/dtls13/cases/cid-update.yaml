@@ -281,7 +281,7 @@ cases:
 
   - name: "CID pool: client rotates own CID — server sees new CID in use"
     skip_runners: [wolfssl]
-    # Client calls rotate_own_cid after 2 exchanges: promotes spare to active,
+    # Client calls rotate_cids after 2 exchanges: promotes spare to active,
     # sends NewConnectionId(IMMEDIATE) with 2 CIDs.
     # Server receives it, switches outbound CID, ACKs.
     # Data exchange continues on the new CID.
@@ -334,7 +334,7 @@ cases:
 
   - name: "CID pool: rotate blocked by pending ACK (no-op guard)"
     skip_runners: [wolfssl]
-    # Client calls rotate_own_cid after 2 exchanges, then send_new_cid=1 races
+    # Client calls rotate_cids after 2 exchanges, then send_new_cid=1 races
     # before the ACK arrives.  The second NewConnectionId must be a no-op.
     # Connection must remain healthy and exit cleanly.
     server:

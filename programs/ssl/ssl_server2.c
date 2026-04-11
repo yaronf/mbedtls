@@ -435,7 +435,7 @@ int main(void)
     "                             1: accept client address changes (CID must be on)\n" \
     "    migration_timeout_ms=%%d  default: 1000 ms; 0 = commit immediately\n"        \
     "    rotate_cid=%%d            default: 0 (disabled)\n"                           \
-    "                             N>0: call mbedtls_ssl_dtls13_rotate_own_cid()\n"    \
+    "                             N>0: call mbedtls_ssl_dtls13_rotate_cids()\n"    \
     "                             after N application-data exchanges\n"
 #else
 #define USAGE_CID_UPDATE ""
@@ -690,7 +690,7 @@ struct options {
     int request_cid;            /* send DTLS 1.3 RequestConnectionId after HS */
     int allow_addr_migration;   /* accept client address changes via CID    */
     long migration_timeout_ms;  /* ms of old-addr silence before migrating  */
-    int rotate_cid;             /* rotate own inbound CID after N exchanges */
+    int rotate_cid;             /* rotate CIDs after N exchanges */
     uint64_t aead_limit;        /* DTLS 1.3 AEAD record limit (0=default)   */
     uint32_t auth_fail_limit;   /* DTLS 1.3 auth-fail limit (0=default)     */
     int renego_delay;           /* delay before enforcing renegotiation     */
@@ -4527,8 +4527,8 @@ data_exchange:
         if (opt.rotate_cid > 0 && --opt.rotate_cid == 0) {
             mbedtls_printf("  . Rotating own inbound CID...");
             fflush(stdout);
-            if ((ret = mbedtls_ssl_dtls13_rotate_own_cid(&ssl)) != 0) {
-                mbedtls_printf(" failed\n  ! mbedtls_ssl_dtls13_rotate_own_cid"
+            if ((ret = mbedtls_ssl_dtls13_rotate_cids(&ssl)) != 0) {
+                mbedtls_printf(" failed\n  ! mbedtls_ssl_dtls13_rotate_cids"
                                " returned -0x%x\n\n", (unsigned int) -ret);
                 goto exit;
             }

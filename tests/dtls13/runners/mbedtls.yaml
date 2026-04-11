@@ -266,10 +266,10 @@ assertion_map:
   # CID pool / rotation assertions
   client_cid_rotated:
     flag: "-c"
-    string: "own CID rotated"
+    string: "CIDs rotated"
   server_cid_rotated:
     flag: "-s"
-    string: "own CID rotated"
+    string: "CIDs rotated"
   client_pool_replenished:
     flag: "-c"
     string: "CID pool replenished"
