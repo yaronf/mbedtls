@@ -8253,7 +8253,9 @@ static int ssl_tls13_handle_new_connection_id(mbedtls_ssl_context *ssl)
     const unsigned char *new_cid;
     uint8_t usage;
 
-    if (ssl->session == NULL || ssl->transform_out == NULL) {
+    if (ssl->session == NULL ||
+        ssl->transform_out == NULL ||
+        ssl->transform_in == NULL) {
         return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
     }
 
@@ -8270,8 +8272,7 @@ static int ssl_tls13_handle_new_connection_id(mbedtls_ssl_context *ssl)
     list_len = MBEDTLS_GET_UINT16_BE(p, 0);
     p += 2;
 
-    /* list_len must hold at least 1 byte (cid_len), plus we need 1 usage byte
-     * after the list. */
+    /* list_len == 0 means an empty CID list — no entries to parse, reject. */
     if (list_len < 1) {
         MBEDTLS_SSL_PEND_FATAL_ALERT(MBEDTLS_SSL_ALERT_MSG_DECODE_ERROR,
                                      MBEDTLS_ERR_SSL_DECODE_ERROR);
@@ -8295,6 +8296,17 @@ static int ssl_tls13_handle_new_connection_id(mbedtls_ssl_context *ssl)
         while (p < list_end) {
             MBEDTLS_SSL_CHK_BUF_READ_PTR(p, list_end, 1);
             cid_len = *p++;
+
+            /* RFC 9147 §11.5: cid_len == 0 signals "stop using CID on this
+             * direction".  We reject it here because we require CID to be in
+             * use (checked above) and silently disabling it mid-session would
+             * leave transform_out->out_cid_len == 0, causing us to send
+             * records without a CID while the peer still expects one. */
+            if (cid_len == 0) {
+                MBEDTLS_SSL_PEND_FATAL_ALERT(MBEDTLS_SSL_ALERT_MSG_ILLEGAL_PARAMETER,
+                                             MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER);
+                return MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER;
+            }
 
             if (cid_len > MBEDTLS_SSL_CID_OUT_LEN_MAX) {
                 MBEDTLS_SSL_PEND_FATAL_ALERT(MBEDTLS_SSL_ALERT_MSG_ILLEGAL_PARAMETER,
@@ -8360,7 +8372,24 @@ static int ssl_tls13_handle_new_connection_id(mbedtls_ssl_context *ssl)
         } else {
             /* SPARE: store received CIDs into spare slots without changing the
              * active outbound CID.  Fill from slot active_idx+1 onwards, wrapping
-             * if necessary, but never overwrite the active slot. */
+             * if necessary, but never overwrite the active slot.
+             *
+             * If the pool is not yet initialised (no prior IMMEDIATE received),
+             * active_idx is 0 by zero-init.  Treat slot 0 as the active slot
+             * (it holds the handshake-negotiated CID in transform_out) and
+             * fill spare slots starting from 1. */
+            if (!ssl->dtls13_peer_cid_pool_ready) {
+                /* Seed slot 0 from the current transform so the pool is
+                 * consistent before we mark it ready. */
+                ssl->dtls13_peer_cid_pool[0].cid_len =
+                    ssl->transform_out->out_cid_len;
+                memcpy(ssl->dtls13_peer_cid_pool[0].cid,
+                       ssl->transform_out->out_cid,
+                       ssl->transform_out->out_cid_len);
+                ssl->dtls13_peer_cid_pool[0].active = 1;
+                ssl->dtls13_peer_cid_active_idx = 0;
+            }
+
             int spare_slot = (ssl->dtls13_peer_cid_active_idx + 1)
                              % MBEDTLS_SSL_DTLS13_CID_POOL_SIZE;
             for (int i = 0; i < num_parsed; i++) {
