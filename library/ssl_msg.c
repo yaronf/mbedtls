@@ -9522,6 +9522,7 @@ int mbedtls_ssl_dtls13_wait_ack_step(mbedtls_ssl_context *ssl)
 
     /* Already ACKed (e.g. ACK arrived in a previous read_record call). */
     if (ssl->handshake->retransmit_state == MBEDTLS_SSL_RETRANS_FINISHED) {
+        mbedtls_ssl_set_timer(ssl, 0);
         mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_HANDSHAKE_OVER);
         return 0;
     }
@@ -9534,6 +9535,7 @@ int mbedtls_ssl_dtls13_wait_ack_step(mbedtls_ssl_context *ssl)
      * timeout before returning — but eventually read_record returns TIMEOUT.
      * Check RETRANS_FINISHED before treating TIMEOUT as a failure. */
     if (ssl->handshake->retransmit_state == MBEDTLS_SSL_RETRANS_FINISHED) {
+        mbedtls_ssl_set_timer(ssl, 0);
         mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_HANDSHAKE_OVER);
         return 0;
     }

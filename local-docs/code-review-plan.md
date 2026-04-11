@@ -198,15 +198,15 @@ and outbound CID pools populated and maintained correctly, and is the usage byte
 
 ---
 
-## Area 10: WAIT_ACK States and Timer Logic (RFC 9147 §5.7–5.8)
+## Area 10: WAIT_ACK States and Timer Logic (RFC 9147 §5.7–5.8) ✓ DONE
 
 **Focus:** Are the WAIT_ACK states reachable and exitable on all paths, and does
 the retransmit timer fire and reset correctly?
 
 **Primary code:**
-- `ssl_msg.c:9379–9427` — `mbedtls_ssl_dtls13_wait_ack_step()`: core WAIT_ACK loop
-- `ssl_tls13_client.c:3391–3420` — `CLIENT_FINISHED_WAIT_ACK` state handler
-- `ssl_tls13_server.c:3844–3880` — `NST_WAIT_ACK` state handler
+- `ssl_msg.c:9519–9567` — `mbedtls_ssl_dtls13_wait_ack_step()`: core WAIT_ACK loop
+- `ssl_tls13_client.c:3391–3397` — `CLIENT_FINISHED_WAIT_ACK` state handler
+- `ssl_tls13_server.c:3844–3855` — `NST_WAIT_ACK` state handler
 - `ssl_tls13_client.c:2935–2945` — entry into `CLIENT_FINISHED_WAIT_ACK`
 - `ssl_tls13_server.c:3832` — entry into `NST_WAIT_ACK`
 

@@ -3844,10 +3844,22 @@ int mbedtls_ssl_tls13_handshake_server_step(mbedtls_ssl_context *ssl)
         case MBEDTLS_SSL_TLS1_3_NEW_SESSION_TICKET_WAIT_ACK:
             /* DTLS 1.3: wait for client ACK of NewSessionTicket flight.
              * Retransmit timer (armed in FLUSH) drives resends via
-             * ssl_prepare_handshake_step / mbedtls_ssl_resend. */
+             * ssl_prepare_handshake_step / mbedtls_ssl_resend.
+             *
+             * NewSessionTicket is informational — if the client never ACKs
+             * and we exhaust all retransmits (TIMEOUT), do not kill the
+             * connection; proceed to HANDSHAKE_OVER so application data
+             * can still flow. */
             MBEDTLS_SSL_DEBUG_MSG(2, ("NST_WAIT_ACK: retransmit_state=%d",
                                       ssl->handshake->retransmit_state));
             ret = mbedtls_ssl_dtls13_wait_ack_step(ssl);
+            if (ret == MBEDTLS_ERR_SSL_TIMEOUT) {
+                MBEDTLS_SSL_DEBUG_MSG(1, ("NST_WAIT_ACK: timed out waiting "
+                                          "for client ACK — proceeding anyway"));
+                mbedtls_ssl_set_timer(ssl, 0);
+                mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_HANDSHAKE_OVER);
+                ret = 0;
+            }
             break;
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
 
