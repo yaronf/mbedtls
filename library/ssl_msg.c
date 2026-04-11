@@ -8149,17 +8149,18 @@ static int ssl_tls13_write_new_connection_id(mbedtls_ssl_context *ssl,
     }
 
     /*
-     * Count active pool slots to send.  If the pool is ready, send all active
-     * slots (active idx first, then the rest in order) so the peer can rotate
-     * on address migration.  Otherwise fall back to a single CID from own_cid.
-     *
      * Wire format (RFC 9147 §9):
      *   uint16 cids_list_len;  // total byte length of the CID list
      *   struct { uint8 cid_len; opaque cid[cid_len]; } cids<1..2^16-1>;
      *   uint8 usage;
+     *
+     * When the inbound CID pool is ready (DTLS 1.3 post-handshake) we send all
+     * active slots — active_idx first (IMMEDIATE), then the rest.  Otherwise we
+     * fall back to the single own_cid (pre-pool / non-TLS-1.3 path).
      */
-    size_t num_cids_to_send = 0;
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    /* Count active pool slots. */
+    size_t num_cids_to_send = 0;
     if (ssl->dtls13_own_cid_pool_ready) {
         for (int pi = 0; pi < MBEDTLS_SSL_DTLS13_CID_POOL_SIZE; pi++) {
             if (ssl->dtls13_own_cid_pool[pi].active) {
@@ -8167,27 +8168,20 @@ static int ssl_tls13_write_new_connection_id(mbedtls_ssl_context *ssl,
             }
         }
     }
-#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
-
-    /* If pool not ready, fall back to sending the single own_cid. */
-    if (num_cids_to_send == 0) {
-        num_cids_to_send = 1;
-    }
-
-    /* 2-byte list_len + N × (1-byte len-prefix + cid_len bytes) + 1 usage */
-    body_len = 2 + num_cids_to_send * (1 + cid_len) + 1;
-
-    MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_start_handshake_msg(
-                             ssl, MBEDTLS_SSL_HS_NEW_CONNECTION_ID,
-                             &buf, &buf_len));
-
-    MBEDTLS_SSL_CHK_BUF_PTR(buf, buf + buf_len, body_len);
 
     if (num_cids_to_send > 0) {
-#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
         uint8_t active_idx = ssl->dtls13_own_cid_active_idx;
 
-        /* list_len covers all N CID entries */
+        /* 2-byte list_len + N × (1 + cid_len) + 1 usage byte.
+         * No overflow: POOL_SIZE and CID_IN_LEN_MAX are small constants. */
+        body_len = 2 + num_cids_to_send * (1 + cid_len) + 1;
+
+        MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_start_handshake_msg(
+                                 ssl, MBEDTLS_SSL_HS_NEW_CONNECTION_ID,
+                                 &buf, &buf_len));
+        MBEDTLS_SSL_CHK_BUF_PTR(buf, buf + buf_len, body_len);
+
+        /* list_len field covers all N CID entries. */
         MBEDTLS_PUT_UINT16_BE((uint16_t)(num_cids_to_send * (1 + cid_len)), buf, 0);
 
         /* Write active slot first (IMMEDIATE), then remaining active slots. */
@@ -8208,9 +8202,17 @@ static int ssl_tls13_write_new_connection_id(mbedtls_ssl_context *ssl,
         MBEDTLS_SSL_DEBUG_MSG(2, ("NewConnectionId sent (usage=%d, cid_len=%u, %u CIDs)",
                                   usage, (unsigned) cid_len,
                                   (unsigned) num_cids_to_send));
+    } else
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
-    } else {
-        /* Single CID from own_cid (fallback / pre-pool path). */
+    {
+        /* Single CID from own_cid (pool not ready or non-TLS-1.3 path). */
+        body_len = 2 + (1 + cid_len) + 1;
+
+        MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_start_handshake_msg(
+                                 ssl, MBEDTLS_SSL_HS_NEW_CONNECTION_ID,
+                                 &buf, &buf_len));
+        MBEDTLS_SSL_CHK_BUF_PTR(buf, buf + buf_len, body_len);
+
         MBEDTLS_PUT_UINT16_BE(1 + cid_len, buf, 0);
         buf[2] = (unsigned char) cid_len;
         memcpy(buf + 3, ssl->own_cid, cid_len);
@@ -8222,11 +8224,15 @@ static int ssl_tls13_write_new_connection_id(mbedtls_ssl_context *ssl,
 
     MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_finish_handshake_msg(ssl, buf_len, body_len));
 
-    MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_flush_output(ssl));
-
-    /* Record the (epoch, seq) of the sent message for ACK matching. */
+    /* Arm the pending-ACK state before flushing.  The record is already
+     * serialised at this point; if flush_output returns WANT_WRITE the caller
+     * will retry the flush, but must not re-enter this function and send a
+     * second NewConnectionId before the first is ACKed.  Setting the flag here
+     * ensures the guard at L8146 fires on any re-entry attempt. */
     ssl_dtls13_register_pending_ack(ssl, MBEDTLS_SSL_DTLS13_PENDING_ACK_NEW_CONNECTION_ID);
     ssl->dtls13_cid_update_ack_pending = 1;
+
+    MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_flush_output(ssl));
 
 cleanup:
     return ret;
