@@ -1373,7 +1373,6 @@ static psa_status_t psa_setup_psk_key_slot(mbedtls_svc_key_id_t *slot,
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/select.h>
-#include <time.h>
 #endif
 /*
  * Migration context: allows the server to receive from and send to a client
@@ -1395,7 +1394,7 @@ typedef struct {
     socklen_t    last_src_len;
     int          candidate_active;              /* 1 if a candidate is pending   */
     int          candidate_validated;           /* set by main loop after ssl_read > 0 */
-    struct timespec candidate_since;            /* time of last old-addr packet  */
+    mbedtls_ms_time_t candidate_since;          /* time of last old-addr packet (ms) */
     long         migration_timeout_ms;          /* default 1000                  */
 } migration_ctx_t;
 
@@ -1434,7 +1433,7 @@ static int migration_recv_cb(void *ctx, unsigned char *buf, size_t len)
         memcmp(&src, &mctx->peer_addr, src_len) == 0) {
         /* Packet from current peer — restart migration timer if pending. */
         if (mctx->candidate_active) {
-            clock_gettime(CLOCK_MONOTONIC, &mctx->candidate_since);
+            mctx->candidate_since = mbedtls_ms_time();
         }
     } else if (mctx->candidate_active &&
                src_len == mctx->candidate_len &&
@@ -1446,7 +1445,7 @@ static int migration_recv_cb(void *ctx, unsigned char *buf, size_t len)
         mctx->candidate_len       = src_len;
         mctx->candidate_active    = 1;
         mctx->candidate_validated = 0;
-        clock_gettime(CLOCK_MONOTONIC, &mctx->candidate_since);
+        mctx->candidate_since = mbedtls_ms_time();
     }
 
     return ret;
@@ -1496,8 +1495,6 @@ static int migration_send_cb(void *ctx, const unsigned char *buf, size_t len)
  * Pass app_data_received=1 if ssl_read returned > 0. */
 static void migration_check_timer(migration_ctx_t *mctx, int app_data_received)
 {
-    struct timespec now;
-
     if (!mctx->candidate_active) {
         return;
     }
@@ -1514,9 +1511,7 @@ static void migration_check_timer(migration_ctx_t *mctx, int app_data_received)
         return;
     }
 
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    long elapsed_ms = (now.tv_sec  - mctx->candidate_since.tv_sec)  * 1000L
-                    + (now.tv_nsec - mctx->candidate_since.tv_nsec) / 1000000L;
+    long elapsed_ms = (long) (mbedtls_ms_time() - mctx->candidate_since);
 
     if (elapsed_ms >= mctx->migration_timeout_ms) {
         mctx->peer_addr     = mctx->candidate;
