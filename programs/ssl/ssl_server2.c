@@ -1373,6 +1373,7 @@ static psa_status_t psa_setup_psk_key_slot(mbedtls_svc_key_id_t *slot,
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/select.h>
+#include <time.h>
 #endif
 /*
  * Migration context: allows the server to receive from and send to a client
@@ -1413,7 +1414,11 @@ static int migration_recv_cb(void *ctx, unsigned char *buf, size_t len)
             return MBEDTLS_ERR_SSL_WANT_READ;
         }
 #else
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        if (errno == EAGAIN
+#if EWOULDBLOCK != EAGAIN
+            || errno == EWOULDBLOCK
+#endif
+            ) {
             return MBEDTLS_ERR_SSL_WANT_READ;
         }
 #endif
