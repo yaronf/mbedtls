@@ -186,9 +186,12 @@ def fmt_row(label, d):
 # --- Key files ---
 key_files = [
     "library/ssl_msg.c",
-    "library/ssl_tls.c",
-    "library/ssl_tls13_client.c",
+    "library/ssl_tls13_keys.c",
     "library/ssl_tls13_server.c",
+    "library/ssl_tls13_client.c",
+    "library/ssl_tls13_generic.c",
+    "library/ssl_tls.c",
+    "library/ssl_client.c",
 ]
 print(HDR)
 print(SEP)

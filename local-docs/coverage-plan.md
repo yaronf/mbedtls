@@ -269,13 +269,21 @@ ssl_server2 + ssl_client2, unlike macOS/LLVM which overwrites.
 **Baseline ref:** `v4.1.0` (upstream release, CTest unit suites only — no dtls13 tests).
 **DTLS 1.3 ref:** `HEAD` (this branch, CTest unit suites + dtls13 integration suite).
 
+Files selected by size of diff from `v4.1.0` (`git diff --stat v4.1.0..HEAD -- library/`).
+
 | File | Baseline Br% | HEAD Br% | Δ Br | Baseline Ln% | HEAD Ln% | Δ Ln |
 |------|-------------|---------|------|-------------|---------|------|
-| `library/ssl_msg.c` | 52.5% (668/1273) | 68.0% (1516/2230) | +15.5 pp | 63.6% | 78.4% | +14.8 pp |
-| `library/ssl_tls.c` | 57.0% (856/1501) | 60.7% (943/1553) | +3.7 pp | 70.6% | 74.0% | +3.4 pp |
-| `library/ssl_tls13_client.c` | 42.8% (262/612) | 52.2% (357/684) | +9.4 pp | 70.7% | 78.0% | +7.3 pp |
+| `library/ssl_msg.c` | 52.5% (668/1273) | 69.1% (1540/2230) | +16.6 pp | 63.6% | 79.2% | +15.6 pp |
+| `library/ssl_tls13_keys.c` | 30.6% (199/650) | 33.0% (279/846) | +2.4 pp | 76.7% | 78.5% | +1.8 pp |
 | `library/ssl_tls13_server.c` | 50.5% (334/661) | 56.5% (420/744) | +6.0 pp | 77.4% | 80.3% | +2.9 pp |
-| **TOTAL (library)** | **64.1%** (12625/19711) | **66.1%** (14060/21285) | **+2.0 pp** | **80.9%** | **83.0%** | **+2.1 pp** |
+| `library/ssl_tls13_client.c` | 42.8% (262/612) | 52.2% (357/684) | +9.4 pp | 70.7% | 78.0% | +7.3 pp |
+| `library/ssl_tls13_generic.c` | 50.4% (121/240) | 54.8% (153/279) | +4.4 pp | 71.6% | 74.0% | +2.4 pp |
+| `library/ssl_tls.c` | 57.0% (856/1501) | 61.0% (947/1553) | +4.0 pp | 70.6% | 74.2% | +3.6 pp |
+| `library/ssl_client.c` | 61.5% (134/218) | 64.0% (151/236) | +2.5 pp | 81.8% | 82.9% | +1.1 pp |
+| **TOTAL (library)** | **64.1%** (12625/19711) | **66.2%** (14094/21285) | **+2.1 pp** | **80.9%** | **83.2%** | **+2.3 pp** |
+
+**Note:** `ssl_tls13_keys.c` has low branch coverage (33%) because key derivation error paths
+(PSA failures, HKDF errors) require fault injection to exercise and are deferred.
 
 **Why these numbers differ from the 72.7% previously reported:**
 - The 72.7% (Phase 6.2) measured only *new DTLS 1.3 lines* in isolation, filtered by
