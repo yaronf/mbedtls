@@ -1713,7 +1713,7 @@ static int ssl_tls13_parse_client_hello(mbedtls_ssl_context *ssl,
                         return MBEDTLS_ERR_SSL_DECODE_ERROR;
                     }
                     cookie_data_len = MBEDTLS_GET_UINT16_BE(p, 0);
-                    if (cookie_data_len + 2 != extension_data_len) {
+                    if ((size_t) cookie_data_len + 2 != extension_data_len) {
                         MBEDTLS_SSL_PEND_FATAL_ALERT(
                             MBEDTLS_SSL_ALERT_MSG_DECODE_ERROR,
                             MBEDTLS_ERR_SSL_DECODE_ERROR);

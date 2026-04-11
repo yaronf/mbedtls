@@ -5513,8 +5513,9 @@ static int ssl_prepare_record_content(mbedtls_ssl_context *ssl,
                         if (!ssl->dtls13_cid_update_ack_pending) {
                             /* Ignore send error: data exchange succeeded;
                              * replenishment is best-effort. */
-                            (void) ssl_tls13_write_new_connection_id(
+                            int cid_ret = ssl_tls13_write_new_connection_id(
                                 ssl, SSL_CID_USAGE_IMMEDIATE);
+                            (void) cid_ret;
                         }
                     }
                 }
@@ -6708,8 +6709,7 @@ static int ssl_get_next_record(mbedtls_ssl_context *ssl)
                     ++ssl->transform_in->in_auth_fail_count
                         >= ssl->conf->dtls13_auth_fail_limit) {
                     MBEDTLS_SSL_DEBUG_MSG(1, ("DTLS 1.3: auth-fail limit reached "
-                                              "(%" MBEDTLS_PRINTF_LONGLONG
-                                              " failures on epoch %u) — closing",
+                                              "(%llu failures on epoch %u) — closing",
                                               (unsigned long long)
                                                   ssl->transform_in->in_auth_fail_count,
                                               (unsigned) ssl->transform_in->dtls13_epoch));
@@ -9345,8 +9345,8 @@ int mbedtls_ssl_write(mbedtls_ssl_context *ssl, const unsigned char *buf, size_t
         ssl->transform_out != NULL &&
         !ssl->dtls13_ku_ack_pending &&
         ssl->transform_out->out_record_count >= ssl->conf->dtls13_aead_limit) {
-        MBEDTLS_SSL_DEBUG_MSG(2, ("AEAD limit reached (%" MBEDTLS_PRINTF_LONGLONG
-                                  " records on epoch %u) — triggering KeyUpdate",
+        MBEDTLS_SSL_DEBUG_MSG(2, ("AEAD limit reached (%llu records on epoch %u)"
+                                  " — triggering KeyUpdate",
                                   (unsigned long long) ssl->transform_out->out_record_count,
                                   (unsigned) ssl->transform_out->dtls13_epoch));
         if ((ret = mbedtls_ssl_send_key_update(ssl, 0)) != 0) {
