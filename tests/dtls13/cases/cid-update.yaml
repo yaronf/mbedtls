@@ -187,10 +187,11 @@ cases:
         - client_cid_negotiated
         - server_new_cid_not_accepted
 
-  - name: "bad NewConnectionId: list_len=0 triggers server decode_error"
+  - name: "NewConnectionId: list_len=0 is accepted (RFC 9147 §9 — peer has no CIDs to offer)"
     skip_runners: [wolfssl]
-    # Client sends a NewConnectionId with list_len=0 (must be >=1 per RFC).
-    # Server must reject with decode_error.
+    # Client sends a NewConnectionId with list_len=0.
+    # RFC 9147 §9: an endpoint MAY respond with no CIDs at all; this is valid.
+    # Server must accept the message and continue normally.
     server:
       debug_level: 2
       cid: 1
@@ -201,13 +202,12 @@ cases:
       cid_val: "cafebabe"
       bad_new_cid: 2
     expect:
-      exit: 1
+      exit: 0
       assert:
         - server_dtls13_negotiated
         - client_dtls13_negotiated
         - server_cid_negotiated
         - client_cid_negotiated
-        - server_new_cid_not_accepted
 
   - name: "bad NewConnectionId: cid_len too large triggers server illegal_parameter"
     skip_runners: [wolfssl]

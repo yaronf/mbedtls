@@ -1857,6 +1857,11 @@ struct mbedtls_ssl_context {
      *  Used to enforce the too_many_cids_requested limit. */
     uint8_t  MBEDTLS_PRIVATE(dtls13_req_cid_count);
 
+    /** Set while we have sent a RequestConnectionId and not yet received a
+     *  NewConnectionId in response.  RFC 9147 §9 forbids sending a second
+     *  RequestConnectionId while one is still outstanding. */
+    uint8_t  MBEDTLS_PRIVATE(dtls13_req_cid_pending);
+
     /** DTLS 1.3 inbound CID pool (RFC 9147 §9 / §11).
      *
      *  Post-handshake only (initialised at HANDSHAKE_OVER).  All pool entries
@@ -3263,27 +3268,43 @@ void mbedtls_ssl_conf_dtls13_auth_fail_limit(mbedtls_ssl_config *conf,
  * \brief   Rotate both CIDs to prevent on-path observer correlation after a
  *          local address change (RFC 9147 §9 / §11).
  *
- *          On the outbound direction: promotes a spare peer-provided CID to
- *          active so the next record sent uses a fresh CID unknown to observers
- *          on the old path.
+ *          A passive on-path observer can identify a DTLS stream by either
+ *          the inbound CID (which the peer writes into records it sends us)
+ *          or the outbound CID (which we write into records we send the peer).
+ *          After a NAT rebind or interface switch, both must change to prevent
+ *          the observer linking traffic on the old path to traffic on the new
+ *          path.
  *
- *          On the inbound direction: promotes a spare own CID to active and
- *          sends NewConnectionId to the peer, so subsequent records the peer
- *          sends to our new address also carry a fresh CID.
+ *          Inbound rotation: promotes a spare own CID to active and sends
+ *          NewConnectionId(IMMEDIATE) to the peer so it starts addressing
+ *          future records to the new CID immediately.  The vacated slot is
+ *          replenished with a fresh random CID.
  *
- *          Both rotations are needed because a passive on-path observer can
- *          correlate a connection across an address change using either the
- *          inbound or the outbound CID.
+ *          Outbound rotation: promotes a spare peer-provided CID to active
+ *          so the very next record we send already uses the new CID.  No
+ *          message to the peer is needed — we already hold their spare CID
+ *          from a previous NewConnectionId they sent us.
  *
- *          Call this immediately after detecting a local address change (NAT
- *          rebind, interface switch, etc.).
+ *          When to call: call this as soon as you detect a local address or
+ *          port change — typically when the OS signals a new source address
+ *          (e.g. after a network interface switch or after detecting a NAT
+ *          rebind via an ICE or STUN keepalive).  Call it before sending any
+ *          application data on the new path so that all traffic on the new
+ *          path uses fresh CIDs from the start.
+ *
+ *          If the outbound pool has no spare (peer has not yet sent a spare
+ *          CID), the outbound CID is left unchanged and only the inbound CID
+ *          is rotated.  To ensure a spare is available, call
+ *          mbedtls_ssl_dtls13_request_connection_id() in advance (e.g. on
+ *          connection establishment) to request a spare from the peer.
  *
  *          This is a no-op if CID was not negotiated, the pool has not been
- *          initialised (pre-handshake), or a previous NewConnectionId is
- *          still waiting for an ACK.
+ *          initialised (pre-handshake), no inbound spare is available, or a
+ *          previous NewConnectionId is still waiting for an ACK.  Check the
+ *          return value: 0 means either success or a documented no-op.
  *
  * \param ssl   SSL context (must be post-handshake DTLS 1.3 with CID).
- * \return      0 on success or no-op, MBEDTLS_ERR_SSL_* on error.
+ * \return      0 on success or no-op, MBEDTLS_ERR_SSL_* on send error.
  */
 int mbedtls_ssl_dtls13_rotate_cids(mbedtls_ssl_context *ssl);
 #endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */

@@ -169,27 +169,32 @@ and do they fire at the right thresholds?
 
 ---
 
-## Area 9: NewConnectionId / RequestConnectionId (RFC 9147 §9)
+## Area 9: NewConnectionId / RequestConnectionId (RFC 9147 §9) ✓ DONE
 
-**Focus:** Is the single-outstanding-message invariant enforced, and is the CID
-propagated to subsequently installed transforms? Does the pool interact correctly
-with these paths (pool was added after the original plan)?
+**Focus:** Is the single-outstanding-message invariant enforced, are both inbound
+and outbound CID pools populated and maintained correctly, and is the usage byte
+(IMMEDIATE vs SPARE) respected on the receive path?
 
 **Primary code:**
-- `ssl_msg.c:8123–8238` — `ssl_tls13_write_new_connection_id()`: count active pool slots, encode with offset loop, set pending flag
-- `ssl_msg.c:8239–8331` — `ssl_tls13_handle_new_connection_id()`: receive and apply new outbound CID
-- `ssl_msg.c:8337–8364` — `ssl_tls13_write_request_connection_id()`: send request
-- `ssl_msg.c:8370–8407` — `ssl_tls13_handle_request_connection_id()`: respond with NewConnectionId
-- `ssl_msg.c:6996–7003` — ACK dispatch: clear `dtls13_cid_update_ack_pending`
-- `ssl_msg.c:5451–5543` — secondary CID pool match
+- `ssl_msg.c:8123–8233` — `ssl_tls13_write_new_connection_id()`: count active inbound pool slots, encode with loop, set `dtls13_cid_update_ack_pending`
+- `ssl_msg.c:8239–8382` — `ssl_tls13_handle_new_connection_id()`: parse full CID list, populate outbound pool, respect usage byte, update `transform_out->out_cid` only on IMMEDIATE
+- `ssl_msg.c:8388–8415` — `ssl_tls13_write_request_connection_id()`: send request
+- `ssl_msg.c:8421–8458` — `ssl_tls13_handle_request_connection_id()`: respond with NewConnectionId(SPARE)
+- `ssl_msg.c:8481–8582` — `mbedtls_ssl_dtls13_rotate_cids()`: rotate both inbound and outbound CIDs simultaneously
+- `ssl_msg.c:6996–7003` — ACK dispatch: clear `dtls13_cid_update_ack_pending`, reset `dtls13_req_cid_count`
+- `ssl_msg.c:5451–5543` — secondary inbound CID pool match (inside `ssl_prepare_record_content` 5290–5776)
 
 **What to look for:**
-- Guard: second NewConnectionId blocked while `dtls13_cid_update_ack_pending` set — checked in both `write_new_connection_id` (L8146) and `rotate_cids` (L8447)?
-- CID propagation: when KeyUpdate follows a CID update, does the new pending transform (`dtls13_transform_pending_out`) carry the updated CID? (L8316–8319)
+- Guard: second NewConnectionId blocked while `dtls13_cid_update_ack_pending` set — checked in both `write_new_connection_id` (L8146) and `rotate_cids` (L8498)?
+- Usage byte (L8327–8372): IMMEDIATE installs first CID as active outbound and updates `transform_out`; SPARE fills spare slots without touching `transform_out`. Are these branches correct?
+- Outbound pool on SPARE receive: spare slots are filled starting from `(active_idx + 1) % POOL_SIZE` — does the loop correctly avoid overwriting the active slot?
+- CID propagation to pending transform: on IMMEDIATE path (L8344–8349), `dtls13_transform_pending_out` also updated — present on SPARE path? (It shouldn't be needed on SPARE — confirm.)
+- `rotate_cids` (L8481): rotates outbound pool first (no message needed — we hold the peer's spare), then sends NewConnectionId(IMMEDIATE) for inbound rotation. Are both transform_out and dtls13_transform_pending_out updated on outbound rotate?
 - 0-length CID: `cid_len == 0` is valid per RFC (signals "stop using CID on this direction") — is it accepted in the handle path, and does setting `out_cid_len = 0` have any downstream effect on subsequent records?
-- RequestConnectionId response (L8406): calls `write_new_connection_id(SPARE)` — but `write_new_connection_id` returns `INTERNAL_ERROR` if `dtls13_cid_update_ack_pending` is set, so a pending NCI causes the response to be silently dropped. Is this the right behaviour?
-- ACK matching: same `(epoch, seq)` mechanism as KeyUpdate — `ssl_dtls13_register_pending_ack` at L8228, cleared at L7001. Does `dtls13_req_cid_count` reset correctly on both the ACK path (L7002) and on receiving a NewConnectionId from the peer (L8324)?
-- Write loop correctness (L8191–8220): active slot count computed before buffer allocation; the encoding loop writes active_idx first then remaining active slots. Verify the `off` pointer cannot overrun `buf + body_len` if pool entries have varying cid_len (all slots share `ssl->own_cid_len` so this should be safe — confirm).
+- RequestConnectionId response (L8436): calls `write_new_connection_id(SPARE)` — but `write_new_connection_id` returns `INTERNAL_ERROR` if `dtls13_cid_update_ack_pending` is set, so a pending NCI causes the response to be silently dropped. Is this the right behaviour?
+- ACK matching: `ssl_dtls13_register_pending_ack` at L8228, cleared at L7001. Does `dtls13_req_cid_count` reset correctly on both the ACK path (L7002) and on receiving a NewConnectionId from the peer (L8375)?
+- Write loop correctness (L8155–8210): active slot count computed before buffer allocation; encoding loop iterates all pool slots. Verify the `off` pointer cannot overrun `buf + body_len` (all slots share `ssl->own_cid_len` — confirm).
+- Inbound pool secondary match (L5451–5543): on spare match, updates `transform->in_cid`, retries decrypt, triggers replenishment. Is replenishment guarded against `dtls13_cid_update_ack_pending`?
 
 ---
 

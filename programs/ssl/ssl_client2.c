@@ -2713,7 +2713,12 @@ usage:
                            " -0x%x\n\n", (unsigned int) -ret);
             goto exit;
         }
-        mbedtls_printf(" ok (bad message sent, expect server close)\n");
+        /* type=2 (list_len=0) is RFC-valid; server accepts and continues. */
+        if (opt.bad_new_cid == 2) {
+            mbedtls_printf(" ok (list_len=0 sent, server should accept)\n");
+        } else {
+            mbedtls_printf(" ok (bad message sent, expect server close)\n");
+        }
     }
     if (opt.bad_req_cid > 0) {
         mbedtls_printf("  . Sending bad RequestConnectionId (type=%d)...",
@@ -2775,7 +2780,10 @@ usage:
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS)
     if (opt.bad_keyupdate > 0
 #if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
-        || opt.bad_new_cid > 0 || opt.bad_req_cid > 0
+        /* bad_new_cid=2 is list_len=0 — RFC-valid, server accepts and
+         * continues; do NOT exit early for this type. */
+        || (opt.bad_new_cid > 0 && opt.bad_new_cid != 2)
+        || opt.bad_req_cid > 0
 #endif
         ) {
         /* Bad message sent; the server will reject it with a fatal alert.

@@ -176,16 +176,15 @@ run_test    "DTLS 1.3 CID update: bad NewConnectionId: truncated body triggers s
 
 requires_protocol_version dtls13
 requires_config_enabled MBEDTLS_SSL_DTLS_CONNECTION_ID
-run_test    "DTLS 1.3 CID update: bad NewConnectionId: list_len=0 triggers server decode_error" \
+run_test    "DTLS 1.3 CID update: NewConnectionId: list_len=0 is accepted (RFC 9147 §9 — peer has no CIDs to offer)" \
             -p "" \
             "$P_SRV dtls=1 force_version=dtls13 debug_level=2 cid=1 cid_val=deadbeef" \
             "$P_CLI dtls=1 force_version=dtls13 debug_level=2 cid=1 cid_val=cafebabe bad_new_cid=2" \
-            1 \
+            0 \
             -s "Protocol is DTLSv1.3" \
             -c "Protocol is DTLSv1.3" \
             -s "Use of Connection ID has been negotiated." \
-            -c "Use of Connection ID has been negotiated." \
-            -S "NewConnectionId received"
+            -c "Use of Connection ID has been negotiated."
 
 requires_protocol_version dtls13
 requires_config_enabled MBEDTLS_SSL_DTLS_CONNECTION_ID
