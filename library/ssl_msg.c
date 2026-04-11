@@ -8272,7 +8272,9 @@ static int ssl_tls13_handle_new_connection_id(mbedtls_ssl_context *ssl)
     list_len = MBEDTLS_GET_UINT16_BE(p, 0);
     p += 2;
 
-    /* list_len == 0 means an empty CID list — no entries to parse, reject. */
+    /* list_len is a byte count, not an entry count.  Even a single 0-length
+     * CID entry needs 1 byte (the cid_len byte itself), so list_len == 0
+     * means there is not even room for one entry — structurally unparseable. */
     if (list_len < 1) {
         MBEDTLS_SSL_PEND_FATAL_ALERT(MBEDTLS_SSL_ALERT_MSG_DECODE_ERROR,
                                      MBEDTLS_ERR_SSL_DECODE_ERROR);
