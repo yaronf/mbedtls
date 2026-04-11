@@ -4532,7 +4532,7 @@ data_exchange:
                                " returned -0x%x\n\n", (unsigned int) -ret);
                 goto exit;
             }
-            mbedtls_printf(" ok\n");
+            mbedtls_printf(" ok (CIDs rotated)\n");
         }
 #endif /* TLS1_3 && DTLS && CID */
         goto data_exchange;
