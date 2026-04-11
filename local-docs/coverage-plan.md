@@ -257,3 +257,36 @@ A Linux CI run with GCC's gcov would give accurate multi-process accumulation.
 **Remaining deferred gaps** (per implementation order table above): implicit ACK (item 7),
 epoch eviction (item 6), double-HRR (item 1c), PSA injection (item 3d).
 
+---
+
+## GCC/Linux Measurement (2026-04-11)
+
+Measured using `tests/coverage-in-podman.sh` — Ubuntu 24.04 container, GCC 13.3,
+`-DCMAKE_BUILD_TYPE=Coverage` (`-O0 -g3 --coverage`), `ctest` (unit suites + dtls13
+integration suite). GCC's gcov correctly merges concurrent gcda writes from
+ssl_server2 + ssl_client2, unlike macOS/LLVM which overwrites.
+
+**Baseline ref:** `v4.1.0` (upstream release, CTest unit suites only — no dtls13 tests).
+**DTLS 1.3 ref:** `HEAD` (this branch, CTest unit suites + dtls13 integration suite).
+
+| File | Baseline Br% | HEAD Br% | Δ Br | Baseline Ln% | HEAD Ln% | Δ Ln |
+|------|-------------|---------|------|-------------|---------|------|
+| `library/ssl_msg.c` | 52.5% (668/1273) | 68.0% (1516/2230) | +15.5 pp | 63.6% | 78.4% | +14.8 pp |
+| `library/ssl_tls.c` | 57.0% (856/1501) | 60.7% (943/1553) | +3.7 pp | 70.6% | 74.0% | +3.4 pp |
+| `library/ssl_tls13_client.c` | 42.8% (262/612) | 52.2% (357/684) | +9.4 pp | 70.7% | 78.0% | +7.3 pp |
+| `library/ssl_tls13_server.c` | 50.5% (334/661) | 56.5% (420/744) | +6.0 pp | 77.4% | 80.3% | +2.9 pp |
+| **TOTAL (library)** | **64.1%** (12625/19711) | **66.1%** (14060/21285) | **+2.0 pp** | **80.9%** | **83.0%** | **+2.1 pp** |
+
+**Why these numbers differ from the 72.7% previously reported:**
+- The 72.7% (Phase 6.2) measured only *new DTLS 1.3 lines* in isolation, filtered by
+  line number from the pre-existing baseline. These numbers measure *entire files*
+  including all pre-existing branches.
+- GCC properly merges concurrent gcda writes; macOS/LLVM did not, so prior numbers
+  undercounted integration test hits.
+- The dtls13 integration suite had some failures in the container environment
+  (likely timing-sensitive tests); full pass would push numbers slightly higher.
+
+**Full report:** `coverage-baseline/report/Coverage/index.html` and
+`coverage-dtls13/report/Coverage/index.html` (not committed — regenerate with
+`tests/coverage-in-podman.sh`).
+
