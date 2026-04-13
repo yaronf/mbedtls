@@ -2332,7 +2332,8 @@ void ssl_tls13_key_evolution(int hash_alg,
                    (psa_algorithm_t) hash_alg,
                    secret->len ? secret->x : NULL,
                    input->len ? input->x : NULL, input->len,
-                   secret_new),  0);
+                   secret_new,
+                   0 /* TLS 1.3 prefix */),  0);
 
     TEST_MEMORY_COMPARE(secret_new, (size_t) expected->len,
                         expected->x, (size_t) expected->len);

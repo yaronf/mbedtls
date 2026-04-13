@@ -473,7 +473,8 @@ int mbedtls_ssl_tls13_evolve_secret(
     psa_algorithm_t hash_alg,
     const unsigned char *secret_old,
     const unsigned char *input, size_t input_len,
-    unsigned char *secret_new);
+    unsigned char *secret_new,
+    int use_dtls13_prefix);
 
 /**
  * \brief             Calculate a TLS 1.3 PSK binder.
@@ -699,7 +700,8 @@ int mbedtls_ssl_tls13_update_traffic_secret(
     psa_algorithm_t hash_alg,
     const unsigned char *secret_N,
     unsigned char *secret_N1,
-    size_t secret_len);
+    size_t secret_len,
+    int use_dtls13_prefix);
 
 /**
  * \brief Build a new application-data transform for a KeyUpdate epoch.

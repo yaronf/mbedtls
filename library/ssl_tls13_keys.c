@@ -140,11 +140,13 @@ static void ssl_tls13_hkdf_encode_label(
     *dst_len = total_hkdf_lbl_len;
 }
 
-int mbedtls_ssl_tls13_hkdf_expand_label(
+MBEDTLS_CHECK_RETURN_CRITICAL
+static int ssl_hkdf_expand_label_with_prefix(
     psa_algorithm_t hash_alg,
     const unsigned char *secret, size_t secret_len,
     const unsigned char *label, size_t label_len,
     const unsigned char *ctx, size_t ctx_len,
+    const char *prefix, size_t prefix_len,
     unsigned char *buf, size_t buf_len)
 {
     unsigned char hkdf_label[SSL_TLS1_3_KEY_SCHEDULE_MAX_HKDF_LABEL_LEN];
@@ -178,8 +180,7 @@ int mbedtls_ssl_tls13_hkdf_expand_label(
     ssl_tls13_hkdf_encode_label(buf_len,
                                 label, label_len,
                                 ctx, ctx_len,
-                                tls13_label_prefix,
-                                sizeof(tls13_label_prefix),
+                                prefix, prefix_len,
                                 hkdf_label,
                                 &hkdf_label_len);
 
@@ -222,6 +223,18 @@ cleanup:
     return PSA_TO_MBEDTLS_ERR(status);
 }
 
+int mbedtls_ssl_tls13_hkdf_expand_label(
+    psa_algorithm_t hash_alg,
+    const unsigned char *secret, size_t secret_len,
+    const unsigned char *label, size_t label_len,
+    const unsigned char *ctx, size_t ctx_len,
+    unsigned char *buf, size_t buf_len)
+{
+    return ssl_hkdf_expand_label_with_prefix(
+        hash_alg, secret, secret_len, label, label_len, ctx, ctx_len,
+        tls13_label_prefix, sizeof(tls13_label_prefix), buf, buf_len);
+}
+
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
 MBEDTLS_CHECK_RETURN_CRITICAL
 int mbedtls_ssl_dtls13_hkdf_expand_label(
@@ -231,62 +244,9 @@ int mbedtls_ssl_dtls13_hkdf_expand_label(
     const unsigned char *ctx, size_t ctx_len,
     unsigned char *buf, size_t buf_len)
 {
-    unsigned char hkdf_label[SSL_TLS1_3_KEY_SCHEDULE_MAX_HKDF_LABEL_LEN];
-    size_t hkdf_label_len = 0;
-    psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
-    psa_status_t abort_status = PSA_ERROR_CORRUPTION_DETECTED;
-    psa_key_derivation_operation_t operation =
-        PSA_KEY_DERIVATION_OPERATION_INIT;
-
-    if (label_len > MBEDTLS_SSL_TLS1_3_HKDF_LABEL_MAX_LABEL_LEN) {
-        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
-    }
-    if (ctx_len > MBEDTLS_SSL_TLS1_3_KEY_SCHEDULE_MAX_CONTEXT_LEN) {
-        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
-    }
-    if (buf_len > MBEDTLS_SSL_TLS1_3_KEY_SCHEDULE_MAX_EXPANSION_LEN) {
-        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
-    }
-    if (!PSA_ALG_IS_HASH(hash_alg)) {
-        return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
-    }
-
-    ssl_tls13_hkdf_encode_label(buf_len,
-                                label, label_len,
-                                ctx, ctx_len,
-                                dtls13_label_prefix,
-                                sizeof(dtls13_label_prefix),
-                                hkdf_label,
-                                &hkdf_label_len);
-
-    status = psa_key_derivation_setup(&operation, PSA_ALG_HKDF_EXPAND(hash_alg));
-    if (status != PSA_SUCCESS) {
-        goto cleanup;
-    }
-
-    status = psa_key_derivation_input_bytes(&operation,
-                                            PSA_KEY_DERIVATION_INPUT_SECRET,
-                                            secret,
-                                            secret_len);
-    if (status != PSA_SUCCESS) {
-        goto cleanup;
-    }
-
-    status = psa_key_derivation_input_bytes(&operation,
-                                            PSA_KEY_DERIVATION_INPUT_INFO,
-                                            hkdf_label,
-                                            hkdf_label_len);
-    if (status != PSA_SUCCESS) {
-        goto cleanup;
-    }
-
-    status = psa_key_derivation_output_bytes(&operation, buf, buf_len);
-
-cleanup:
-    abort_status = psa_key_derivation_abort(&operation);
-    status = (status == PSA_SUCCESS ? abort_status : status);
-    mbedtls_platform_zeroize(hkdf_label, hkdf_label_len);
-    return PSA_TO_MBEDTLS_ERR(status);
+    return ssl_hkdf_expand_label_with_prefix(
+        hash_alg, secret, secret_len, label, label_len, ctx, ctx_len,
+        dtls13_label_prefix, sizeof(dtls13_label_prefix), buf, buf_len);
 }
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
 
@@ -299,42 +259,27 @@ static int ssl_tls13_make_traffic_key(
     int use_dtls13_prefix)
 {
     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
-
+    const char *prefix = tls13_label_prefix;
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
     if (use_dtls13_prefix) {
-        ret = mbedtls_ssl_dtls13_hkdf_expand_label(
-            hash_alg, secret, secret_len,
-            MBEDTLS_SSL_TLS1_3_LBL_WITH_LEN(key),
-            NULL, 0, key, key_len);
-        if (ret != 0) {
-            return ret;
-        }
-        return mbedtls_ssl_dtls13_hkdf_expand_label(
-            hash_alg, secret, secret_len,
-            MBEDTLS_SSL_TLS1_3_LBL_WITH_LEN(iv),
-            NULL, 0, iv, iv_len);
+        prefix = dtls13_label_prefix;
     }
 #else
     (void) use_dtls13_prefix;
 #endif
 
-    ret = mbedtls_ssl_tls13_hkdf_expand_label(
-        hash_alg,
-        secret, secret_len,
+    ret = ssl_hkdf_expand_label_with_prefix(
+        hash_alg, secret, secret_len,
         MBEDTLS_SSL_TLS1_3_LBL_WITH_LEN(key),
-        NULL, 0,
-        key, key_len);
+        NULL, 0, prefix, 6, key, key_len);
     if (ret != 0) {
         return ret;
     }
 
-    ret = mbedtls_ssl_tls13_hkdf_expand_label(
-        hash_alg,
-        secret, secret_len,
+    return ssl_hkdf_expand_label_with_prefix(
+        hash_alg, secret, secret_len,
         MBEDTLS_SSL_TLS1_3_LBL_WITH_LEN(iv),
-        NULL, 0,
-        iv, iv_len);
-    return ret;
+        NULL, 0, prefix, 6, iv, iv_len);
 }
 
 /*
@@ -419,23 +364,21 @@ static int ssl_tls13_derive_secret_with_prefix(
         memcpy(hashed_context, ctx, ctx_len);
     }
 
+    {
+        const char *prefix = tls13_label_prefix;
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
-    if (use_dtls13_prefix) {
-        return mbedtls_ssl_dtls13_hkdf_expand_label(hash_alg,
-                                                    secret, secret_len,
-                                                    label, label_len,
-                                                    hashed_context, ctx_len,
-                                                    dstbuf, dstbuf_len);
-    }
+        if (use_dtls13_prefix) {
+            prefix = dtls13_label_prefix;
+        }
 #else
-    (void) use_dtls13_prefix;
+        (void) use_dtls13_prefix;
 #endif
-
-    return mbedtls_ssl_tls13_hkdf_expand_label(hash_alg,
-                                               secret, secret_len,
-                                               label, label_len,
-                                               hashed_context, ctx_len,
-                                               dstbuf, dstbuf_len);
+        return ssl_hkdf_expand_label_with_prefix(
+            hash_alg, secret, secret_len, label, label_len,
+            hashed_context, ctx_len,
+            prefix, 6, /* both prefixes are exactly 6 bytes */
+            dstbuf, dstbuf_len);
+    }
 }
 
 int mbedtls_ssl_tls13_derive_secret(
@@ -453,100 +396,6 @@ int mbedtls_ssl_tls13_derive_secret(
 }
 
 int mbedtls_ssl_tls13_evolve_secret(
-    psa_algorithm_t hash_alg,
-    const unsigned char *secret_old,
-    const unsigned char *input, size_t input_len,
-    unsigned char *secret_new)
-{
-    int ret = MBEDTLS_ERR_SSL_INTERNAL_ERROR;
-    psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
-    psa_status_t abort_status = PSA_ERROR_CORRUPTION_DETECTED;
-    size_t hlen;
-    unsigned char tmp_secret[PSA_MAC_MAX_SIZE] = { 0 };
-    const unsigned char all_zeroes_input[MBEDTLS_TLS1_3_MD_MAX_SIZE] = { 0 };
-    const unsigned char *l_input = NULL;
-    size_t l_input_len;
-
-    psa_key_derivation_operation_t operation =
-        PSA_KEY_DERIVATION_OPERATION_INIT;
-
-    if (!PSA_ALG_IS_HASH(hash_alg)) {
-        return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
-    }
-
-    hlen = PSA_HASH_LENGTH(hash_alg);
-
-    /* For non-initial runs, call Derive-Secret( ., "derived", "")
-     * on the old secret. */
-    if (secret_old != NULL) {
-        ret = mbedtls_ssl_tls13_derive_secret(
-            hash_alg,
-            secret_old, hlen,
-            MBEDTLS_SSL_TLS1_3_LBL_WITH_LEN(derived),
-            NULL, 0,        /* context */
-            MBEDTLS_SSL_TLS1_3_CONTEXT_UNHASHED,
-            tmp_secret, hlen);
-        if (ret != 0) {
-            goto cleanup;
-        }
-    }
-
-    ret = 0;
-
-    if (input != NULL && input_len != 0) {
-        l_input = input;
-        l_input_len = input_len;
-    } else {
-        l_input = all_zeroes_input;
-        l_input_len = hlen;
-    }
-
-    status = psa_key_derivation_setup(&operation,
-                                      PSA_ALG_HKDF_EXTRACT(hash_alg));
-
-    if (status != PSA_SUCCESS) {
-        goto cleanup;
-    }
-
-    status = psa_key_derivation_input_bytes(&operation,
-                                            PSA_KEY_DERIVATION_INPUT_SALT,
-                                            tmp_secret,
-                                            hlen);
-
-    if (status != PSA_SUCCESS) {
-        goto cleanup;
-    }
-
-    status = psa_key_derivation_input_bytes(&operation,
-                                            PSA_KEY_DERIVATION_INPUT_SECRET,
-                                            l_input, l_input_len);
-
-    if (status != PSA_SUCCESS) {
-        goto cleanup;
-    }
-
-    status = psa_key_derivation_output_bytes(&operation,
-                                             secret_new,
-                                             PSA_HASH_LENGTH(hash_alg));
-
-    if (status != PSA_SUCCESS) {
-        goto cleanup;
-    }
-
-cleanup:
-    abort_status = psa_key_derivation_abort(&operation);
-    status = (status == PSA_SUCCESS ? abort_status : status);
-    ret = (ret == 0 ? PSA_TO_MBEDTLS_ERR(status) : ret);
-    mbedtls_platform_zeroize(tmp_secret, sizeof(tmp_secret));
-    return ret;
-}
-
-/* Internal helper: evolve_secret with explicit label prefix choice.
- * Identical to mbedtls_ssl_tls13_evolve_secret but uses
- * ssl_tls13_derive_secret_with_prefix so the "derived" label uses the
- * correct "dtls13" prefix when use_dtls13_prefix != 0. */
-MBEDTLS_CHECK_RETURN_CRITICAL
-static int ssl_tls13_evolve_secret_with_prefix(
     psa_algorithm_t hash_alg,
     const unsigned char *secret_old,
     const unsigned char *input, size_t input_len,
@@ -571,12 +420,14 @@ static int ssl_tls13_evolve_secret_with_prefix(
 
     hlen = PSA_HASH_LENGTH(hash_alg);
 
+    /* For non-initial runs, call Derive-Secret( ., "derived", "")
+     * on the old secret. */
     if (secret_old != NULL) {
         ret = ssl_tls13_derive_secret_with_prefix(
             hash_alg,
             secret_old, hlen,
             MBEDTLS_SSL_TLS1_3_LBL_WITH_LEN(derived),
-            NULL, 0,
+            NULL, 0,        /* context */
             MBEDTLS_SSL_TLS1_3_CONTEXT_UNHASHED,
             tmp_secret, hlen,
             use_dtls13_prefix);
@@ -597,6 +448,7 @@ static int ssl_tls13_evolve_secret_with_prefix(
 
     status = psa_key_derivation_setup(&operation,
                                       PSA_ALG_HKDF_EXTRACT(hash_alg));
+
     if (status != PSA_SUCCESS) {
         goto cleanup;
     }
@@ -605,6 +457,7 @@ static int ssl_tls13_evolve_secret_with_prefix(
                                             PSA_KEY_DERIVATION_INPUT_SALT,
                                             tmp_secret,
                                             hlen);
+
     if (status != PSA_SUCCESS) {
         goto cleanup;
     }
@@ -612,6 +465,7 @@ static int ssl_tls13_evolve_secret_with_prefix(
     status = psa_key_derivation_input_bytes(&operation,
                                             PSA_KEY_DERIVATION_INPUT_SECRET,
                                             l_input, l_input_len);
+
     if (status != PSA_SUCCESS) {
         goto cleanup;
     }
@@ -619,6 +473,7 @@ static int ssl_tls13_evolve_secret_with_prefix(
     status = psa_key_derivation_output_bytes(&operation,
                                              secret_new,
                                              PSA_HASH_LENGTH(hash_alg));
+
     if (status != PSA_SUCCESS) {
         goto cleanup;
     }
@@ -901,7 +756,7 @@ static int ssl_tls13_key_schedule_stage_application(mbedtls_ssl_context *ssl)
     /*
      * Compute MasterSecret
      */
-    ret = ssl_tls13_evolve_secret_with_prefix(
+    ret = mbedtls_ssl_tls13_evolve_secret(
         hash_alg,
         handshake->tls13_master_secrets.handshake,
         NULL, 0,
@@ -960,22 +815,20 @@ static int ssl_tls13_calc_finished_core(psa_algorithm_t hash_alg,
      * For DTLS 1.3 (RFC 9147 §5.2), "dtls13" prefix replaces "tls13 ".
      */
 
-#if defined(MBEDTLS_SSL_PROTO_DTLS)
-    if (use_dtls13_prefix) {
-        ret = mbedtls_ssl_dtls13_hkdf_expand_label(
-            hash_alg, base_key, hash_len,
-            MBEDTLS_SSL_TLS1_3_LBL_WITH_LEN(finished),
-            NULL, 0,
-            finished_key, hash_len);
-    } else
-#else
-    (void) use_dtls13_prefix;
-#endif
     {
-        ret = mbedtls_ssl_tls13_hkdf_expand_label(
+        const char *prefix = tls13_label_prefix;
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+        if (use_dtls13_prefix) {
+            prefix = dtls13_label_prefix;
+        }
+#else
+        (void) use_dtls13_prefix;
+#endif
+        ret = ssl_hkdf_expand_label_with_prefix(
             hash_alg, base_key, hash_len,
             MBEDTLS_SSL_TLS1_3_LBL_WITH_LEN(finished),
             NULL, 0,
+            prefix, 6,
             finished_key, hash_len);
     }
     if (ret != 0) {
@@ -1115,7 +968,8 @@ int mbedtls_ssl_tls13_create_psk_binder(mbedtls_ssl_context *ssl,
     ret = mbedtls_ssl_tls13_evolve_secret(hash_alg,
                                           NULL,           /* Old secret */
                                           psk, psk_len,   /* Input      */
-                                          early_secret);
+                                          early_secret,
+                                          use_dtls13_prefix);
     if (ret != 0) {
         MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_tls13_evolve_secret", ret);
         goto exit;
@@ -1507,7 +1361,9 @@ int mbedtls_ssl_tls13_key_schedule_stage_early(mbedtls_ssl_context *ssl)
 #endif
 
     ret = mbedtls_ssl_tls13_evolve_secret(hash_alg, NULL, psk, psk_len,
-                                          handshake->tls13_master_secrets.early);
+                                          handshake->tls13_master_secrets.early,
+                                          (ssl->conf->transport ==
+                                           MBEDTLS_SSL_TRANSPORT_DATAGRAM));
 #if defined(MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_SOME_PSK_ENABLED)
     mbedtls_free((void *) psk);
 #endif
@@ -1743,7 +1599,7 @@ static int ssl_tls13_key_schedule_stage_handshake(mbedtls_ssl_context *ssl)
     /*
      * Compute the Handshake Secret
      */
-    ret = ssl_tls13_evolve_secret_with_prefix(
+    ret = mbedtls_ssl_tls13_evolve_secret(
         hash_alg, handshake->tls13_master_secrets.early,
         shared_secret, shared_secret_len,
         handshake->tls13_master_secrets.handshake,
@@ -2275,15 +2131,17 @@ int mbedtls_ssl_tls13_update_traffic_secret(
     psa_algorithm_t hash_alg,
     const unsigned char *secret_N,
     unsigned char *secret_N1,
-    size_t secret_len)
+    size_t secret_len,
+    int use_dtls13_prefix)
 {
-    return mbedtls_ssl_tls13_derive_secret(
+    return ssl_tls13_derive_secret_with_prefix(
         hash_alg,
         secret_N, secret_len,
         MBEDTLS_SSL_TLS1_3_LBL_WITH_LEN(traffic_upd),
         NULL, 0,
         MBEDTLS_SSL_TLS1_3_CONTEXT_UNHASHED,
-        secret_N1, secret_len);
+        secret_N1, secret_len,
+        use_dtls13_prefix);
 }
 
 /*

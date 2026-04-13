@@ -7826,7 +7826,7 @@ static int ssl_tls13_write_key_update(mbedtls_ssl_context *ssl,
             : ssl->session->app_secrets.server_application_traffic_secret_N;
 
         ret = mbedtls_ssl_tls13_update_traffic_secret(
-            hash_alg, cur_secret, new_secret, hash_len);
+            hash_alg, cur_secret, new_secret, hash_len, 1 /* DTLS prefix */);
         if (ret != 0) {
             MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_tls13_update_traffic_secret",
                                   ret);
@@ -7961,7 +7961,7 @@ static int ssl_tls13_handle_key_update(mbedtls_ssl_context *ssl)
             : ssl->session->app_secrets.client_application_traffic_secret_N;
 
         ret = mbedtls_ssl_tls13_update_traffic_secret(
-            hash_alg, peer_secret, new_secret, hash_len);
+            hash_alg, peer_secret, new_secret, hash_len, 1 /* DTLS prefix */);
         if (ret != 0) {
             MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_tls13_update_traffic_secret",
                                   ret);
