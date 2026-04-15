@@ -838,9 +838,10 @@ int mbedtls_ssl_tls13_write_certificate(mbedtls_ssl_context *ssl)
                                                           buf + buf_len,
                                                           &msg_len));
 
-    /* On DTLS 1.3 nbio retries, dtls13_frag_off is set to a non-zero sentinel
-     * after all fragments are queued; skip checksum on those retries to avoid
-     * hashing the certificate body more than once into the transcript. */
+    /* Skip checksum on mid-fragmentation re-entries (dtls13_frag_off > 0):
+     * the hash was already updated on the first fragment and must not be
+     * added again. Certificate is the only HS message large enough to
+     * fragment, so this guard is not needed elsewhere. */
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
     if (ssl->conf->transport != MBEDTLS_SSL_TRANSPORT_DATAGRAM ||
         ssl->handshake->dtls13_frag_off == 0)
@@ -1046,15 +1047,9 @@ int mbedtls_ssl_tls13_write_certificate_verify(mbedtls_ssl_context *ssl)
     MBEDTLS_SSL_PROC_CHK(ssl_tls13_write_certificate_verify_body(
                              ssl, buf, buf + buf_len, &msg_len));
 
-#if defined(MBEDTLS_SSL_PROTO_DTLS)
-    if (ssl->conf->transport != MBEDTLS_SSL_TRANSPORT_DATAGRAM ||
-        ssl->handshake->dtls13_frag_off == 0)
-#endif
-    {
-        MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_add_hs_msg_to_checksum(
-                                 ssl, MBEDTLS_SSL_HS_CERTIFICATE_VERIFY,
-                                 buf, msg_len));
-    }
+    MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_add_hs_msg_to_checksum(
+                             ssl, MBEDTLS_SSL_HS_CERTIFICATE_VERIFY,
+                             buf, msg_len));
 
     MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_finish_handshake_msg(
                              ssl, buf_len, msg_len));
@@ -1232,14 +1227,8 @@ int mbedtls_ssl_tls13_write_finished_message(mbedtls_ssl_context *ssl)
     MBEDTLS_SSL_PROC_CHK(ssl_tls13_write_finished_message_body(
                              ssl, buf, buf + buf_len, &msg_len));
 
-#if defined(MBEDTLS_SSL_PROTO_DTLS)
-    if (ssl->conf->transport != MBEDTLS_SSL_TRANSPORT_DATAGRAM ||
-        ssl->handshake->dtls13_frag_off == 0)
-#endif
-    {
-        MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_add_hs_msg_to_checksum(ssl,
-                                                                 MBEDTLS_SSL_HS_FINISHED, buf, msg_len));
-    }
+    MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_add_hs_msg_to_checksum(ssl,
+                                                             MBEDTLS_SSL_HS_FINISHED, buf, msg_len));
 
     MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_finish_handshake_msg(
                              ssl, buf_len, msg_len));

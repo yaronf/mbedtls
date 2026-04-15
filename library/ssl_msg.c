@@ -3055,8 +3055,8 @@ int mbedtls_ssl_write_handshake_msg_ext(mbedtls_ssl_context *ssl,
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
 
         /* Update running hashes of handshake messages seen.
-         * Skip on nbio retries (dtls13_frag_off > 0): the hash was already
-         * updated on the first attempt and must not be added again. */
+         * Skip mid-fragmentation re-entries (dtls13_frag_off > 0): the hash
+         * was already updated on the first fragment and must not be added again. */
         if (hs_type != MBEDTLS_SSL_HS_HELLO_REQUEST && update_checksum != 0
 #if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
             && !(ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
@@ -3077,7 +3077,7 @@ int mbedtls_ssl_write_handshake_msg_ext(mbedtls_ssl_context *ssl,
                 (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 ||
                  ssl->conf->max_tls_version == MBEDTLS_SSL_VERSION_TLS1_3)) {
                 /* out_msg[0..3] = TLS-style header; out_msg[4..11] = DTLS-only;
-                 * out_msg[12..] = body.  hs_len = out_msglen - 4. */
+                 * out_msg[12..] = body.  body_len = out_msglen - 12. */
                 size_t body_len = ssl->out_msglen - 12;
                 ret = mbedtls_ssl_add_hs_msg_to_checksum(
                           ssl, hs_type, ssl->out_msg + 12, body_len);
