@@ -49,6 +49,10 @@ massif-*
 
 # Microsoft CMake extension for Visual Studio Code generates a build directory by default
 /build/
+/build-no-attest/
+
+# macOS metadata
+.DS_Store
 
 # Generated documentation:
 /apidoc
