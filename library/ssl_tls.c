@@ -1281,19 +1281,43 @@ error:
 }
 
 #if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
-/* Free a post-KeyUpdate transform that is not aliasing transform_application
- * and not already in the epoch pool.  Used during session reset and ssl_free
- * to clean up orphaned inbound/outbound transforms. */
+/* Free an orphan inbound/outbound transform during session reset and ssl_free.
+ *
+ * "Orphan" means the transform is not aliasing any handshake-owned transform
+ * and is not already in the epoch pool.  We must skip freeing if *transform
+ * aliases:
+ *   - transform_application (post-handshake, KeyUpdate scenarios)
+ *   - handshake->transform_handshake or transform_earlydata (mid-handshake
+ *     teardown — these are freed by handshake_free a few lines later)
+ *   - any slot in the epoch pool (also freed elsewhere)
+ *
+ * Without these checks, mid-handshake-failure cleanup paths double-free the
+ * handshake-owned transforms aliased by transform_in/transform_out. */
 static void ssl_dtls13_free_epoch_if_orphan(mbedtls_ssl_context *ssl,
                                              mbedtls_ssl_transform **transform)
 {
-    if (*transform != NULL &&
-        *transform != ssl->transform_application &&
-        !ssl_dtls13_epoch_pool_contains(ssl, *transform)) {
-        mbedtls_ssl_transform_free(*transform);
-        mbedtls_free(*transform);
-        *transform = NULL;
+    if (*transform == NULL) {
+        return;
     }
+    if (*transform == ssl->transform_application) {
+        return;
+    }
+    if (ssl->handshake != NULL) {
+        if (*transform == ssl->handshake->transform_handshake) {
+            return;
+        }
+#if defined(MBEDTLS_SSL_EARLY_DATA)
+        if (*transform == ssl->handshake->transform_earlydata) {
+            return;
+        }
+#endif
+    }
+    if (ssl_dtls13_epoch_pool_contains(ssl, *transform)) {
+        return;
+    }
+    mbedtls_ssl_transform_free(*transform);
+    mbedtls_free(*transform);
+    *transform = NULL;
 }
 
 void mbedtls_ssl_dtls13_sync_post_hs_seq(mbedtls_ssl_context *ssl)
