@@ -296,10 +296,9 @@ client and server, and does the DTLS 1.2 downgrade path leave no DTLS 1.3 state 
 5. **`MBEDTLS_SSL_EARLY_DATA` + `MBEDTLS_SSL_PROTO_DTLS` combination now rejected at compile time. DONE.**
    RFC 9147 §5.6 prohibits 0-RTT/early data in DTLS 1.3. Added `#error` to `library/mbedtls_check_config.h` to catch this misconfiguration at build time.
 
-6. **`NST_WAIT_ACK` timeout silently swallowed — open question.**
-   `ssl_tls13_server.c:3856–3861`: on `MBEDTLS_ERR_SSL_TIMEOUT` in `NST_WAIT_ACK`, the server proceeds to `HANDSHAKE_OVER` with `ret = 0`. Exhausting all NST retransmits is the same dead-peer signal as any other DTLS timeout — the application would discover the broken connection only when it tries to send/receive data.
-   The two WAIT_ACK states share a common handler (`mbedtls_ssl_dtls13_wait_ack_step`, `ssl_msg.c:9500`); this is a policy difference in the dispatch, not an architectural issue.
-   **Open question:** should NST timeout surface `MBEDTLS_ERR_SSL_TIMEOUT` to the caller instead of proceeding silently?
+6. **WAIT_ACK timeout silently swallowed by `mbedtls_ssl_dtls13_wait_ack_step`. FIXED.**
+   The shared WAIT_ACK helper (`ssl_msg.c:9482`) was converting `MBEDTLS_ERR_SSL_TIMEOUT` to `MBEDTLS_ERR_SSL_WANT_READ`, alongside the legitimate WANT_READ/NON_FATAL retry signals.  But `read_record` only returns TIMEOUT after `ssl_double_retransmit_timeout` exhausts the budget — it's a dead-peer signal, not a retry signal.  Both `NST_WAIT_ACK` and `CLIENT_FINISHED_WAIT_ACK` would have looped forever on a dead peer rather than surfacing the error.  The previous NST_WAIT_ACK case in `ssl_tls13_server.c` had a "swallow TIMEOUT, proceed to HANDSHAKE_OVER" branch that was actually unreachable code (the helper had already converted it).
+   **Fix:** in `wait_ack_step`, exclude `TIMEOUT` from the WANT_READ conversion; cancel the timer and return `MBEDTLS_ERR_SSL_TIMEOUT` to the caller. Remove the dead "proceeding anyway" branch from the NST_WAIT_ACK case in `ssl_tls13_server.c`. CLIENT_FINISHED_WAIT_ACK side now also surfaces TIMEOUT correctly (previously also unreachable).
 
 7. **Zero-length HVR cookie not rejected — `ssl_tls13_client.c:2108`. FIXED.**
    RFC 6347 requires the HVR cookie to be non-empty. `mbedtls_calloc(1, 0)` was called without checking `cookie_len > 0` first; on implementations where `calloc(1,0)` returns NULL this caused a spurious `MBEDTLS_ERR_SSL_ALLOC_FAILED` instead of `MBEDTLS_ERR_SSL_DECODE_ERROR`. Fixed by combining the zero-length check into the existing bounds check at L2108.

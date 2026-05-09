@@ -3846,20 +3846,16 @@ int mbedtls_ssl_tls13_handshake_server_step(mbedtls_ssl_context *ssl)
              * Retransmit timer (armed in FLUSH) drives resends via
              * ssl_prepare_handshake_step / mbedtls_ssl_resend.
              *
-             * NewSessionTicket is informational — if the client never ACKs
-             * and we exhaust all retransmits (TIMEOUT), do not kill the
-             * connection; proceed to HANDSHAKE_OVER so application data
-             * can still flow. */
+             * On TIMEOUT we surface MBEDTLS_ERR_SSL_TIMEOUT to the caller:
+             * exhausting all retransmits is the same dead-peer signal as any
+             * other DTLS timeout.  Although NewSessionTicket itself is only
+             * a resumption optimisation, a peer that fails to ACK after the
+             * full retransmit budget is unreachable, and silently proceeding
+             * to HANDSHAKE_OVER would only delay the inevitable read/write
+             * failure to a less obvious site. */
             MBEDTLS_SSL_DEBUG_MSG(2, ("NST_WAIT_ACK: retransmit_state=%d",
                                       ssl->handshake->retransmit_state));
             ret = mbedtls_ssl_dtls13_wait_ack_step(ssl);
-            if (ret == MBEDTLS_ERR_SSL_TIMEOUT) {
-                MBEDTLS_SSL_DEBUG_MSG(1, ("NST_WAIT_ACK: timed out waiting "
-                                          "for client ACK — proceeding anyway"));
-                mbedtls_ssl_set_timer(ssl, 0);
-                mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_HANDSHAKE_OVER);
-                ret = 0;
-            }
             break;
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
 

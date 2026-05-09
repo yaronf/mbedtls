@@ -9504,9 +9504,16 @@ int mbedtls_ssl_dtls13_wait_ack_step(mbedtls_ssl_context *ssl)
     }
 
     if (ret == MBEDTLS_ERR_SSL_WANT_READ  ||
-        ret == MBEDTLS_ERR_SSL_NON_FATAL  ||
-        ret == MBEDTLS_ERR_SSL_TIMEOUT) {
+        ret == MBEDTLS_ERR_SSL_NON_FATAL) {
         return MBEDTLS_ERR_SSL_WANT_READ;
+    }
+    /* TIMEOUT here means ssl_double_retransmit_timeout exhausted the budget
+     * (read_record only returns TIMEOUT after the last retransmit failed).
+     * The peer is unreachable; surface the error to the caller rather than
+     * looping forever on WANT_READ. */
+    if (ret == MBEDTLS_ERR_SSL_TIMEOUT) {
+        mbedtls_ssl_set_timer(ssl, 0);
+        return MBEDTLS_ERR_SSL_TIMEOUT;
     }
 
     if (ret != 0) {
