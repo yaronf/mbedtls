@@ -1552,15 +1552,13 @@ static int report_cid_usage(mbedtls_ssl_context *ssl,
                            additional_description);
         }
     } else {
-        size_t idx = 0;
         mbedtls_printf("(%s) Use of Connection ID has been negotiated.\n",
                        additional_description);
         mbedtls_printf("(%s) Peer CID (length %u Bytes): ",
                        additional_description,
                        (unsigned) peer_cid_len);
-        while (idx < peer_cid_len) {
+        for (size_t idx = 0; idx < peer_cid_len; idx++) {
             mbedtls_printf("%02x ", peer_cid[idx]);
-            idx++;
         }
         mbedtls_printf("\n");
     }
@@ -4005,6 +4003,10 @@ handshake:
 #endif /* TLS1_3 && DTLS && CID */
 
     exchanges_left = opt.exchanges;
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS) && \
+    defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+    int rotate_cid_countdown = opt.rotate_cid;
+#endif
 data_exchange:
     /*
      * 6. Read the HTTP Request
@@ -4524,7 +4526,8 @@ data_exchange:
     if (--exchanges_left > 0) {
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS) && \
     defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
-        if (opt.rotate_cid > 0 && --opt.rotate_cid == 0) {
+        if (rotate_cid_countdown == 1) {
+            rotate_cid_countdown = 0;
             mbedtls_printf("  . Rotating own inbound CID...");
             fflush(stdout);
             if ((ret = mbedtls_ssl_dtls13_rotate_cids(&ssl)) != 0) {

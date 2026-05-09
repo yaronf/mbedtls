@@ -2660,6 +2660,7 @@ usage:
         }
         ret = 0; /* reset for subsequent operations */
     }
+#if defined(MBEDTLS_TEST_HOOKS)
     if (opt.bad_keyupdate > 0) {
         mbedtls_printf("  . Sending bad KeyUpdate (type=%d)...", opt.bad_keyupdate);
         fflush(stdout);
@@ -2674,6 +2675,7 @@ usage:
         mbedtls_printf(" ok (bad message sent, expect server close)\n");
         ret = 0;
     }
+#endif /* MBEDTLS_TEST_HOOKS */
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 && MBEDTLS_SSL_PROTO_DTLS */
 
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS) && \
@@ -2699,6 +2701,7 @@ usage:
         }
         mbedtls_printf(" ok\n");
     }
+#if defined(MBEDTLS_TEST_HOOKS)
     if (opt.bad_new_cid > 0) {
         mbedtls_printf("  . Sending bad NewConnectionId (type=%d)...",
                        opt.bad_new_cid);
@@ -2733,6 +2736,7 @@ usage:
         }
         mbedtls_printf(" ok (bad message sent, expect server close)\n");
     }
+#endif /* MBEDTLS_TEST_HOOKS */
 #endif /* TLS1_3 && DTLS && CID */
 
 #if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
@@ -2795,6 +2799,10 @@ usage:
 #endif
 
     retry_left = opt.max_resend;
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS) && \
+    defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+    int rotate_cid_countdown = opt.rotate_cid;
+#endif
 send_request:
     mbedtls_printf("  > Write to server:");
     fflush(stdout);
@@ -3284,7 +3292,8 @@ send_request:
                 --opt.cid_change_addr;
             }
         }
-        if (opt.rotate_cid > 0 && --opt.rotate_cid == 0) {
+        if (rotate_cid_countdown == 1) {
+            rotate_cid_countdown = 0;
             mbedtls_printf("  . Rotating own inbound CID...");
             fflush(stdout);
             if ((ret = mbedtls_ssl_dtls13_rotate_cids(&ssl)) != 0) {

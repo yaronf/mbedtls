@@ -368,7 +368,7 @@ correctly sized, documented, and initialized?
 
 ---
 
-## Area 15: ssl_client.c — ClientHello construction and cookie echo (RFC 9147 §5.3, §5.6)
+## Area 15: ssl_client.c — ClientHello construction and cookie echo (RFC 9147 §5.3, §5.6) ✓ DONE
 
 **Focus:** Is the DTLS 1.3 ClientHello correctly constructed (legacy_cookie field,
 supported_versions, CID extension) and does the HVR cookie echo end up in the right place?
@@ -410,3 +410,11 @@ bad_cookie_on_retry) produce the right outcomes without leaking resources or han
 - bad_cookie_on_retry (server2 L3249–3253): installs `bad_cookie_check` (always returns -1). On second ClientHello the server sends `handshake_failure` and calls `goto reset`. Verify the test harness checks both exit codes and that the client surfaces a fatal alert, not a hang.
 - rotate_cid countdown (both programs): `--opt.rotate_cid == 0` triggers exactly once then stays at 0. Confirm this is intentional — not a bug where rotation should repeat every N exchanges.
 - NST handling in client2 (L2368–2415): on `RECEIVED_NEW_SESSION_TICKET` the client calls `continue` in the read loop. Verify this does not skip the `cid_change_addr` / `rotate_cid` logic that appears later in the loop body.
+
+**Findings:**
+
+1. **`send_bad_*` fault-injection functions in production library — not guarded by `MBEDTLS_TEST_HOOKS`. FIXED.**
+   `ssl_msg.c:8655`, `8699`, `8763`: `mbedtls_ssl_dtls13_send_bad_keyupdate`, `mbedtls_ssl_dtls13_send_bad_new_connection_id`, `mbedtls_ssl_dtls13_send_bad_request_connection_id` were compiled unconditionally into the production library. Fixed by wrapping the implementation block in `ssl_msg.c` and the declarations in `ssl.h` with `#if defined(MBEDTLS_TEST_HOOKS)`. Call sites in `ssl_client2.c` also wrapped accordingly.
+
+2. **`rotate_cid` option mutated at runtime — FIXED.**
+   `ssl_server2.c` and `ssl_client2.c` previously decremented `opt.rotate_cid` in the exchange loop. Replaced with a local `rotate_cid_countdown` variable in both programs, keeping `opt` immutable. Also simplified the cryptic `--opt.rotate_cid == 0` idiom to `rotate_cid_countdown == 1` / `rotate_cid_countdown = 0`.

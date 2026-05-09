@@ -8644,7 +8644,8 @@ int mbedtls_ssl_dtls13_rotate_cids(mbedtls_ssl_context *ssl)
  */
 
 /* LCOV_EXCL_START */
-#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS)
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS) && \
+    defined(MBEDTLS_TEST_HOOKS)
 
 /*
  * Send a malformed KeyUpdate message.
@@ -8786,7 +8787,7 @@ cleanup:
 }
 
 #endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
-#endif /* MBEDTLS_SSL_PROTO_TLS1_3 && MBEDTLS_SSL_PROTO_DTLS */
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 && MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_TEST_HOOKS */
 /* LCOV_EXCL_STOP */
 
 /* ---------------------------------------------------------------------------
