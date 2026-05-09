@@ -37,6 +37,7 @@ param_map:
   anti_replay:    "anti_replay={value}"
   psk:            "psk={value}"
   psk_identity:   "psk_identity={value}"
+  tls13_kex_modes: "tls13_kex_modes={value}"
   reconnect:      "reconnect={value}"
   key_update:       "key_update={value}"
   aead_limit:       "aead_limit={value}"
@@ -137,6 +138,9 @@ assertion_map:
   server_psk_ephemeral:
     flag: "-s"
     string: "key exchange mode: psk_ephemeral"
+  server_psk_only:
+    flag: "-s"
+    string: "key exchange mode: psk$"
   client_no_hrr:
     flag: "-C"
     string: "received HelloRetryRequest message"

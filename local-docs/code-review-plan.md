@@ -274,14 +274,14 @@ client and server, and does the DTLS 1.2 downgrade path leave no DTLS 1.3 state 
 1. **Explicit timer at `ssl_tls13_client.c:2942` is intentional.**
    `ssl_tls13_write_client_finished` calls `mbedtls_ssl_tls13_handshake_wrapup` before entering `CLIENT_FINISHED_WAIT_ACK`. Wrapup marks the handshake as done, so `mbedtls_ssl_flight_transmit` sees `mbedtls_ssl_is_handshake_over() == 1` and sets `retransmit_state = FINISHED` instead of arming the timer. The explicit `mbedtls_ssl_set_timer` at L2942 is the only thing that arms the retransmit timer for the WAIT_ACK state.
 
-2. **`ssl_tls13_reset_key_share` call at `ssl_tls13_client.c:2140` is unguarded.**
-   The HVR path calls `ssl_tls13_reset_key_share` with no `MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_SOME_EPHEMERAL_ENABLED` guard. In a PSK-only build, `offered_group_id == 0` so the function returns `MBEDTLS_ERR_SSL_INTERNAL_ERROR`, causing a false handshake failure. PSK-only DTLS 1.3 is valid per RFC 9147.
-   **Fix:** wrap L2140–2142 in `#if defined(MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_SOME_EPHEMERAL_ENABLED)`.
-   Do NOT add a `#error` in `check_config.h` — PSK-only DTLS 1.3 is a legitimate build configuration.
+2. **`ssl_tls13_reset_key_share` call at `ssl_tls13_client.c:2140` was unguarded. FIXED.**
+   The HVR path called `ssl_tls13_reset_key_share` with no `MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_SOME_EPHEMERAL_ENABLED` guard. In a PSK-only build `offered_group_id == 0` so the function returned `MBEDTLS_ERR_SSL_INTERNAL_ERROR`, causing a false handshake failure. PSK-only DTLS 1.3 is RFC-valid.
+   **Fix:** wrapped L2140–2142 in `#if defined(MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_SOME_EPHEMERAL_ENABLED)`. Did not add `#error` in `check_config.h` — PSK-only DTLS 1.3 is a legitimate build configuration.
 
-3. **No tests for PSK-only DTLS 1.3.**
-   All PSK tests in `tests/dtls13/dtls13-tests.sh` use `PSK_EPHEMERAL_ENABLED`. There are zero tests for pure PSK (no ephemeral). This is the same gap as finding 2 — the bug and the missing test are two sides of the same issue.
-   **Fix:** add a `PSK`-only (not `PSK_EPHEMERAL`) DTLS 1.3 test case.
+3. **No tests for PSK-only DTLS 1.3. ADDED.**
+   All existing PSK tests used `tls13_kex_modes=psk_ephemeral` (or unspecified, which defaults to `psk_all`).
+   **Fix:** added `tls13_kex_modes` runner option, `server_psk_only` assertion (matches `"key exchange mode: psk$"`), and a new `psk.yaml` case forcing both endpoints to `tls13_kex_modes=psk`. The new test exercises the exact path that finding 2 fixed.
+   Test currently fails for an unrelated reason: ssl_free SIGTRAP after successful protocol completion — same pre-existing crash as the other 3 PSK tests in the baseline failure set. Protocol-level negotiation succeeds.
 
 4. **`f_cookie_write`/`f_cookie_check` API insufficient for RFC 9147 §5.1 transcript binding — design issue.**
    RFC 9147 §5.1 says the DTLS 1.3 HRR cookie SHOULD be bound to the first ClientHello transcript, to prevent an attacker replaying a valid cookie against a manipulated second ClientHello (different cipher suites, key shares, etc.). The reference `mbedtls_ssl_cookie_write` (`ssl_cookie.c:117`) computes HMAC(timestamp || cli_id) where cli_id = client IP+port only — no transcript hash.

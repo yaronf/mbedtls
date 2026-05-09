@@ -725,6 +725,18 @@ run_test    "DTLS 1.3 PSK: session resumption via NewSessionTicket PSK" \
 
 requires_protocol_version dtls13
 requires_config_enabled MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_PSK_EPHEMERAL_ENABLED
+requires_config_enabled MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_PSK_ENABLED
+run_test    "DTLS 1.3 PSK: PSK-only key exchange mode (no ephemeral)" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 psk=abc123 psk_identity=Client_identity tls13_kex_modes=psk debug_level=2" \
+            "$P_CLI dtls=1 force_version=dtls13 psk=abc123 psk_identity=Client_identity tls13_kex_modes=psk debug_level=2" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -s "key exchange mode: psk$"
+
+requires_protocol_version dtls13
+requires_config_enabled MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_PSK_EPHEMERAL_ENABLED
 requires_config_enabled MBEDTLS_SSL_DTLS_HELLO_VERIFY
 run_test    "DTLS 1.3 PSK: PSK with cookie enabled — no HRR/cookie exchange (RFC 9147 §5.1)" \
             -p "" \

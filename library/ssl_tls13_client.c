@@ -2134,12 +2134,15 @@ static int ssl_tls13_process_server_hello(mbedtls_ssl_context *ssl)
                 goto cleanup;
             }
 
+#if defined(MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_SOME_EPHEMERAL_ENABLED)
             /* Destroy the ECDHE private key from the first ClientHello so it
              * is not left open when a fresh key share is generated for the
-             * retried ClientHello. */
+             * retried ClientHello.  PSK-only builds have no key share to
+             * reset (offered_group_id == 0). */
             if ((ret = ssl_tls13_reset_key_share(ssl)) != 0) {
                 goto cleanup;
             }
+#endif /* MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_SOME_EPHEMERAL_ENABLED */
 
             /* Account for the HVR in the incoming sequence number so that
              * the server's ServerHello flight (which starts at msg_seq 1)
