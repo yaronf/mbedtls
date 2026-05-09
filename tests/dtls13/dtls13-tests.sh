@@ -395,6 +395,22 @@ run_test    "DTLS 1.3: force AES-128-GCM ciphersuite (AES SNE path)" \
             -s "Protocol is DTLSv1.3" \
             -c "Protocol is DTLSv1.3"
 
+requires_protocol_version dtls13
+run_test    "DTLS 1.3: handshake timeout: dead peer pre-wrapup surfaces TIMEOUT" \
+            -p "$P_PXY corrupt_after_pkt=1 corrupt_dir=s2c" \
+            "$P_SRV dtls=1 force_version=dtls13 hs_timeout=100-400 debug_level=1" \
+            "$P_CLI dtls=1 force_version=dtls13 hs_timeout=100-400 debug_level=0" \
+            1 \
+            -s "handshake timeout"
+
+requires_protocol_version dtls13
+run_test    "DTLS 1.3: NST_WAIT_ACK timeout: dead peer surfaces TIMEOUT (RFC 9147 §7.1)" \
+            -p "$P_PXY corrupt_after_pkt=6 corrupt_dir=s2c" \
+            "$P_SRV dtls=1 force_version=dtls13 hs_timeout=100-400 debug_level=1" \
+            "$P_CLI dtls=1 force_version=dtls13 hs_timeout=100-400 debug_level=0" \
+            1 \
+            -s "handshake timeout"
+
 # ======================================================================
 # Cases from: hrr-cookie.yaml
 # ======================================================================
@@ -576,6 +592,14 @@ run_test    "DTLS 1.3 KeyUpdate: KeyUpdate preserves CID across epoch transition
             -C "error" \
             -S "CID mismatch" \
             -C "CID mismatch"
+
+requires_protocol_version dtls13
+run_test    "DTLS 1.3 KeyUpdate: KeyUpdate timeout: server ACK lost, client retransmit budget exhausts" \
+            -p "$P_PXY corrupt_after_pkt=7 corrupt_dir=s2c" \
+            "$P_SRV dtls=1 force_version=dtls13 hs_timeout=100-400 debug_level=1" \
+            "$P_CLI dtls=1 force_version=dtls13 hs_timeout=100-400 debug_level=1 key_update=1" \
+            1 \
+            -c "handshake timeout"
 
 # ======================================================================
 # Cases from: proxy-3d.yaml

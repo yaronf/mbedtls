@@ -51,3 +51,48 @@ cases:
       assert:
         - server_dtls13_negotiated
         - client_dtls13_negotiated
+
+  - name: "handshake timeout: dead peer pre-wrapup surfaces TIMEOUT"
+    # Baseline test for the normal pre-wrapup handshake-timeout path.
+    # Let the ServerHello (s2c packet 1) through, then corrupt everything
+    # else so the client cannot make handshake progress.  Server keeps
+    # retransmitting via flight_transmit, which DOES re-arm the timer for
+    # non-HANDSHAKE_OVER states.  Eventually ssl_double_retransmit_timeout
+    # exhausts the budget and TIMEOUT propagates out of mbedtls_ssl_handshake.
+    proxy:
+      corrupt_after_pkt: 1
+      corrupt_dir: s2c
+    server:
+      hs_timeout: [100, 400]
+      debug_level: 1
+    client:
+      hs_timeout: [100, 400]
+      debug_level: 0
+    expect:
+      exit: 1
+      assert:
+        - server_handshake_timeout
+
+  - name: "NST_WAIT_ACK timeout: dead peer surfaces TIMEOUT (RFC 9147 §7.1)"
+    # After handshake completion, the server enters NST_WAIT_ACK and sends NST.
+    # The proxy corrupts the AEAD tag of all packets in both directions after
+    # the handshake's main flight completes (s2c packet 6+); the receiver's
+    # AEAD discards them, simulating a dead peer without dropping packets at
+    # the kernel level (which would trigger spurious ICMP CONN_RESET on macOS).
+    #
+    # Expected: server's NST retransmit budget exhausts and mbedtls_ssl_handshake
+    # returns MBEDTLS_ERR_SSL_TIMEOUT (non-zero exit), proving the timeout
+    # propagation fix in commit aef837a508 works end-to-end.
+    proxy:
+      corrupt_after_pkt: 6
+      corrupt_dir: s2c
+    server:
+      hs_timeout: [100, 400]
+      debug_level: 1
+    client:
+      hs_timeout: [100, 400]
+      debug_level: 0
+    expect:
+      exit: 1
+      assert:
+        - server_handshake_timeout

@@ -122,6 +122,14 @@ int main(void)
     "    protect_hvr=0/1     default: 0 (don't protect HelloVerifyRequest)\n" \
     "    protect_len=%%d      default: (don't protect packets of this size)\n" \
     "    inject_clihlo=0/1   default: 0 (don't inject fake ClientHello)\n"  \
+    "    corrupt_after_pkt=%%d default: 0 (off)\n"                            \
+    "                        After N packets in corrupt_dir have been seen,\n" \
+    "                        flip the AEAD tag of subsequent packets in\n"   \
+    "                        BOTH directions.  Receiver discards via AEAD\n" \
+    "                        auth failure (kernel sees normal datagrams,\n"  \
+    "                        so no ICMP/CONN_RESET on macOS).\n"             \
+    "    corrupt_dir=s2c|c2s default: s2c\n"                                 \
+    "                        Direction whose count triggers corrupt_after_pkt.\n" \
     "\n"                                                                    \
     "    seed=%%d             default: (use current time)\n"                \
     USAGE_PACK                                                              \
@@ -158,7 +166,12 @@ static struct options {
     unsigned pack;              /* merge packets into single datagram for
                                  * at most \c merge milliseconds if > 0     */
     unsigned int seed;          /* seed for "random" events                 */
+    unsigned corrupt_after_pkt; /* corrupt after this many corrupt_dir pkts */
+    int corrupt_dir;            /* 0 = s2c, 1 = c2s                         */
 } opt;
+
+#define CORRUPT_DIR_S2C 0
+#define CORRUPT_DIR_C2S 1
 
 static void exit_usage(const char *name, const char *value)
 {
@@ -252,6 +265,20 @@ static void get_options(int argc, char *argv[])
         } else if (strcmp(p, "drop") == 0) {
             opt.drop = atoi(q);
             if (opt.drop < 0 || opt.drop > 20 || opt.drop == 1) {
+                exit_usage(p, q);
+            }
+        } else if (strcmp(p, "corrupt_after_pkt") == 0) {
+            int v = atoi(q);
+            if (v < 0) {
+                exit_usage(p, q);
+            }
+            opt.corrupt_after_pkt = (unsigned) v;
+        } else if (strcmp(p, "corrupt_dir") == 0) {
+            if (strcmp(q, "s2c") == 0) {
+                opt.corrupt_dir = CORRUPT_DIR_S2C;
+            } else if (strcmp(q, "c2s") == 0) {
+                opt.corrupt_dir = CORRUPT_DIR_C2S;
+            } else {
                 exit_usage(p, q);
             }
         } else if (strcmp(p, "pack") == 0) {
@@ -702,6 +729,26 @@ static int handle_message(const char *way,
     } else {
         delay_list     = opt.delay_srv;
         delay_list_len = opt.delay_srv_cnt;
+    }
+
+    /* Bidirectional AEAD-tag corruption (count-based, deterministic).
+     * Prevents implicit-ACK fallback by corrupting both directions. */
+    if (opt.corrupt_after_pkt > 0) {
+        static unsigned corrupt_dir_pkt_count = 0;
+        static int corrupt_triggered = 0;
+        int is_c2s = (strcmp(way, "S <- C") == 0);
+        int dir_match = (opt.corrupt_dir == CORRUPT_DIR_C2S) ? is_c2s : !is_c2s;
+        if (dir_match) {
+            corrupt_dir_pkt_count++;
+            if (corrupt_dir_pkt_count > opt.corrupt_after_pkt) {
+                corrupt_triggered = 1;
+            }
+        }
+        if (corrupt_triggered && cur.len > 0) {
+            cur.buf[cur.len - 1] ^= 0xFF;
+            mbedtls_printf("  ! corrupted (%s, dir-pkt #%u)\n",
+                           way, corrupt_dir_pkt_count);
+        }
     }
 
     /* Check if message type is in the list of messages

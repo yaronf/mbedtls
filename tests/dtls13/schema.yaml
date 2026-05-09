@@ -87,6 +87,19 @@ case_fields:
         description: >
           Clamp forwarded datagrams to this byte size. Fragments larger
           datagrams at the UDP level, exercising DTLS handshake fragmentation.
+      corrupt_after_pkt:
+        type: integer
+        min: 1
+        description: >
+          After N packets in corrupt_dir have been seen, flip the AEAD tag
+          of all subsequent packets in BOTH directions. Receiver discards
+          via AEAD auth failure; the kernel sees normal datagrams flowing,
+          so no spurious CONN_RESET on macOS connected UDP sockets.
+      corrupt_dir:
+        type: string
+        description: >
+          Direction whose count triggers corrupt_after_pkt: "s2c" (default)
+          or "c2s".
 
   server:
     type: dict

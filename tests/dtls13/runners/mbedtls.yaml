@@ -67,6 +67,8 @@ proxy_param_map:
   bad_ad:     "bad_ad={1 if value else 0}"
   pack:       "pack={value}"
   mtu:        "mtu={value}"
+  corrupt_after_pkt: "corrupt_after_pkt={value}"
+  corrupt_dir:       "corrupt_dir={value}"
 
 assertion_map:
   server_dtls13_negotiated:
@@ -138,6 +140,12 @@ assertion_map:
   server_psk_ephemeral:
     flag: "-s"
     string: "key exchange mode: psk_ephemeral"
+  server_handshake_timeout:
+    flag: "-s"
+    string: "handshake timeout"
+  client_handshake_timeout:
+    flag: "-c"
+    string: "handshake timeout"
   server_psk_only:
     flag: "-s"
     string: "key exchange mode: psk$"

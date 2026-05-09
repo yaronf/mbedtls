@@ -263,3 +263,26 @@ cases:
         - client_no_error
         - server_no_cid_mismatch
         - client_no_cid_mismatch
+
+  - name: "KeyUpdate timeout: server ACK lost, client retransmit budget exhausts"
+    # Client sends KeyUpdate after handshake completes, then enters its own
+    # ACK-pending state.  The proxy lets the entire handshake through clean
+    # (corrupt_after_pkt threshold above the handshake's s2c packet count),
+    # then corrupts everything once the post-handshake KU ACK would arrive.
+    # Client retransmits KeyUpdate until budget exhausts and TIMEOUT
+    # propagates from mbedtls_ssl_read.
+    skip_runners: [wolfssl]
+    proxy:
+      corrupt_after_pkt: 7
+      corrupt_dir: s2c
+    server:
+      hs_timeout: [100, 400]
+      debug_level: 1
+    client:
+      hs_timeout: [100, 400]
+      debug_level: 1
+      key_update: 1
+    expect:
+      exit: 1
+      assert:
+        - client_handshake_timeout
