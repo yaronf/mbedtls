@@ -4526,15 +4526,18 @@ data_exchange:
     if (--exchanges_left > 0) {
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS) && \
     defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
-        if (rotate_cid_countdown > 0 && --rotate_cid_countdown == 0) {
-            mbedtls_printf("  . Rotating own inbound CID...");
-            fflush(stdout);
-            if ((ret = mbedtls_ssl_dtls13_rotate_cids(&ssl)) != 0) {
-                mbedtls_printf(" failed\n  ! mbedtls_ssl_dtls13_rotate_cids"
-                               " returned -0x%x\n\n", (unsigned int) -ret);
-                goto exit;
+        if (rotate_cid_countdown > 0) {
+            rotate_cid_countdown--;
+            if (rotate_cid_countdown == 0) {
+                mbedtls_printf("  . Rotating own inbound CID...");
+                fflush(stdout);
+                if ((ret = mbedtls_ssl_dtls13_rotate_cids(&ssl)) != 0) {
+                    mbedtls_printf(" failed\n  ! mbedtls_ssl_dtls13_rotate_cids"
+                                   " returned -0x%x\n\n", (unsigned int) -ret);
+                    goto exit;
+                }
+                mbedtls_printf(" ok (CIDs rotated)\n");
             }
-            mbedtls_printf(" ok (CIDs rotated)\n");
         }
 #endif /* TLS1_3 && DTLS && CID */
         goto data_exchange;
