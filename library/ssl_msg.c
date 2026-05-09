@@ -2103,7 +2103,11 @@ int mbedtls_ssl_fetch_input(mbedtls_ssl_context *ssl, size_t nb_want)
         } else {
             len = in_buf_len - (size_t) (ssl->in_hdr - ssl->in_buf);
 
-            if (mbedtls_ssl_is_handshake_over(ssl) == 0) {
+            /* WAIT_ACK states (state > HANDSHAKE_OVER in the enum) still need
+             * retransmit-timeout semantics — the WAIT_ACK handler will
+             * trigger a resend on TIMEOUT.  Use retransmit_timeout for any
+             * state other than HANDSHAKE_OVER itself. */
+            if (ssl->state != MBEDTLS_SSL_HANDSHAKE_OVER) {
                 timeout = ssl->handshake->retransmit_timeout;
             } else {
                 timeout = ssl->conf->read_timeout;
@@ -2803,8 +2807,15 @@ int mbedtls_ssl_flight_transmit(mbedtls_ssl_context *ssl)
         return ret;
     }
 
-    /* Update state and set timer */
-    if (mbedtls_ssl_is_handshake_over(ssl) == 1) {
+    /* Update state and set timer.
+     *
+     * The DTLS 1.3 WAIT_ACK states (NEW_SESSION_TICKET_WAIT_ACK and
+     * CLIENT_FINISHED_WAIT_ACK) sort numerically AFTER HANDSHAKE_OVER, so
+     * mbedtls_ssl_is_handshake_over() returns true for them — but they DO
+     * still need retransmit timer re-arming until the peer's ACK arrives or
+     * the budget is exhausted.  Treat HANDSHAKE_OVER (exactly) as "done";
+     * everything else (including WAIT_ACK) keeps the retransmit timer alive. */
+    if (ssl->state == MBEDTLS_SSL_HANDSHAKE_OVER) {
         ssl->handshake->retransmit_state = MBEDTLS_SSL_RETRANS_FINISHED;
     } else {
         ssl->handshake->retransmit_state = MBEDTLS_SSL_RETRANS_WAITING;

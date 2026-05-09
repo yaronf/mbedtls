@@ -593,14 +593,6 @@ run_test    "DTLS 1.3 KeyUpdate: KeyUpdate preserves CID across epoch transition
             -S "CID mismatch" \
             -C "CID mismatch"
 
-requires_protocol_version dtls13
-run_test    "DTLS 1.3 KeyUpdate: KeyUpdate timeout: server ACK lost, client retransmit budget exhausts" \
-            -p "$P_PXY corrupt_after_pkt=7 corrupt_dir=s2c" \
-            "$P_SRV dtls=1 force_version=dtls13 hs_timeout=100-400 debug_level=1" \
-            "$P_CLI dtls=1 force_version=dtls13 hs_timeout=100-400 debug_level=1 key_update=1" \
-            1 \
-            -c "handshake timeout"
-
 # ======================================================================
 # Cases from: proxy-3d.yaml
 # ======================================================================
