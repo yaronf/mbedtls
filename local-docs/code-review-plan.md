@@ -219,7 +219,7 @@ the retransmit timer fire and reset correctly?
 
 ---
 
-## Area 11: Transcript Hash — DTLS header stripping and nbio-retry guard (RFC 9147 §5.2)
+## Area 11: Transcript Hash — DTLS header stripping and nbio-retry guard (RFC 9147 §5.2) ✓ DONE
 
 **Focus:** On all message types (Certificate, CertificateVerify, Finished, ClientHello,
 ServerHello), is the transcript hash fed exactly the bytes RFC 9147 §5.2 requires, and
@@ -248,23 +248,61 @@ does nbio retry never double-hash any message?
 client and server, and does the DTLS 1.2 downgrade path leave no DTLS 1.3 state behind?
 
 **Primary code:**
-- `ssl_tls13_client.c:2068–2180` — `ssl_tls13_process_server_hello()`: HelloVerifyRequest detection and DTLS 1.2 HVR handling; DTLS 1.3 state transitions post-ServerHello
-- `ssl_tls13_client.c:1496–1522` — `ssl_tls13_preprocess_server_hello()`: DTLS 1.2 fallback transcript re-hash (Option B)
-- `ssl_tls13_client.c:2813–2852` — `ssl_tls13_write_client_finished()`: entry into `CLIENT_FINISHED_WAIT_ACK` for DTLS, vs. direct `HANDSHAKE_OVER` for TLS
-- `ssl_tls13_client.c:3387–3403` — top-level `handshake_client_step()`: new DTLS 1.3 state cases
-- `ssl_tls13_server.c:2468–2516` — `ssl_tls13_write_server_hello_body()`: DTLS-only epoch-2 key install block; `dtls13_post_hs_msg_seq` init
-- `ssl_tls13_server.c:2661–2685` — `ssl_tls13_write_hello_retry_request()`: HRR cookie and DTLS-specific field handling
-- `ssl_tls13_server.c:3090–3108` — `ssl_tls13_write_server_finished()`: epoch advance and WAIT_ACK entry
-- `ssl_tls13_server.c:3821–3869` — `handshake_server_step()`: new DTLS 1.3 state cases, including `NST_WAIT_ACK`
+- `ssl_tls13_client.c:2062–2180` — `ssl_tls13_process_server_hello()`: HelloVerifyRequest detection and DTLS 1.2 HVR handling; DTLS 1.3 state transitions post-ServerHello
+- `ssl_tls13_client.c:1464–1540` — `ssl_tls13_preprocess_server_hello()`: DTLS 1.2 fallback transcript re-hash (Option B) at L1503–1523
+- `ssl_tls13_client.c:2917–2951` — `ssl_tls13_write_client_finished()`: entry into `CLIENT_FINISHED_WAIT_ACK` for DTLS, vs. direct `HANDSHAKE_OVER` for TLS
+- `ssl_tls13_client.c:3331–3410` — top-level `handshake_client_step()`: new DTLS 1.3 state cases at L3391
+- `ssl_tls13_server.c:2544–2556` — `ssl_tls13_finalize_server_hello()`: computes handshake transform (epoch-2 keys) at L2547
+- `ssl_tls13_server.c:2787–2796` — encrypted extensions writer: DTLS-only guard on outbound transform switch (skipped mid-fragment); `dtls13_post_hs_msg_seq` init
+- `ssl_tls13_server.c:2347–2542` — `ssl_tls13_write_server_hello_body()`: ServerHello construction
+- `ssl_tls13_server.c:2636–2720` — `ssl_tls13_write_hello_retry_request()`: HRR cookie and DTLS-specific field handling
+- `ssl_tls13_server.c:3076–3130` — `ssl_tls13_write_server_finished()`: epoch advance and WAIT_ACK entry
+- `ssl_tls13_server.c:3685–3870` — `handshake_server_step()`: new DTLS 1.3 state cases at L3853 including `NST_WAIT_ACK`
+- `ssl_tls13_server.c:1234–1760` — `ssl_tls13_parse_client_hello()`: legacy_cookie parse at L1331; cookie extension validate at L1704
 
 **What to look for:**
-- HelloVerifyRequest handling (client L2073–2130): HVR cookie stored in `dtls13_hvr_cookie` and echoed in the legacy_cookie field on the second ClientHello (not as an extension). Is the memory for the cookie correctly allocated and freed on both the retry path and abort?
+- HelloVerifyRequest handling (client L2074–2132): HVR cookie stored in `dtls13_hvr_cookie` and echoed in the legacy_cookie field on the second ClientHello (not as an extension). Is the memory for the cookie correctly allocated and freed on both the retry path and abort?
 - DTLS 1.3 compatibility mode prohibition (client L1606–1616): server must send zero-length `legacy_session_id_echo`. Alert correct (`illegal_parameter`)?
-- DTLS 1.2 fallback (client L1496–1522): After receiving a TLS 1.2 ServerHello, `dtls13_cli_hello` is re-fed into `update_checksum` (full 12-byte DTLS header). Is `dtls13_cli_hello` freed here, or is it leaked if the connection is aborted mid-downgrade?
-- Server hello body DTLS block (server L2468): This is where epoch 2 keys are installed (`compute_handshake_transform`, `setup_sne_keys`, `set_inbound_transform`). Is epoch 2 correctly installed before Encrypted Extensions is written?
+- DTLS 1.2 fallback (client L1503–1523): After receiving a TLS 1.2 ServerHello, `dtls13_cli_hello` is re-fed into `update_checksum` (full 12-byte DTLS header). Is `dtls13_cli_hello` freed here, or is it leaked if the connection is aborted mid-downgrade?
+- Server hello body DTLS block (server L2547): This is where epoch 2 keys are installed (`compute_handshake_transform`, `setup_sne_keys`, `set_inbound_transform`). Is epoch 2 correctly installed before Encrypted Extensions is written?
 - `dtls13_post_hs_msg_seq` init (server): initialized from `handshake->out_msg_seq` at `HANDSHAKE_OVER` — is there a matching init on the client side?
-- Cookie extension parse (server L1326–1410): on second ClientHello with `hello_retry_request_flag`, cookie is validated via `f_cookie_check`. What happens if cookie is absent (extension missing) — is `missing_extension` fatal alert sent?
+- Cookie extension parse (server L1704–1753): on second ClientHello with `hello_retry_request_flag`, cookie is validated via `f_cookie_check`. What happens if cookie is absent (extension missing) — is `missing_extension` fatal alert sent?
 - State machine completeness: does every new DTLS 1.3 state in `handshake_client_step` / `handshake_server_step` have a matching case in the state enum (`ssl_misc.h`) and in the debug name table?
+
+**Findings (2026-04-25/26):**
+
+1. **Explicit timer at `ssl_tls13_client.c:2942` is intentional.**
+   `ssl_tls13_write_client_finished` calls `mbedtls_ssl_tls13_handshake_wrapup` before entering `CLIENT_FINISHED_WAIT_ACK`. Wrapup marks the handshake as done, so `mbedtls_ssl_flight_transmit` sees `mbedtls_ssl_is_handshake_over() == 1` and sets `retransmit_state = FINISHED` instead of arming the timer. The explicit `mbedtls_ssl_set_timer` at L2942 is the only thing that arms the retransmit timer for the WAIT_ACK state.
+
+2. **`ssl_tls13_reset_key_share` call at `ssl_tls13_client.c:2140` is unguarded.**
+   The HVR path calls `ssl_tls13_reset_key_share` with no `MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_SOME_EPHEMERAL_ENABLED` guard. In a PSK-only build, `offered_group_id == 0` so the function returns `MBEDTLS_ERR_SSL_INTERNAL_ERROR`, causing a false handshake failure. PSK-only DTLS 1.3 is valid per RFC 9147.
+   **Fix:** wrap L2140–2142 in `#if defined(MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_SOME_EPHEMERAL_ENABLED)`.
+   Do NOT add a `#error` in `check_config.h` — PSK-only DTLS 1.3 is a legitimate build configuration.
+
+3. **No tests for PSK-only DTLS 1.3.**
+   All PSK tests in `tests/dtls13/dtls13-tests.sh` use `PSK_EPHEMERAL_ENABLED`. There are zero tests for pure PSK (no ephemeral). This is the same gap as finding 2 — the bug and the missing test are two sides of the same issue.
+   **Fix:** add a `PSK`-only (not `PSK_EPHEMERAL`) DTLS 1.3 test case.
+
+4. **`f_cookie_write`/`f_cookie_check` API insufficient for RFC 9147 §5.1 transcript binding — design issue.**
+   RFC 9147 §5.1 says the DTLS 1.3 HRR cookie SHOULD be bound to the first ClientHello transcript, to prevent an attacker replaying a valid cookie against a manipulated second ClientHello (different cipher suites, key shares, etc.). The reference `mbedtls_ssl_cookie_write` (`ssl_cookie.c:117`) computes HMAC(timestamp || cli_id) where cli_id = client IP+port only — no transcript hash.
+   More critically, the callback signature `f_cookie_write(ctx, p, end, cli_id, cli_id_len)` has no transcript hash parameter, so no callback implementation can satisfy the RFC requirement. The API was designed for DTLS 1.2 where transcript binding was not required.
+   **Options:**
+   - (a) Stack-owned cookie construction with application-supplied secret key — add a config API (e.g., `mbedtls_ssl_conf_dtls_cookie_secret(conf, key, key_len)`); the stack owns the HMAC construction including transcript binding, but the application injects the cluster-wide secret. Fixes the transcript-binding gap, supports cluster deployments, eliminates misconfiguration risk. Deprecates the write/check callbacks for DTLS 1.3. API-additive rather than breaking.
+   - (b) New DTLS 1.3-specific callback type with a transcript hash parameter — clean but API-breaking; still leaves transcript binding to the application.
+   - (c) Concatenate transcript hash into `cli_id` before calling — no API change, but silently breaks callers using the reference `mbedtls_ssl_cookie_check` (which doesn't know the format changed).
+   - (d) Accept the limitation — document that DTLS 1.3 cookie provides reachability only; transcript consistency is not verified. Weakened but RFC-permissible (SHOULD not MUST).
+   **Status:** open design decision; needs resolution before Area 12 can be closed. Option (a) is preferred.
+
+5. **`MBEDTLS_SSL_EARLY_DATA` + `MBEDTLS_SSL_PROTO_DTLS` combination now rejected at compile time. DONE.**
+   RFC 9147 §5.6 prohibits 0-RTT/early data in DTLS 1.3. Added `#error` to `library/mbedtls_check_config.h` to catch this misconfiguration at build time.
+
+6. **`NST_WAIT_ACK` timeout silently swallowed — open question.**
+   `ssl_tls13_server.c:3856–3861`: on `MBEDTLS_ERR_SSL_TIMEOUT` in `NST_WAIT_ACK`, the server proceeds to `HANDSHAKE_OVER` with `ret = 0`. Exhausting all NST retransmits is the same dead-peer signal as any other DTLS timeout — the application would discover the broken connection only when it tries to send/receive data.
+   The two WAIT_ACK states share a common handler (`mbedtls_ssl_dtls13_wait_ack_step`, `ssl_msg.c:9500`); this is a policy difference in the dispatch, not an architectural issue.
+   **Open question:** should NST timeout surface `MBEDTLS_ERR_SSL_TIMEOUT` to the caller instead of proceeding silently?
+
+7. **Zero-length HVR cookie not rejected — `ssl_tls13_client.c:2108`. FIXED.**
+   RFC 6347 requires the HVR cookie to be non-empty. `mbedtls_calloc(1, 0)` was called without checking `cookie_len > 0` first; on implementations where `calloc(1,0)` returns NULL this caused a spurious `MBEDTLS_ERR_SSL_ALLOC_FAILED` instead of `MBEDTLS_ERR_SSL_DECODE_ERROR`. Fixed by combining the zero-length check into the existing bounds check at L2108.
 
 ---
 
@@ -287,6 +325,11 @@ client and server, and does the DTLS 1.2 downgrade path leave no DTLS 1.3 state 
 - `dtls13_cli_hello` lifecycle: allocated in `ssl_msg.c:3161`, freed in `ssl_tls13_client.c:2130` (on HVR path) and presumably in `mbedtls_ssl_handshake_free()`. Verify it is freed on: (a) successful downgrade to DTLS 1.2, (b) abort before ServerHello, (c) `mbedtls_ssl_session_reset()`.
 - `dtls13_post_hs_ack` lifecycle: allocated in ACK write path — freed in `session_reset_msg_layer`? Verify no leak on early abort.
 - `ssl_dtls13_epoch_pool_free()` call sites: called in `session_reset_msg_layer` — is it also called (or redundantly safe to call) from `mbedtls_ssl_free()`?
+
+**Findings:**
+
+1. **Pointless insert-then-free in `session_reset_msg_layer` and `mbedtls_ssl_free` — `ssl_tls.c:1327–1336` and `ssl_tls.c:5290–5299`. FIXED.**
+   `transform_in`/`transform_out` were inserted into the epoch pool only to be freed immediately by `ssl_dtls13_epoch_pool_free`. Fixed both call sites to free them directly (with `mbedtls_ssl_transform_free` + `mbedtls_free`) instead of routing through the pool. The `_contains()` guard is still needed to avoid double-freeing transforms already in the pool.
 
 ---
 

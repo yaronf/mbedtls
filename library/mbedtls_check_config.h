@@ -149,6 +149,10 @@
 #error "MBEDTLS_SSL_EARLY_DATA  defined, but not all prerequisites"
 #endif
 
+#if defined(MBEDTLS_SSL_EARLY_DATA) && defined(MBEDTLS_SSL_PROTO_DTLS)
+#error "MBEDTLS_SSL_EARLY_DATA is not supported with MBEDTLS_SSL_PROTO_DTLS (RFC 9147 §5.6 prohibits 0-RTT in DTLS 1.3)"
+#endif
+
 #if defined(MBEDTLS_SSL_EARLY_DATA) && defined(MBEDTLS_SSL_SRV_C) && \
     defined(MBEDTLS_SSL_MAX_EARLY_DATA_SIZE) &&                      \
         ((MBEDTLS_SSL_MAX_EARLY_DATA_SIZE < 0) ||                    \

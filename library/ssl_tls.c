@@ -1280,6 +1280,23 @@ error:
     return ret;
 }
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+/* Free a post-KeyUpdate transform that is not aliasing transform_application
+ * and not already in the epoch pool.  Used during session reset and ssl_free
+ * to clean up orphaned inbound/outbound transforms. */
+static void ssl_dtls13_free_epoch_if_orphan(mbedtls_ssl_context *ssl,
+                                             mbedtls_ssl_transform **transform)
+{
+    if (*transform != NULL &&
+        *transform != ssl->transform_application &&
+        !ssl_dtls13_epoch_pool_contains(ssl, *transform)) {
+        mbedtls_ssl_transform_free(*transform);
+        mbedtls_free(*transform);
+        *transform = NULL;
+    }
+}
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
+
 /*
  * Reset an initialized and used SSL context for re-use while retaining
  * all application-set variables, function pointers and data.
@@ -1321,19 +1338,8 @@ void mbedtls_ssl_session_reset_msg_layer(mbedtls_ssl_context *ssl,
     if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
         ssl->conf != NULL &&
         ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
-        /* Collect post-KeyUpdate transforms into the epoch pool before nulling
-         * transform_in / transform_out.  If no KeyUpdate occurred these pointers
-         * alias transform_application (freed below) and must not be freed here. */
-        if (ssl->transform_in != NULL &&
-            ssl->transform_in != ssl->transform_application &&
-            !ssl_dtls13_epoch_pool_contains(ssl, ssl->transform_in)) {
-            ssl_dtls13_epoch_pool_insert(ssl, &ssl->transform_in);
-        }
-        if (ssl->transform_out != NULL &&
-            ssl->transform_out != ssl->transform_application &&
-            !ssl_dtls13_epoch_pool_contains(ssl, ssl->transform_out)) {
-            ssl_dtls13_epoch_pool_insert(ssl, &ssl->transform_out);
-        }
+        ssl_dtls13_free_epoch_if_orphan(ssl, &ssl->transform_in);
+        ssl_dtls13_free_epoch_if_orphan(ssl, &ssl->transform_out);
     }
     ssl_dtls13_epoch_pool_free(ssl);
     mbedtls_ssl_transform_free(ssl->dtls13_transform_pending_out);
@@ -5272,28 +5278,15 @@ void mbedtls_ssl_free(mbedtls_ssl_context *ssl)
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
     mbedtls_ssl_transform_free(ssl->transform_application);
     mbedtls_free(ssl->transform_application);
+    ssl->transform_application = NULL;
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 
 #if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
     if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
         ssl->conf != NULL &&
         ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
-        /* After a KeyUpdate, transform_application is nulled out.  The current
-         * transform_in / transform_out may point to freshly allocated post-KU
-         * epochs not yet in the pool; insert those so ssl_dtls13_epoch_pool_free()
-         * cleans them up.  Skip transforms already in the pool (the other
-         * direction's pre-KU epoch) and transforms aliasing transform_application
-         * (no-KU case — already freed above). */
-        if (ssl->transform_in != NULL &&
-            ssl->transform_in != ssl->transform_application &&
-            !ssl_dtls13_epoch_pool_contains(ssl, ssl->transform_in)) {
-            ssl_dtls13_epoch_pool_insert(ssl, &ssl->transform_in);
-        }
-        if (ssl->transform_out != NULL &&
-            ssl->transform_out != ssl->transform_application &&
-            !ssl_dtls13_epoch_pool_contains(ssl, ssl->transform_out)) {
-            ssl_dtls13_epoch_pool_insert(ssl, &ssl->transform_out);
-        }
+        ssl_dtls13_free_epoch_if_orphan(ssl, &ssl->transform_in);
+        ssl_dtls13_free_epoch_if_orphan(ssl, &ssl->transform_out);
     }
 
     /* Free any retained inbound transforms in the DTLS 1.3 epoch pool.

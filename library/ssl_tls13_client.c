@@ -2105,7 +2105,7 @@ static int ssl_tls13_process_server_hello(mbedtls_ssl_context *ssl)
             }
             p += 2; /* skip legacy_version */
             cookie_len = *p++;
-            if ((size_t)(end - p) < cookie_len) {
+            if (cookie_len == 0 || (size_t)(end - p) < cookie_len) {
                 MBEDTLS_SSL_PEND_FATAL_ALERT(MBEDTLS_SSL_ALERT_MSG_DECODE_ERROR,
                                              MBEDTLS_ERR_SSL_DECODE_ERROR);
                 ret = MBEDTLS_ERR_SSL_DECODE_ERROR;
