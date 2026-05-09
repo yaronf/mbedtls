@@ -8644,8 +8644,7 @@ int mbedtls_ssl_dtls13_rotate_cids(mbedtls_ssl_context *ssl)
  */
 
 /* LCOV_EXCL_START */
-#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS) && \
-    defined(MBEDTLS_TEST_HOOKS)
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS)
 
 /*
  * Send a malformed KeyUpdate message.
@@ -8653,7 +8652,7 @@ int mbedtls_ssl_dtls13_rotate_cids(mbedtls_ssl_context *ssl)
  *   bad_type == 2: body is 1 byte with value 2 (invalid update_requested)
  * The server should reject with decode_error or illegal_parameter.
  */
-int mbedtls_ssl_dtls13_send_bad_keyupdate(mbedtls_ssl_context *ssl, int bad_type)
+int mbedtls_ssl_dtls13_test_send_bad_keyupdate(mbedtls_ssl_context *ssl, int bad_type)
 {
     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
     unsigned char *buf;
@@ -8697,7 +8696,7 @@ cleanup:
  *   bad_type == 4: 2-entry list advertised but second entry is truncated
  * Server should reject with decode_error or illegal_parameter.
  */
-int mbedtls_ssl_dtls13_send_bad_new_connection_id(mbedtls_ssl_context *ssl,
+int mbedtls_ssl_dtls13_test_send_bad_new_connection_id(mbedtls_ssl_context *ssl,
                                                   int bad_type)
 {
     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
@@ -8761,7 +8760,7 @@ cleanup:
  *   bad_type == 1: empty body (0 bytes instead of 1)
  * Server should reject with decode_error.
  */
-int mbedtls_ssl_dtls13_send_bad_request_connection_id(mbedtls_ssl_context *ssl,
+int mbedtls_ssl_dtls13_test_send_bad_request_connection_id(mbedtls_ssl_context *ssl,
                                                       int bad_type)
 {
     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
@@ -8787,7 +8786,7 @@ cleanup:
 }
 
 #endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
-#endif /* MBEDTLS_SSL_PROTO_TLS1_3 && MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_TEST_HOOKS */
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 && MBEDTLS_SSL_PROTO_DTLS */
 /* LCOV_EXCL_STOP */
 
 /* ---------------------------------------------------------------------------

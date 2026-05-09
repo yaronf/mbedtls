@@ -1321,6 +1321,42 @@ static inline int ssl_dtls13_epoch_pool_contains(
  */
 void ssl_dtls13_epoch_pool_free(mbedtls_ssl_context *ssl);
 
+/* ----------------------------------------------------------------------------
+ * DTLS 1.3 fault-injection helpers — TEST ONLY, DO NOT USE IN PRODUCTION CODE.
+ *
+ * These functions craft and send intentionally malformed handshake messages to
+ * exercise the peer's parser error paths.  They are exposed here (in the
+ * internal header) rather than in mbedtls/ssl.h because they are not part of
+ * the public API and must never be called from application code.  They are
+ * used by ssl_client2 / ssl_server2 integration tests in tests/dtls13/.
+ * ---------------------------------------------------------------------------- */
+
+/**
+ * \brief  TEST ONLY: send an intentionally malformed KeyUpdate.
+ *         bad_type 1: body too long (2 bytes instead of 1).
+ *         bad_type 2: invalid update_requested value (0x02).
+ */
+int mbedtls_ssl_dtls13_test_send_bad_keyupdate(mbedtls_ssl_context *ssl,
+                                               int bad_type);
+
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+/**
+ * \brief  TEST ONLY: send an intentionally malformed NewConnectionId.
+ *         bad_type 1: body truncated to 1 byte.
+ *         bad_type 2: list_len == 0.
+ *         bad_type 3: cid_len > MBEDTLS_SSL_CID_OUT_LEN_MAX.
+ */
+int mbedtls_ssl_dtls13_test_send_bad_new_connection_id(mbedtls_ssl_context *ssl,
+                                                       int bad_type);
+
+/**
+ * \brief  TEST ONLY: send an intentionally malformed RequestConnectionId.
+ *         bad_type 1: empty body (0 bytes instead of 1).
+ */
+int mbedtls_ssl_dtls13_test_send_bad_request_connection_id(
+    mbedtls_ssl_context *ssl, int bad_type);
+#endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
+
 /**
  * \brief  Common handler for DTLS 1.3 WAIT_ACK states.
  *

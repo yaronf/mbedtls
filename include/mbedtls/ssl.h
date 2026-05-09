@@ -5477,32 +5477,6 @@ static inline int mbedtls_ssl_dtls13_key_update_pending(
     return ssl->MBEDTLS_PRIVATE(dtls13_ku_ack_pending);
 }
 
-#if defined(MBEDTLS_TEST_HOOKS)
-/**
- * \brief  Send an intentionally malformed KeyUpdate for coverage testing.
- *         bad_type 1: body too long (2 bytes instead of 1).
- *         bad_type 2: invalid update_requested value (0x02).
- */
-int mbedtls_ssl_dtls13_send_bad_keyupdate(mbedtls_ssl_context *ssl, int bad_type);
-
-#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
-/**
- * \brief  Send an intentionally malformed NewConnectionId for coverage testing.
- *         bad_type 1: body truncated to 1 byte.
- *         bad_type 2: list_len == 0.
- *         bad_type 3: cid_len > MBEDTLS_SSL_CID_OUT_LEN_MAX.
- */
-int mbedtls_ssl_dtls13_send_bad_new_connection_id(mbedtls_ssl_context *ssl,
-                                                  int bad_type);
-
-/**
- * \brief  Send an intentionally malformed RequestConnectionId for coverage testing.
- *         bad_type 1: empty body (0 bytes instead of 1).
- */
-int mbedtls_ssl_dtls13_send_bad_request_connection_id(mbedtls_ssl_context *ssl,
-                                                      int bad_type);
-#endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
-#endif /* MBEDTLS_TEST_HOOKS */
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 && MBEDTLS_SSL_PROTO_DTLS */
 
 #if defined(MBEDTLS_SSL_EARLY_DATA)

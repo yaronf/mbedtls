@@ -23,6 +23,20 @@ int main(void)
 
 #include "test/psa_crypto_helpers.h"
 
+/* DTLS 1.3 fault-injection helpers — TEST ONLY, declared in library/ssl_misc.h
+ * (internal header, not in our include path).  Forward-declare here so we can
+ * call them without exporting them in the public API. */
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS)
+int mbedtls_ssl_dtls13_test_send_bad_keyupdate(mbedtls_ssl_context *ssl,
+                                               int bad_type);
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+int mbedtls_ssl_dtls13_test_send_bad_new_connection_id(mbedtls_ssl_context *ssl,
+                                                       int bad_type);
+int mbedtls_ssl_dtls13_test_send_bad_request_connection_id(
+    mbedtls_ssl_context *ssl, int bad_type);
+#endif
+#endif
+
 /* Size of memory to be allocated for the heap, when using the library's memory
  * management and MBEDTLS_MEMORY_BUFFER_ALLOC_C is enabled. */
 #define MEMORY_HEAP_SIZE      120000
@@ -2660,13 +2674,12 @@ usage:
         }
         ret = 0; /* reset for subsequent operations */
     }
-#if defined(MBEDTLS_TEST_HOOKS)
     if (opt.bad_keyupdate > 0) {
         mbedtls_printf("  . Sending bad KeyUpdate (type=%d)...", opt.bad_keyupdate);
         fflush(stdout);
         /* The send itself should succeed; the server will close the connection
          * with a fatal alert when it tries to parse the malformed body. */
-        ret = mbedtls_ssl_dtls13_send_bad_keyupdate(&ssl, opt.bad_keyupdate);
+        ret = mbedtls_ssl_dtls13_test_send_bad_keyupdate(&ssl, opt.bad_keyupdate);
         if (ret != 0) {
             mbedtls_printf(" failed\n  ! send_bad_keyupdate returned -0x%x\n\n",
                            (unsigned int) -ret);
@@ -2675,7 +2688,6 @@ usage:
         mbedtls_printf(" ok (bad message sent, expect server close)\n");
         ret = 0;
     }
-#endif /* MBEDTLS_TEST_HOOKS */
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 && MBEDTLS_SSL_PROTO_DTLS */
 
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS) && \
@@ -2701,7 +2713,6 @@ usage:
         }
         mbedtls_printf(" ok\n");
     }
-#if defined(MBEDTLS_TEST_HOOKS)
     if (opt.bad_new_cid > 0) {
         mbedtls_printf("  . Sending bad NewConnectionId (type=%d)...",
                        opt.bad_new_cid);
@@ -2709,8 +2720,8 @@ usage:
         /* Expect the server to close the connection with a fatal alert.
          * The call itself succeeds (message is sent); the connection will
          * fail when we next try to read/write. */
-        ret = mbedtls_ssl_dtls13_send_bad_new_connection_id(&ssl,
-                                                            opt.bad_new_cid);
+        ret = mbedtls_ssl_dtls13_test_send_bad_new_connection_id(&ssl,
+                                                                 opt.bad_new_cid);
         if (ret != 0) {
             mbedtls_printf(" failed\n  ! send_bad_new_connection_id returned"
                            " -0x%x\n\n", (unsigned int) -ret);
@@ -2727,8 +2738,8 @@ usage:
         mbedtls_printf("  . Sending bad RequestConnectionId (type=%d)...",
                        opt.bad_req_cid);
         fflush(stdout);
-        ret = mbedtls_ssl_dtls13_send_bad_request_connection_id(&ssl,
-                                                                opt.bad_req_cid);
+        ret = mbedtls_ssl_dtls13_test_send_bad_request_connection_id(&ssl,
+                                                                     opt.bad_req_cid);
         if (ret != 0) {
             mbedtls_printf(" failed\n  ! send_bad_request_connection_id returned"
                            " -0x%x\n\n", (unsigned int) -ret);
@@ -2736,7 +2747,6 @@ usage:
         }
         mbedtls_printf(" ok (bad message sent, expect server close)\n");
     }
-#endif /* MBEDTLS_TEST_HOOKS */
 #endif /* TLS1_3 && DTLS && CID */
 
 #if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)

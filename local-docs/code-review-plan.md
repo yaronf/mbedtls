@@ -413,8 +413,9 @@ bad_cookie_on_retry) produce the right outcomes without leaking resources or han
 
 **Findings:**
 
-1. **`send_bad_*` fault-injection functions in production library — not guarded by `MBEDTLS_TEST_HOOKS`. FIXED.**
-   `ssl_msg.c:8655`, `8699`, `8763`: `mbedtls_ssl_dtls13_send_bad_keyupdate`, `mbedtls_ssl_dtls13_send_bad_new_connection_id`, `mbedtls_ssl_dtls13_send_bad_request_connection_id` were compiled unconditionally into the production library. Fixed by wrapping the implementation block in `ssl_msg.c` and the declarations in `ssl.h` with `#if defined(MBEDTLS_TEST_HOOKS)`. Call sites in `ssl_client2.c` also wrapped accordingly.
+1. **`send_bad_*` fault-injection functions exposed in public API. FIXED.**
+   `ssl_msg.c:8655`, `8699`, `8763` and corresponding declarations in `include/mbedtls/ssl.h:5485–5501`: `mbedtls_ssl_dtls13_send_bad_keyupdate`, `mbedtls_ssl_dtls13_send_bad_new_connection_id`, `mbedtls_ssl_dtls13_send_bad_request_connection_id` were declared in the public `ssl.h` header. These access library internals (`start_handshake_msg`, `transform_out`) so they can't be moved out of the library, but they should not be in the public API.
+   **Fix:** renamed to `mbedtls_ssl_dtls13_test_send_bad_*` (with `_test_` infix to signal intent), removed declarations from public `ssl.h`, added them to internal `library/ssl_misc.h` with a "TEST ONLY, DO NOT USE IN PRODUCTION" warning header. The `ssl_client2.c` test program forward-declares the prototypes inline (cannot include `ssl_misc.h` since `library/` is not in its include path) — keeps the library symbol exported but out of the public API surface.
 
 2. **`rotate_cid` option mutated at runtime — FIXED.**
    `ssl_server2.c` and `ssl_client2.c` previously decremented `opt.rotate_cid` in the exchange loop. Replaced with a local `rotate_cid_countdown` variable in both programs, keeping `opt` immutable. Also simplified the cryptic `--opt.rotate_cid == 0` idiom to `rotate_cid_countdown == 1` / `rotate_cid_countdown = 0`.
