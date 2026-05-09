@@ -3302,8 +3302,7 @@ send_request:
                 --opt.cid_change_addr;
             }
         }
-        if (rotate_cid_countdown == 1) {
-            rotate_cid_countdown = 0;
+        if (rotate_cid_countdown > 0 && --rotate_cid_countdown == 0) {
             mbedtls_printf("  . Rotating own inbound CID...");
             fflush(stdout);
             if ((ret = mbedtls_ssl_dtls13_rotate_cids(&ssl)) != 0) {

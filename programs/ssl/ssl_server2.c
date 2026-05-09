@@ -4526,8 +4526,7 @@ data_exchange:
     if (--exchanges_left > 0) {
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS) && \
     defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
-        if (rotate_cid_countdown == 1) {
-            rotate_cid_countdown = 0;
+        if (rotate_cid_countdown > 0 && --rotate_cid_countdown == 0) {
             mbedtls_printf("  . Rotating own inbound CID...");
             fflush(stdout);
             if ((ret = mbedtls_ssl_dtls13_rotate_cids(&ssl)) != 0) {

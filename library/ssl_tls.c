@@ -5321,6 +5321,18 @@ void mbedtls_ssl_free(mbedtls_ssl_context *ssl)
         mbedtls_free(ssl->session_negotiate);
     }
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    /* Free orphan post-KeyUpdate transforms BEFORE freeing transform_application,
+     * since the orphan check relies on comparing pointers against
+     * transform_application to detect aliasing. */
+    if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+        ssl->conf != NULL &&
+        ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+        ssl_dtls13_free_epoch_if_orphan(ssl, &ssl->transform_in);
+        ssl_dtls13_free_epoch_if_orphan(ssl, &ssl->transform_out);
+    }
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
+
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
     mbedtls_ssl_transform_free(ssl->transform_application);
     mbedtls_free(ssl->transform_application);
@@ -5328,12 +5340,6 @@ void mbedtls_ssl_free(mbedtls_ssl_context *ssl)
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 
 #if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
-    if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
-        ssl->conf != NULL &&
-        ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
-        ssl_dtls13_free_epoch_if_orphan(ssl, &ssl->transform_in);
-        ssl_dtls13_free_epoch_if_orphan(ssl, &ssl->transform_out);
-    }
 
     /* Free any retained inbound transforms in the DTLS 1.3 epoch pool.
      * Must be done after handshake_free (which may null transform_handshake
