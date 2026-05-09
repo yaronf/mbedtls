@@ -1204,7 +1204,7 @@ struct mbedtls_ssl_transform {
     unsigned char out_cid[MBEDTLS_SSL_CID_OUT_LEN_MAX];
 #endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
 
-#if defined(MBEDTLS_SSL_PROTO_DTLS)
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
     /* DTLS 1.3 sequence number encryption keys (§4.2.3 of RFC 9147 bis).
      * Derived via HKDF-Expand-Label(traffic_secret, "sn", "", key_len).
      * sn_key     = inbound  (decrypt) direction SNE key.
@@ -1216,7 +1216,6 @@ struct mbedtls_ssl_transform {
     unsigned char sn_key_enc[MBEDTLS_SSL_MAX_KEY_LENGTH];
     size_t        sn_key_enc_len;     /*!< 0 when outbound SNE is not active */
 
-#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
     /* DTLS 1.3 epoch this transform belongs to (RFC 9147 §4.2.2):
      *   0 = unset / DTLS 1.2 transform
      *   1 = early data (0-RTT)
@@ -1236,8 +1235,7 @@ struct mbedtls_ssl_transform {
      *   conf->dtls13_auth_fail_limit the connection is terminated. */
     uint64_t      out_record_count;
     uint32_t      in_auth_fail_count;
-#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
-#endif /* MBEDTLS_SSL_PROTO_DTLS */
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 
 #if defined(MBEDTLS_SSL_KEEP_RANDBYTES)
     /* We need the Hello random bytes in order to re-derive keys from the
@@ -1424,7 +1422,7 @@ struct mbedtls_ssl_flight_item {
      *
      * Matching rule: check all entries with index < sent_record_count.
      * sent_record_epoch[i] holds the low byte of the epoch for entry i. */
-#define MBEDTLS_SSL_DTLS13_MAX_RECORDS_PER_FLIGHT_ITEM 4
+#define MBEDTLS_SSL_DTLS13_MAX_RECORDS_PER_FLIGHT_ITEM 8
     uint64_t sent_records[MBEDTLS_SSL_DTLS13_MAX_RECORDS_PER_FLIGHT_ITEM];
     uint8_t  sent_record_epoch[MBEDTLS_SSL_DTLS13_MAX_RECORDS_PER_FLIGHT_ITEM];
     uint8_t  sent_record_count;  /*!< number of valid entries; capped at MAX */
@@ -1525,62 +1523,14 @@ const char *mbedtls_ssl_states_str(mbedtls_ssl_states state);
  * was negotiated.  Pool slot 0 (IMMEDIATE) is seeded from own_cid; slot 1
  * (SPARE) is filled with a fresh random CID of the same length.  The pool is
  * only initialised once; subsequent calls are no-ops if pool_ready is set. */
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+void mbedtls_ssl_dtls13_sync_post_hs_seq(mbedtls_ssl_context *ssl);
+#else
 static inline void mbedtls_ssl_dtls13_sync_post_hs_seq(mbedtls_ssl_context *ssl)
 {
-#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
-    if (ssl->conf != NULL &&
-        ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
-        ssl->handshake != NULL) {
-        ssl->dtls13_post_hs_in_msg_seq = ssl->handshake->in_msg_seq;
-        ssl->dtls13_post_hs_msg_seq    = ssl->handshake->out_msg_seq;
-
-#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
-        /* Initialise inbound CID pool if CID was negotiated and pool not yet ready. */
-        if (!ssl->dtls13_own_cid_pool_ready &&
-            ssl->own_cid_len > 0 &&
-            ssl->handshake->cid_in_use == MBEDTLS_SSL_CID_ENABLED) {
-            /* Slot 0 (IMMEDIATE): current own_cid. */
-            ssl->dtls13_own_cid_pool[0].cid_len = ssl->own_cid_len;
-            memcpy(ssl->dtls13_own_cid_pool[0].cid, ssl->own_cid, ssl->own_cid_len);
-            ssl->dtls13_own_cid_pool[0].active = 1;
-
-            /* Slots 1..N-1 (SPARE): fresh random CIDs of the same length.
-             * Failures are non-fatal: affected slots stay inactive. */
-            for (int _pi = 1; _pi < MBEDTLS_SSL_DTLS13_CID_POOL_SIZE; _pi++) {
-                ssl->dtls13_own_cid_pool[_pi].cid_len = ssl->own_cid_len;
-                ssl->dtls13_own_cid_pool[_pi].active = 0;
-                if (psa_generate_random(ssl->dtls13_own_cid_pool[_pi].cid,
-                                        ssl->own_cid_len) == PSA_SUCCESS) {
-                    ssl->dtls13_own_cid_pool[_pi].active = 1;
-                }
-            }
-
-            ssl->dtls13_own_cid_active_idx = 0;
-            ssl->dtls13_own_cid_pool_ready = 1;
-        }
-
-        /* Initialise outbound CID pool from the peer's CID already installed in
-         * transform_out.  Spare slots start empty; they are filled when the peer
-         * sends a NewConnectionId with multiple CIDs. */
-        if (!ssl->dtls13_peer_cid_pool_ready &&
-            ssl->transform_out != NULL &&
-            ssl->transform_out->out_cid_len > 0) {
-            memset(ssl->dtls13_peer_cid_pool, 0, sizeof(ssl->dtls13_peer_cid_pool));
-            ssl->dtls13_peer_cid_pool[0].cid_len = ssl->transform_out->out_cid_len;
-            memcpy(ssl->dtls13_peer_cid_pool[0].cid,
-                   ssl->transform_out->out_cid,
-                   ssl->transform_out->out_cid_len);
-            ssl->dtls13_peer_cid_pool[0].active = 1;
-            /* Slots 1..N-1 start empty; filled on receipt of NewConnectionId. */
-            ssl->dtls13_peer_cid_active_idx = 0;
-            ssl->dtls13_peer_cid_pool_ready = 1;
-        }
-#endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
-    }
-#else
     (void) ssl;
-#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 }
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 
 static inline void mbedtls_ssl_handshake_set_state(mbedtls_ssl_context *ssl,
                                                    mbedtls_ssl_states state)

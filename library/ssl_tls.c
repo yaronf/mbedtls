@@ -1295,6 +1295,53 @@ static void ssl_dtls13_free_epoch_if_orphan(mbedtls_ssl_context *ssl,
         *transform = NULL;
     }
 }
+
+void mbedtls_ssl_dtls13_sync_post_hs_seq(mbedtls_ssl_context *ssl)
+{
+    if (ssl->conf == NULL ||
+        ssl->conf->transport != MBEDTLS_SSL_TRANSPORT_DATAGRAM ||
+        ssl->handshake == NULL) {
+        return;
+    }
+
+    ssl->dtls13_post_hs_in_msg_seq = ssl->handshake->in_msg_seq;
+    ssl->dtls13_post_hs_msg_seq    = ssl->handshake->out_msg_seq;
+
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+    if (!ssl->dtls13_own_cid_pool_ready &&
+        ssl->own_cid_len > 0 &&
+        ssl->handshake->cid_in_use == MBEDTLS_SSL_CID_ENABLED) {
+        ssl->dtls13_own_cid_pool[0].cid_len = ssl->own_cid_len;
+        memcpy(ssl->dtls13_own_cid_pool[0].cid, ssl->own_cid, ssl->own_cid_len);
+        ssl->dtls13_own_cid_pool[0].active = 1;
+
+        for (int pi = 1; pi < MBEDTLS_SSL_DTLS13_CID_POOL_SIZE; pi++) {
+            ssl->dtls13_own_cid_pool[pi].cid_len = ssl->own_cid_len;
+            ssl->dtls13_own_cid_pool[pi].active = 0;
+            if (psa_generate_random(ssl->dtls13_own_cid_pool[pi].cid,
+                                    ssl->own_cid_len) == PSA_SUCCESS) {
+                ssl->dtls13_own_cid_pool[pi].active = 1;
+            }
+        }
+
+        ssl->dtls13_own_cid_active_idx = 0;
+        ssl->dtls13_own_cid_pool_ready = 1;
+    }
+
+    if (!ssl->dtls13_peer_cid_pool_ready &&
+        ssl->transform_out != NULL &&
+        ssl->transform_out->out_cid_len > 0) {
+        memset(ssl->dtls13_peer_cid_pool, 0, sizeof(ssl->dtls13_peer_cid_pool));
+        ssl->dtls13_peer_cid_pool[0].cid_len = ssl->transform_out->out_cid_len;
+        memcpy(ssl->dtls13_peer_cid_pool[0].cid,
+               ssl->transform_out->out_cid,
+               ssl->transform_out->out_cid_len);
+        ssl->dtls13_peer_cid_pool[0].active = 1;
+        ssl->dtls13_peer_cid_active_idx = 0;
+        ssl->dtls13_peer_cid_pool_ready = 1;
+    }
+#endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
+}
 #endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 
 /*

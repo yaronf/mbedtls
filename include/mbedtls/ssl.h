@@ -1638,7 +1638,7 @@ typedef struct {
     uint64_t epoch;                   /*!< full 64-bit epoch value; 0=empty  */
     mbedtls_ssl_transform *transform; /*!< NULL when slot is empty           */
     uint64_t retired_epoch;           /*!< eviction key: epoch number (lower = older, evicted first) */
-    unsigned char out_ctr[8];         /*!< outbound counter for this epoch   */
+    unsigned char out_ctr[MBEDTLS_SSL_SEQUENCE_NUMBER_LEN]; /*!< outbound counter for this epoch   */
     /* Per-epoch anti-replay window (RFC 9147 §4.2.1).
      * Mirrors in_window / in_window_top in ssl_context but scoped to this
      * epoch.  Initialised to 0/0 when a slot is created.  Updated after

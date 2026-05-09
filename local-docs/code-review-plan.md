@@ -331,6 +331,7 @@ client and server, and does the DTLS 1.2 downgrade path leave no DTLS 1.3 state 
 1. **Pointless insert-then-free in `session_reset_msg_layer` and `mbedtls_ssl_free` — `ssl_tls.c:1327–1336` and `ssl_tls.c:5290–5299`. FIXED.**
    `transform_in`/`transform_out` were inserted into the epoch pool only to be freed immediately by `ssl_dtls13_epoch_pool_free`. Fixed both call sites to free them directly (with `mbedtls_ssl_transform_free` + `mbedtls_free`) instead of routing through the pool. The `_contains()` guard is still needed to avoid double-freeing transforms already in the pool.
 
+
 ---
 
 ## Area 14: ssl_misc.h and ssl.h — new struct fields and API surface (RFC 9147 §4–§9)
@@ -353,6 +354,17 @@ correctly sized, documented, and initialized?
 - `dtls13_epoch_pool` array in `ssl_context`: is `MBEDTLS_SSL_DTLS13_EPOCH_POOL_SIZE` sufficient? A too-small pool causes premature epoch eviction, breaking retransmit for old epochs.
 - `dtls13_peer_cid_pool` and `dtls13_own_cid_pool` in `ssl_context`: are pool sizes documented and matched between the two directions? Is `dtls13_peer_cid_active_idx` bounds-checked on all access paths?
 - New public API in `ssl.h` (`mbedtls_ssl_conf_dtls13_aead_limit`, `mbedtls_ssl_conf_dtls13_auth_fail_limit`, `mbedtls_ssl_dtls13_rotate_cids`): are all parameters validated, and do the functions guard against being called on TLS (non-datagram) connections?
+
+**Findings:**
+
+1. **`dtls13_received_records` in `handshake_params` is a layering violation — design note.**
+   Record sequence number tracking (`dtls13_received_records[]`, `dtls13_received_record_count` at `ssl_misc.h:941–942`) lives in `mbedtls_ssl_handshake_params`, but record-layer state belongs on `mbedtls_ssl_context` (cf. `in_epoch`, `in_window`, `cur_out_ctr`, epoch pool). The post-handshake fallback already has the right home: `dtls13_post_hs_ack` on the context. The dual-path dispatch at `ssl_msg.c:6813` (`hs != NULL ? hs->dtls13_received_records : pa->...`) is a symptom of the split. Cleaner design: keep received records on `ssl_context` (or always via `dtls13_post_hs_ack`) and eliminate the dual path.
+
+2. **`MBEDTLS_SSL_DTLS13_MAX_RECORDS_PER_FLIGHT_ITEM` increased from 4 to 8. FIXED.**
+   `ssl_misc.h:1425`: with 4 slots (1 original + 3 ring), retransmit 4+ would evict earlier entries causing unnecessary retransmits when the peer ACKs an evicted record number. The default timer doubling allows ~6 retransmits before timeout; 8 slots (1 original + 7 ring) covers all retransmits without eviction.
+
+3. **`sn_key`/`sn_key_enc` fields guarded by `MBEDTLS_SSL_PROTO_DTLS` only — FIXED.**
+   These are DTLS 1.3-only fields but were guarded by just `MBEDTLS_SSL_PROTO_DTLS`, wasting space in DTLS 1.2-only builds. Fixed to `MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3`; inner `#if TLS1_3` block for `dtls13_epoch` and AEAD counters folded into the outer guard.
 
 ---
 
