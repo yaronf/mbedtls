@@ -265,40 +265,107 @@ two more instances of the same RFC 9147 §7 compliance gap, and the
 scaling concern only points more strongly toward the shared-mechanism
 design.
 
-## Test plan -- start 
+## Test plan — TDD: write failing tests first
 
-- Re-enable the existing failing test
-  `tests/dtls13/cases/keyupdate.yaml` "KeyUpdate timeout: server ACK
-  lost, client retransmit budget exhausts" — must PASS post-fix.
-- Add symmetric test for NewConnectionId timeout if broad-scope.
-- Add a positive test: client sends KU, server ACK is dropped once
-  (`drop=2` randomly), client retransmits and the second send is acked.
-  This verifies retransmit *progress*, not just budget exhaustion.
-- Verify no regression in:
-  - existing keyupdate.yaml tests (basic KU send/ack)
-  - NST_WAIT_ACK timeout test (commit `46f89e8f2c`)
-  - all 56 dtls13 tests in the suite
+The first commit of this work should be **failing tests for every
+in-scope scenario**. The implementation commits then make them pass
+one by one. This locks in scope and provides a regression suite.
+
+### First commit: failing tests
+
+1. **Already in tree (failing today)** — `tests/dtls13/cases/keyupdate.yaml`
+   "KeyUpdate timeout: server ACK lost, client retransmit budget
+   exhausts". Asserts `client_handshake_timeout`. (Committed in
+   `b5ae66e562`.)
+
+2. **Add: NewConnectionId timeout** — symmetric to the KU test. Client
+   triggers `send_new_cid=1`; proxy corrupts s2c after the post-handshake
+   point so server's ACK of NCI is lost. Server's NCI retransmit
+   eventually surfaces TIMEOUT. Asserts `server_handshake_timeout`.
+
+3. **Add: server-initiated KeyUpdate timeout** — server triggers
+   `key_update=1`; proxy corrupts c2s after the post-handshake point so
+   client's ACK of server's KU is lost. Server's KU retransmit
+   eventually surfaces TIMEOUT. Asserts `server_handshake_timeout`.
+
+4. **Add: KeyUpdate retransmit progress (positive case)** — client sends
+   KU; proxy uses `drop=2` so ~50% of packets drop randomly, but
+   `MAX_HOLD=2` ensures the same packet isn't dropped indefinitely.
+   Client retransmits at least once before a non-dropped retransmission
+   gets through and is ACKed. Verifies retransmit *progress*, not just
+   budget exhaustion. Asserts `client_key_update_acked`.
+
+### Subsequent commits: implementation, one test at a time
+
+Each implementation commit should be expected to flip exactly one
+failing test to passing, with no regressions in the existing 56 tests.
+A reviewer can verify the diff against the matching test.
+
+### Regression tests to verify continue to pass
+
+- All existing keyupdate.yaml tests (basic KU send/ack, double KU, etc.)
+- NST_WAIT_ACK timeout test (commit `46f89e8f2c`)
+- All other 56 dtls13 tests in the suite
+
+## In-scope (revised)
+
+- **KeyUpdate retransmit** (client- and server-initiated) — primary fix.
+- **NewConnectionId retransmit** — same gap, same mechanism. Symmetric
+  fix is essentially free given the chosen design.
+- **RequestConnectionId retransmit** — same.
+- **Reciprocal KU on `update_requested=1`** — the reciprocal KU send
+  goes through the same path; automatically covered.
 
 ## Out of scope
 
-- Server-initiated KeyUpdate retransmit (server side has the same gap;
-  fix is symmetric but requires the server-side test driver).
-- Reciprocal KU on `update_requested=1` — the reciprocal KU send goes
-  through the same path so it's automatically covered.
-- KeyUpdate during a still-pending KU ACK — already handled by the
-  `dtls13_ku_ack_pending` guard returning `WANT_WRITE`.
+- **KeyUpdate during a still-pending KU ACK** — already handled by the
+  `dtls13_ku_ack_pending` guard returning `WANT_WRITE`. No change needed.
+- **Changing the retransmit budget** (`hs_timeout_min`, `hs_timeout_max`)
+  for post-hs messages specifically. Use the same configuration as the
+  handshake retransmit; if separate tuning is desired, that's a
+  follow-up.
+- **Per-message-type retransmit policies** (e.g. KU retransmit fewer
+  times than a handshake message). Treat all post-hs HS messages
+  identically; per-type policy can be a follow-up.
 
-## Open questions
+## Answers to the open questions (decided up front)
 
-1. What clears `retransmit_state == WAITING` in the post-KU read loop?
-   This is the immediate blocker and must be answered before any of the
-   above approaches will work cleanly.
-2. Should the post-hs retransmit timer be the same `mbedtls_ssl_set_timer`
-   as the handshake one, or a separate timer? The current handshake
-   timer is a single resource; reusing it is simpler but couples post-hs
-   timing to handshake-completion bookkeeping.
-3. Is it acceptable to share `handshake->flight` for post-hs messages,
-   or should post-hs use a separate queue? Sharing gives free
-   integration with `mbedtls_ssl_resend`; separating gives clean
-   isolation. Recommendation: separate, given the lifecycle issues seen
-   in this attempt.
+### Q1: What clears `retransmit_state` post-KU on the shared flight?
+
+**Dissolved by the design choice.** With the chosen design
+(`dtls13_pending_acks[]` slot extension), the new retransmit state
+lives on the slot, not on the shared `handshake->flight` /
+`handshake->retransmit_state`. Nothing the handshake state machine does
+will affect it. We don't need to find the offender for the rejected
+"direct flight reuse" approach.
+
+If for some reason we're forced back to the shared-flight design later,
+the bisection plan would be: instrument every `retransmit_state =`
+write site with a unique log tag, run the failing KU test, and find the
+write that fires after `send_flight_completed → WAITING` and before the
+first `f_recv_timeout: 0` line.
+
+### Q2: Same `mbedtls_ssl_set_timer` or a separate timer?
+
+**Same.** mbedtls's BIO API exposes one timer per `mbedtls_ssl_context`
+(`f_set_timer` / `f_get_timer`). We share it.
+
+The dispatcher needs to compute the next wakeup as
+`min(handshake_retransmit_deadline, min(slot.next_retransmit_at))`
+whenever any deadline changes (slot register, slot ACK, slot
+retransmit, handshake state transitions). On timer expiry, the wakeup
+handler walks the active deadlines and fires the one(s) whose deadline
+has passed.
+
+This is a small bookkeeping addition to the existing single-timer
+machinery. The post-hs slots own their own deadline state; the timer
+itself stays a single resource.
+
+### Q3: Share `handshake->flight` or use a separate queue?
+
+**Separate.** This is the core of the chosen design. Sharing the
+handshake flight queue is what failed in this session due to lifecycle
+coupling. The slot extension in `dtls13_pending_acks[]` gives clean
+isolation: post-hs messages are independent (each KU/NCI/RCI is its
+own logical "flight of one"), so they shouldn't share the queue meant
+for grouped handshake messages.
