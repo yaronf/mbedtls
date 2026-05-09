@@ -264,5 +264,35 @@ cases:
         - server_no_cid_mismatch
         - client_no_cid_mismatch
 
+  - name: "KeyUpdate timeout: server ACK lost, client retransmit budget exhausts"
+    # KeyUpdate is a post-handshake handshake message (HS type 24).  Per
+    # RFC 9147 §5.8 (retransmission) and §7 (ACK), it MUST follow the same
+    # flight retransmit semantics as in-handshake messages: on timer expiry
+    # without an ACK, the sender retransmits; after the budget exhausts,
+    # the connection times out.
+    #
+    # Today this fails because mbedtls's KeyUpdate path doesn't enqueue the
+    # message into handshake->flight (the queue mbedtls_ssl_resend walks);
+    # instead it uses dtls13_pending_acks[] only for ACK matching.  No
+    # retransmit fires, so the client sits forever in mbedtls_ssl_read.
+    # See RFC compliance gap noted in feedback_macos_udp_conn_reset.md and
+    # the code-review-plan.  This test will pass once post-handshake HS
+    # messages are added to the retransmit queue.
+    skip_runners: [wolfssl]
+    proxy:
+      corrupt_after_pkt: 7
+      corrupt_dir: s2c
+    server:
+      hs_timeout: [100, 400]
+      debug_level: 1
+    client:
+      hs_timeout: [100, 400]
+      debug_level: 1
+      key_update: 1
+    expect:
+      exit: 1
+      assert:
+        - client_handshake_timeout
+
 
 
