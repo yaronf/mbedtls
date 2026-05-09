@@ -5722,35 +5722,14 @@ static int ssl_prepare_record_content(mbedtls_ssl_context *ssl,
                            ((uint64_t) rec->ctr[6] <<  8) |
                            ((uint64_t) rec->ctr[7]);
 
-            if (ssl->handshake != NULL) {
-                mbedtls_ssl_handshake_params *hs = ssl->handshake;
-                uint8_t idx = hs->dtls13_received_record_count;
-                if (idx < MBEDTLS_SSL_DTLS13_MAX_ACK_RECORDS) {
-                    hs->dtls13_received_records[idx].epoch = (uint64_t) rec_epoch;
-                    hs->dtls13_received_records[idx].seq   = seq;
-                    hs->dtls13_received_record_count = idx + 1;
-                    MBEDTLS_SSL_DEBUG_MSG(4, ("DTLS 1.3: recorded epoch=%u seq=%llu for ACK",
-                                              (unsigned) rec_epoch,
-                                              (unsigned long long) seq));
-                }
-            } else {
-                /* Post-handshake: use the lazily-allocated post-hs ACK buffer. */
-                if (ssl->dtls13_post_hs_ack == NULL) {
-                    ssl->dtls13_post_hs_ack = mbedtls_calloc(
-                        1, sizeof(mbedtls_ssl_dtls13_post_hs_ack));
-                }
-                if (ssl->dtls13_post_hs_ack != NULL) {
-                    mbedtls_ssl_dtls13_post_hs_ack *pa = ssl->dtls13_post_hs_ack;
-                    if (pa->count < MBEDTLS_SSL_DTLS13_MAX_ACK_RECORDS) {
-                        pa->records[pa->count].epoch = (uint64_t) rec_epoch;
-                        pa->records[pa->count].seq   = seq;
-                        pa->count++;
-                        MBEDTLS_SSL_DEBUG_MSG(4, ("DTLS 1.3: post-hs recorded "
-                                                  "epoch=%u seq=%llu for ACK",
-                                                  (unsigned) rec_epoch,
-                                                  (unsigned long long) seq));
-                    }
-                }
+            uint8_t idx = ssl->dtls13_received_record_count;
+            if (idx < MBEDTLS_SSL_DTLS13_MAX_ACK_RECORDS) {
+                ssl->dtls13_received_records[idx].epoch = (uint64_t) rec_epoch;
+                ssl->dtls13_received_records[idx].seq   = seq;
+                ssl->dtls13_received_record_count = idx + 1;
+                MBEDTLS_SSL_DEBUG_MSG(4, ("DTLS 1.3: recorded epoch=%u seq=%llu for ACK",
+                                          (unsigned) rec_epoch,
+                                          (unsigned long long) seq));
             }
         }
     }
@@ -6781,23 +6760,16 @@ static int ssl_get_next_record(mbedtls_ssl_context *ssl)
  *     uint64 sequence_number;
  *   };
  *
- * The record numbers are taken from handshake->dtls13_received_records[].
+ * The record numbers are taken from ssl->dtls13_received_records[].
  * Returns 0 on success.
  */
 MBEDTLS_CHECK_RETURN_CRITICAL
 static int ssl_dtls13_write_ack(mbedtls_ssl_context *ssl)
 {
     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
-    mbedtls_ssl_handshake_params *hs = ssl->handshake;
-    mbedtls_ssl_dtls13_post_hs_ack *pa = ssl->dtls13_post_hs_ack;
     unsigned char *p;
     size_t count;
     size_t i;
-
-    /* Need either the handshake record list or the post-hs buffer. */
-    if (hs == NULL && pa == NULL) {
-        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
-    }
 
     /* If there is already pending output from a previous operation (e.g. a
      * partially-sent flight retransmit), we cannot safely encode a new record
@@ -6810,7 +6782,7 @@ static int ssl_dtls13_write_ack(mbedtls_ssl_context *ssl)
         return MBEDTLS_ERR_SSL_WANT_WRITE;
     }
 
-    count = (hs != NULL) ? hs->dtls13_received_record_count : pa->count;
+    count = ssl->dtls13_received_record_count;
 
     /* 2-byte length field + 16 bytes per RecordNumber */
     ssl->out_msglen = 2 + count * 16;
@@ -6824,10 +6796,8 @@ static int ssl_dtls13_write_ack(mbedtls_ssl_context *ssl)
     MBEDTLS_SSL_DEBUG_MSG(2, ("=> write ACK (%u record numbers)", (unsigned) count));
 
     for (i = 0; i < count; i++) {
-        uint64_t epoch = (hs != NULL) ? hs->dtls13_received_records[i].epoch
-                                      : pa->records[i].epoch;
-        uint64_t seq   = (hs != NULL) ? hs->dtls13_received_records[i].seq
-                                      : pa->records[i].seq;
+        uint64_t epoch = ssl->dtls13_received_records[i].epoch;
+        uint64_t seq   = ssl->dtls13_received_records[i].seq;
         MBEDTLS_SSL_DEBUG_MSG(3, ("ACK: epoch=%llu seq=%llu",
                                   (unsigned long long) epoch,
                                   (unsigned long long) seq));
@@ -6852,10 +6822,8 @@ static int ssl_dtls13_write_ack(mbedtls_ssl_context *ssl)
     }
 
     ssl->dtls13_ack_pending = 0;
-    /* Clear post-hs buffer so it's ready for the next batch of records. */
-    if (hs == NULL && pa != NULL) {
-        pa->count = 0;
-    }
+    /* Clear the buffer so it's ready for the next batch of records. */
+    ssl->dtls13_received_record_count = 0;
     return 0;
 }
 
@@ -7200,18 +7168,13 @@ int mbedtls_ssl_handle_message_type(mbedtls_ssl_context *ssl)
             ssl->state == MBEDTLS_SSL_HANDSHAKE_OVER &&
             /* DTLS 1.3: do NOT free the handshake context when:
              *   (a) a post-handshake message (e.g. NST) is being processed —
-             *       ssl_tls13_handle_hs_message_post_handshake() still needs it; or
-             *   (b) a DTLS ACK is pending — ssl_dtls13_write_ack() accesses
-             *       ssl->handshake->dtls13_received_records.
-             *   (c) the server is in WAIT_ACK (state > HANDSHAKE_OVER) and still
+             *       ssl_tls13_handle_hs_message_post_handshake() still needs it.
+             *   (b) the server is in WAIT_ACK (state > HANDSHAKE_OVER) and still
              *       needs ssl->handshake->retransmit_state after read_record returns.
-             * Using ssl->state == HANDSHAKE_OVER (not >=) covers (c) automatically.
-             * Free only when the message is non-handshake AND no ACK is pending. */
-            ssl->in_msgtype != MBEDTLS_SSL_MSG_HANDSHAKE
-#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
-            && !ssl->dtls13_ack_pending
-#endif
-            ) {
+             * Using ssl->state == HANDSHAKE_OVER (not >=) covers (b) automatically.
+             * (DTLS ACKs use ssl->dtls13_received_records on the context, so a
+             * pending ACK no longer requires handshake state.) */
+            ssl->in_msgtype != MBEDTLS_SSL_MSG_HANDSHAKE) {
             mbedtls_ssl_handshake_wrapup_free_hs_transform(ssl);
         }
     }

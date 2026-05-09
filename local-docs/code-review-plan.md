@@ -357,8 +357,10 @@ correctly sized, documented, and initialized?
 
 **Findings:**
 
-1. **`dtls13_received_records` in `handshake_params` is a layering violation — design note.**
-   Record sequence number tracking (`dtls13_received_records[]`, `dtls13_received_record_count` at `ssl_misc.h:941–942`) lives in `mbedtls_ssl_handshake_params`, but record-layer state belongs on `mbedtls_ssl_context` (cf. `in_epoch`, `in_window`, `cur_out_ctr`, epoch pool). The post-handshake fallback already has the right home: `dtls13_post_hs_ack` on the context. The dual-path dispatch at `ssl_msg.c:6813` (`hs != NULL ? hs->dtls13_received_records : pa->...`) is a symptom of the split. Cleaner design: keep received records on `ssl_context` (or always via `dtls13_post_hs_ack`) and eliminate the dual path.
+1. **`dtls13_received_records` in `handshake_params` was a layering violation. FIXED.**
+   Record sequence number tracking lived in `mbedtls_ssl_handshake_params`, but record-layer state belongs on `mbedtls_ssl_context`. The dual-path dispatch (`hs != NULL ? hs->dtls13_received_records : pa->...`) for the during-handshake vs post-handshake cases was a symptom.
+   **Fix:** moved `dtls13_received_records[]` and `dtls13_received_record_count` to `mbedtls_ssl_context`. Removed the lazily-allocated `mbedtls_ssl_dtls13_post_hs_ack` typedef and the `dtls13_post_hs_ack` pointer from the context. Producer at `ssl_msg.c:5715` collapsed to single path; consumer at `ssl_msg.c:6788` (`ssl_dtls13_write_ack`) likewise; clears count after sending instead of allocating/freeing. Also fixed a latent bug: handshake `dtls13_received_record_count` was never reset after sending an ACK (only post-hs was), causing silent record drops after 16 entries during long handshakes.
+   Side benefit: the comment and guard at `ssl_msg.c:7170-7180` (about not freeing `handshake` while ACK is pending because ACK needs handshake state) is no longer required — comment updated, `!ssl->dtls13_ack_pending` guard removed.
 
 2. **`MBEDTLS_SSL_DTLS13_MAX_RECORDS_PER_FLIGHT_ITEM` increased from 4 to 8. FIXED.**
    `ssl_misc.h:1425`: with 4 slots (1 original + 3 ring), retransmit 4+ would evict earlier entries causing unnecessary retransmits when the peer ACKs an evicted record number. The default timer doubling allows ~6 retransmits before timeout; 8 slots (1 original + 7 ring) covers all retransmits without eviction.

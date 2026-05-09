@@ -927,20 +927,6 @@ struct mbedtls_ssl_handshake_params {
     uint16_t mtu;                       /*!<  Handshake mtu, used to fragment outgoing messages */
 
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
-    /*
-     * DTLS 1.3 ACK tracking (§7 of RFC 9147 bis).
-     *
-     * Records received from the peer's current incoming flight that we have
-     * processed or buffered.  These are sent in outgoing ACK messages.
-     * Cleared when we transition to receiving a new flight.
-     */
-#define MBEDTLS_SSL_DTLS13_MAX_ACK_RECORDS 16
-    struct {
-        uint64_t epoch;
-        uint64_t seq;
-    } dtls13_received_records[MBEDTLS_SSL_DTLS13_MAX_ACK_RECORDS];
-    uint8_t dtls13_received_record_count;
-
 #if defined(MBEDTLS_SSL_CLI_C)
     /** ClientHello bytes with full 12-byte DTLS handshake header, saved for
      *  DTLS 1.2 fallback transcript re-hash (Option B).  NULL unless a
@@ -1065,25 +1051,6 @@ struct mbedtls_ssl_handshake_params {
 #endif
 #endif /* MBEDTLS_SSL_SERVER_NAME_INDICATION */
 };
-
-#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
-/**
- * Post-handshake ACK record list (DTLS 1.3).
- *
- * After the handshake completes, ssl->handshake is freed.  Any post-handshake
- * message that requires an ACK (KeyUpdate, NewSessionTicket, post-hs auth)
- * stores the received record numbers here instead.  Allocated lazily on the
- * first post-handshake record that needs ACKing; freed in ssl_free() and
- * session reset.
- */
-typedef struct mbedtls_ssl_dtls13_post_hs_ack {
-    struct {
-        uint64_t epoch;
-        uint64_t seq;
-    } records[MBEDTLS_SSL_DTLS13_MAX_ACK_RECORDS];
-    uint8_t count;
-} mbedtls_ssl_dtls13_post_hs_ack;
-#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 
 typedef struct mbedtls_ssl_hs_buffer mbedtls_ssl_hs_buffer;
 

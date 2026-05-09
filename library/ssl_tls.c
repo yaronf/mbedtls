@@ -1395,8 +1395,7 @@ void mbedtls_ssl_session_reset_msg_layer(mbedtls_ssl_context *ssl,
     mbedtls_platform_zeroize(ssl->dtls13_ku_pending_secret,
                              sizeof(ssl->dtls13_ku_pending_secret));
     ssl->dtls13_ku_ack_pending = 0;
-    mbedtls_free(ssl->dtls13_post_hs_ack);
-    ssl->dtls13_post_hs_ack = NULL;
+    ssl->dtls13_received_record_count = 0;
 #endif
 
     ssl->transform_in  = NULL;
@@ -5347,8 +5346,6 @@ void mbedtls_ssl_free(mbedtls_ssl_context *ssl)
     ssl->dtls13_transform_pending_out = NULL;
     mbedtls_platform_zeroize(ssl->dtls13_ku_pending_secret,
                              sizeof(ssl->dtls13_ku_pending_secret));
-    mbedtls_free(ssl->dtls13_post_hs_ack);
-    ssl->dtls13_post_hs_ack = NULL;
 #endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 
     if (ssl->session) {

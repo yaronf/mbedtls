@@ -876,9 +876,6 @@ typedef struct mbedtls_ssl_key_cert mbedtls_ssl_key_cert;
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
 typedef struct mbedtls_ssl_flight_item mbedtls_ssl_flight_item;
 #endif
-#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
-struct mbedtls_ssl_dtls13_post_hs_ack;
-#endif
 
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_SESSION_TICKETS)
 #define MBEDTLS_SSL_TLS1_3_TICKET_ALLOW_PSK_RESUMPTION                          \
@@ -1670,6 +1667,11 @@ typedef struct {
  *  ACK.  Currently 2: one KeyUpdate + one NewConnectionId. */
 #define MBEDTLS_SSL_DTLS13_MAX_PENDING_ACKS 2
 
+/** Maximum number of (epoch, sequence_number) pairs we track for sending in
+ *  outgoing ACK messages (RFC 9147 §7).  16 covers normal handshake flights;
+ *  excess records are silently dropped (the peer will retransmit). */
+#define MBEDTLS_SSL_DTLS13_MAX_ACK_RECORDS 16
+
 #endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 
 struct mbedtls_ssl_context {
@@ -1900,10 +1902,18 @@ struct mbedtls_ssl_context {
     mbedtls_ssl_dtls13_pending_ack
         MBEDTLS_PRIVATE(dtls13_pending_acks)[MBEDTLS_SSL_DTLS13_MAX_PENDING_ACKS];
 
-    /** Lazily-allocated post-handshake ACK record list.
-     *  NULL until the first post-handshake record requiring an ACK arrives.
-     *  Freed in mbedtls_ssl_free() and session reset. */
-    struct mbedtls_ssl_dtls13_post_hs_ack *MBEDTLS_PRIVATE(dtls13_post_hs_ack);
+    /** ACK record list for both handshake and post-handshake messages
+     *  (RFC 9147 §7).  Records received from the peer are appended here as
+     *  they are successfully decrypted; entries are consumed and the count
+     *  reset when the outgoing ACK is sent.  Lives on the context (not
+     *  handshake_params) because record-layer state must outlive the
+     *  handshake — post-handshake messages (KeyUpdate, NewSessionTicket)
+     *  also use this buffer. */
+    struct {
+        uint64_t epoch;
+        uint64_t seq;
+    } MBEDTLS_PRIVATE(dtls13_received_records)[MBEDTLS_SSL_DTLS13_MAX_ACK_RECORDS];
+    uint8_t MBEDTLS_PRIVATE(dtls13_received_record_count);
 
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
