@@ -379,3 +379,38 @@ cases:
         - server_cid_negotiated
         - client_cid_negotiated
         - server_new_cid_not_accepted
+
+  - name: "NewConnectionId timeout: server-initiated, client ACK lost"
+    # Server sends NewConnectionId post-handshake; the proxy corrupts c2s
+    # packets after the NST ACK has been received so the client's ACK of
+    # the NCI is lost.  Server's NCI retransmit budget should exhaust
+    # and TIMEOUT should propagate.
+    #
+    # Today this fails because mbedtls's NewConnectionId path uses
+    # dtls13_pending_acks[] for ACK matching but no retransmit machinery —
+    # same RFC 9147 §7 compliance gap as KeyUpdate.  See
+    # local-docs/keyupdate-retransmit-plan.md (broad-scope fix covers
+    # KU, NCI, and RCI symmetrically).
+    #
+    # Threshold set to 8 so c2s packets 1-8 (handshake + NST ACK + HTTP)
+    # flow clean and the test exercises ONLY the NCI ACK path — not
+    # NST_WAIT_ACK timeout (which is fixed in 46f89e8f2c).
+    skip_runners: [wolfssl]
+    proxy:
+      corrupt_after_pkt: 8
+      corrupt_dir: c2s
+    server:
+      hs_timeout: [100, 400]
+      debug_level: 1
+      cid: 1
+      cid_val: "deadbeef"
+      send_new_cid: 1
+    client:
+      hs_timeout: [100, 400]
+      debug_level: 1
+      cid: 1
+      cid_val: "cafebabe"
+    expect:
+      exit: 1
+      assert:
+        - server_handshake_timeout

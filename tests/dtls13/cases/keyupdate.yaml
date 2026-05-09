@@ -264,7 +264,7 @@ cases:
         - server_no_cid_mismatch
         - client_no_cid_mismatch
 
-  - name: "KeyUpdate timeout: server ACK lost, client retransmit budget exhausts"
+  - name: "KeyUpdate timeout: client-initiated, server ACK lost"
     # KeyUpdate is a post-handshake handshake message (HS type 24).  Per
     # RFC 9147 §5.8 (retransmission) and §7 (ACK), it MUST follow the same
     # flight retransmit semantics as in-handshake messages: on timer expiry
@@ -272,12 +272,9 @@ cases:
     # the connection times out.
     #
     # Today this fails because mbedtls's KeyUpdate path doesn't enqueue the
-    # message into handshake->flight (the queue mbedtls_ssl_resend walks);
-    # instead it uses dtls13_pending_acks[] only for ACK matching.  No
-    # retransmit fires, so the client sits forever in mbedtls_ssl_read.
-    # See RFC compliance gap noted in feedback_macos_udp_conn_reset.md and
-    # the code-review-plan.  This test will pass once post-handshake HS
-    # messages are added to the retransmit queue.
+    # message into the retransmit machinery; it only uses dtls13_pending_acks[]
+    # for ACK matching.  No retransmit fires, so the client sits forever in
+    # mbedtls_ssl_read.  See local-docs/keyupdate-retransmit-plan.md.
     skip_runners: [wolfssl]
     proxy:
       corrupt_after_pkt: 7
@@ -293,6 +290,32 @@ cases:
       exit: 1
       assert:
         - client_handshake_timeout
+
+  - name: "KeyUpdate timeout: server-initiated, client ACK lost"
+    # Symmetric to the client-initiated case: server triggers KeyUpdate
+    # post-handshake; the proxy corrupts c2s packets after the NST ACK
+    # has been received so the client's ACK of the server's KU is lost.
+    # Server's KU retransmit budget should exhaust and TIMEOUT propagate.
+    #
+    # Same RFC compliance gap as the client-initiated case.  Threshold
+    # set to 8 so c2s packets 1-8 (handshake CH/Finished/ACK + NST ACK
+    # + HTTP) flow clean and the test exercises ONLY the KU ACK path —
+    # not NST_WAIT_ACK timeout (which is fixed in 46f89e8f2c).
+    skip_runners: [wolfssl]
+    proxy:
+      corrupt_after_pkt: 8
+      corrupt_dir: c2s
+    server:
+      hs_timeout: [100, 400]
+      debug_level: 1
+      key_update: 1
+    client:
+      hs_timeout: [100, 400]
+      debug_level: 1
+    expect:
+      exit: 1
+      assert:
+        - server_handshake_timeout
 
 
 
