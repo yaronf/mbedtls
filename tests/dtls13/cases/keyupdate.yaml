@@ -298,12 +298,13 @@ cases:
     # Server's KU retransmit budget should exhaust and TIMEOUT propagate.
     #
     # Same RFC compliance gap as the client-initiated case.  Threshold
-    # set to 8 so c2s packets 1-8 (handshake CH/Finished/ACK + NST ACK
-    # + HTTP) flow clean and the test exercises ONLY the KU ACK path —
-    # not NST_WAIT_ACK timeout (which is fixed in 46f89e8f2c).
+    # set to 6 so c2s packets 1-6 (handshake CH×2 + Finished+ACK + NST ACK
+    # + HTTP request) flow clean and packet 7 (the client's KU ACK) gets
+    # corrupted — exercising ONLY the KU ACK path, not NST_WAIT_ACK
+    # timeout (which is fixed in 46f89e8f2c).
     skip_runners: [wolfssl]
     proxy:
-      corrupt_after_pkt: 8
+      corrupt_after_pkt: 6
       corrupt_dir: c2s
     server:
       hs_timeout: [100, 400]

@@ -285,7 +285,7 @@ run_test    "DTLS 1.3 CID update: CID pool: bad NewConnectionId with 2-entry lis
 requires_protocol_version dtls13
 requires_config_enabled MBEDTLS_SSL_DTLS_CONNECTION_ID
 run_test    "DTLS 1.3 CID update: NewConnectionId timeout: server-initiated, client ACK lost" \
-            -p "$P_PXY corrupt_after_pkt=8 corrupt_dir=c2s" \
+            -p "$P_PXY corrupt_after_pkt=5 corrupt_dir=c2s" \
             "$P_SRV dtls=1 force_version=dtls13 hs_timeout=100-400 debug_level=1 cid=1 cid_val=deadbeef send_new_cid=1" \
             "$P_CLI dtls=1 force_version=dtls13 hs_timeout=100-400 debug_level=1 cid=1 cid_val=cafebabe" \
             1 \
@@ -612,7 +612,7 @@ run_test    "DTLS 1.3 KeyUpdate: KeyUpdate timeout: client-initiated, server ACK
 
 requires_protocol_version dtls13
 run_test    "DTLS 1.3 KeyUpdate: KeyUpdate timeout: server-initiated, client ACK lost" \
-            -p "$P_PXY corrupt_after_pkt=8 corrupt_dir=c2s" \
+            -p "$P_PXY corrupt_after_pkt=6 corrupt_dir=c2s" \
             "$P_SRV dtls=1 force_version=dtls13 hs_timeout=100-400 debug_level=1 key_update=1" \
             "$P_CLI dtls=1 force_version=dtls13 hs_timeout=100-400 debug_level=1" \
             1 \

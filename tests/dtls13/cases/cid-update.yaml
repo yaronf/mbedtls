@@ -392,12 +392,13 @@ cases:
     # local-docs/keyupdate-retransmit-plan.md (broad-scope fix covers
     # KU, NCI, and RCI symmetrically).
     #
-    # Threshold set to 8 so c2s packets 1-8 (handshake + NST ACK + HTTP)
-    # flow clean and the test exercises ONLY the NCI ACK path — not
+    # Threshold set to 5 so c2s packets 1-5 (handshake CH×2 + Finished+ACK
+    # + NST ACK + HTTP request) flow clean and packet 6 (the client's NCI
+    # ACK) gets corrupted — exercising ONLY the NCI ACK path, not
     # NST_WAIT_ACK timeout (which is fixed in 46f89e8f2c).
     skip_runners: [wolfssl]
     proxy:
-      corrupt_after_pkt: 8
+      corrupt_after_pkt: 5
       corrupt_dir: c2s
     server:
       hs_timeout: [100, 400]
