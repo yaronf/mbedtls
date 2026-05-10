@@ -4223,15 +4223,22 @@ data_exchange:
 
         /* Drain incoming records until the peer's ACK is processed.
          * The library returns WANT_READ as soon as the KU ACK is processed,
-         * so this loop exits promptly without needing a timeout. */
+         * so this loop exits promptly under normal operation.  If the ACK
+         * is lost, the post-hs retransmit machinery (RFC 9147 §5.8) will
+         * retransmit until the budget exhausts, then surface TIMEOUT, which
+         * we propagate so the test/application sees the failure. */
         while (mbedtls_ssl_dtls13_key_update_pending(&ssl)) {
             ret = mbedtls_ssl_read(&ssl, buf, sizeof(buf) - 1);
             if (ret == MBEDTLS_ERR_SSL_WANT_READ ||
                 ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
                 continue;
             }
+            if (ret == MBEDTLS_ERR_SSL_TIMEOUT) {
+                mbedtls_printf("  ! KeyUpdate ACK timeout — connection lost\n");
+                goto reset;
+            }
             if (ret <= 0) {
-                break; /* error — proceed anyway */
+                break; /* other error — proceed anyway */
             }
             /* Unexpected application data while waiting for ACK. */
             mbedtls_printf("  ! unexpected data while waiting "
@@ -4252,6 +4259,27 @@ data_exchange:
             goto reset;
         }
         mbedtls_printf(" ok\n");
+
+        /* Drain incoming records until the peer's NCI ACK arrives, or until
+         * the post-hs retransmit budget exhausts (RFC 9147 §5.8 — same
+         * pattern as the KeyUpdate drain loop above). */
+        while (mbedtls_ssl_dtls13_new_connection_id_pending(&ssl)) {
+            ret = mbedtls_ssl_read(&ssl, buf, sizeof(buf) - 1);
+            if (ret == MBEDTLS_ERR_SSL_WANT_READ ||
+                ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+                continue;
+            }
+            if (ret == MBEDTLS_ERR_SSL_TIMEOUT) {
+                mbedtls_printf("  ! NewConnectionId ACK timeout — connection lost\n");
+                goto reset;
+            }
+            if (ret <= 0) {
+                break; /* other error — proceed anyway */
+            }
+            mbedtls_printf("  ! unexpected data while waiting "
+                           "for NewConnectionId ACK (%d bytes)\n", ret);
+        }
+        ret = 0;
     }
     if (opt.request_cid > 0 && exchanges_left == opt.exchanges) {
         mbedtls_printf("  . Sending RequestConnectionId(%d)...", opt.request_cid);
