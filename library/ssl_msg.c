@@ -7911,6 +7911,24 @@ static void ssl_dtls13_clear_post_hs_retransmit_by_type(
     }
 }
 
+/* Lifecycle helper (declared in ssl_misc.h): clear all post-hs retransmit
+ * slots and the per-message pending flags.  Called from session_reset and
+ * ssl_free so an unACKed post-hs message at teardown does not leak its
+ * saved plaintext. */
+void ssl_dtls13_post_hs_retransmit_reset(mbedtls_ssl_context *ssl)
+{
+    int i;
+    for (i = 0; i < MBEDTLS_SSL_DTLS13_MAX_POST_HS_RETRANSMIT; i++) {
+        ssl_dtls13_clear_post_hs_retransmit_slot(
+            &ssl->dtls13_post_hs_retransmit[i]);
+    }
+    ssl->dtls13_ku_ack_pending = 0;
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+    ssl->dtls13_cid_update_ack_pending = 0;
+    ssl->dtls13_req_cid_pending = 0;
+#endif
+}
+
 /* Map a wire HS message type (e.g. MBEDTLS_SSL_HS_KEY_UPDATE = 24) to the
  * corresponding pending-ack enum value, or NONE if the type is not a
  * post-handshake handshake message that this machinery tracks (i.e. it's

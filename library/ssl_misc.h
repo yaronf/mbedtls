@@ -1288,6 +1288,18 @@ static inline int ssl_dtls13_epoch_pool_contains(
  */
 void ssl_dtls13_epoch_pool_free(mbedtls_ssl_context *ssl);
 
+/**
+ * \brief  Free all heap-allocated bytes held by post-hs retransmit slots
+ *         (KU/NCI/RCI), zero the slots, and clear the per-message pending
+ *         flags (dtls13_ku_ack_pending, dtls13_cid_update_ack_pending,
+ *         dtls13_req_cid_pending).  Called from
+ *         mbedtls_ssl_session_reset_msg_layer and mbedtls_ssl_free so a
+ *         session reset / context free with an unACKed post-hs message in
+ *         flight does not leak the saved plaintext or leave stale pending
+ *         flags.  Idempotent.
+ */
+void ssl_dtls13_post_hs_retransmit_reset(mbedtls_ssl_context *ssl);
+
 /* ----------------------------------------------------------------------------
  * DTLS 1.3 fault-injection helpers — TEST ONLY, DO NOT USE IN PRODUCTION CODE.
  *

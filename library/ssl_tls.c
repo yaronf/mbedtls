@@ -1418,7 +1418,10 @@ void mbedtls_ssl_session_reset_msg_layer(mbedtls_ssl_context *ssl,
     ssl->dtls13_transform_pending_out = NULL;
     mbedtls_platform_zeroize(ssl->dtls13_ku_pending_secret,
                              sizeof(ssl->dtls13_ku_pending_secret));
-    ssl->dtls13_ku_ack_pending = 0;
+    /* Frees post-hs retransmit slot bytes and clears the KU/NCI/RCI
+     * pending flags (dtls13_ku_ack_pending, dtls13_cid_update_ack_pending,
+     * dtls13_req_cid_pending). */
+    ssl_dtls13_post_hs_retransmit_reset(ssl);
     ssl->dtls13_received_record_count = 0;
 #endif
 
@@ -5376,6 +5379,11 @@ void mbedtls_ssl_free(mbedtls_ssl_context *ssl)
     ssl->dtls13_transform_pending_out = NULL;
     mbedtls_platform_zeroize(ssl->dtls13_ku_pending_secret,
                              sizeof(ssl->dtls13_ku_pending_secret));
+
+    /* Free any post-hs retransmit slot bytes (KU/NCI/RCI plaintext saved
+     * for ACK-loss retransmit) so a free with an unACKed post-hs message
+     * in flight does not leak. */
+    ssl_dtls13_post_hs_retransmit_reset(ssl);
 #endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */
 
     if (ssl->session) {
