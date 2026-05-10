@@ -122,7 +122,7 @@ Reverted all four changes; KU test remains failing.
 | NewSessionTicket     | `write_handshake_msg_ext`                   | Yes (no exception) | No explicit arm; relies on… [actually, NST works — let me check] |
 | KeyUpdate            | `ssl_tls13_write_key_update` → `start/finish_handshake_msg` → `flush_output`           | **No** (excluded by `hs_type != KEY_UPDATE`) | No                   |
 | NewConnectionId      | `ssl_tls13_write_new_connection_id` → `start/finish_handshake_msg` | Yes (no exception in code today) | Probably no — uses `dtls13_pending_acks[]` only |
-| RequestConnectionId  | `ssl_tls13_write_request_connection_id`     | Yes? | Probably no |
+| RequestConnectionId  | `ssl_tls13_write_request_connection_id`     | No (no exception today; never tested under loss) | No — does **not** even register a `dtls13_pending_acks[]` slot today (only sets `dtls13_req_cid_pending`) |
 
 Note: NST's working retransmit was empirically confirmed in the
 NST_WAIT_ACK timeout test. NST goes through `write_handshake_msg_ext`,
@@ -164,17 +164,49 @@ This mechanism is parallel to the flight-item ACK matching done by
   new outbound transform now that the peer has confirmed it can decrypt).
 
 For the retransmit fix, we need both to fire on the relevant ACK: the
-flight-item ACK marks the KU as acked (so retransmit stops); the
-pending-ACK slot dispatches `key_update_install_outbound`.
+flight-item ACK marks the post-hs message as acked (so retransmit
+stops); the pending-ACK slot dispatches the per-type action
+(`key_update_install_outbound`, `cid_update_ack_pending = 0`, etc.).
+
+### RCI asymmetry: not registered today, different on-ACK semantics
+
+`RequestConnectionId` is the asymmetric case among the three post-hs
+HS messages this plan addresses:
+
+- **Today, RCI does not register a `dtls13_pending_acks[]` slot.**
+  `ssl_tls13_write_request_connection_id` (`ssl_msg.c:8418`) only sets
+  `dtls13_req_cid_pending = 1` and flushes the record. There is no
+  on-ACK hook for RCI in `process_ack` and no slot to match.
+- **RCI's "fulfilled" condition is not the ACK** — it's the peer
+  responding with `NewConnectionId`. `dtls13_req_cid_pending` is
+  cleared by NCI receipt, not by the record-layer ACK of our RCI.
+- Consequently, even after we wire RCI into the new retransmit
+  machinery, the on-ACK dispatch for RCI is essentially a no-op (just
+  clears the retransmit slot — `req_cid_pending` stays set until NCI
+  arrives). The dispatch case in `process_ack` exists to terminate
+  retransmit, not to advance application state.
+
+Implication for the unified design: KU and NCI need both a dispatch
+case **and** a retransmit slot; RCI needs **a brand-new dispatch case
+plus** a retransmit slot. This makes RCI a slightly larger lift than
+the others, not a smaller one.
+
+The per-message-type retransmit semantics are still uniform: send →
+register retransmit slot → on ACK match, free slot; on budget
+exhaust, surface TIMEOUT. The dispatch table just gets a third entry
+where the on-ACK action happens to be a no-op.
 
 ## Proposed design
 
 ### Goal
 
-When the peer's ACK of a KeyUpdate is lost:
-1. The KU sender's retransmit timer fires.
-2. `mbedtls_ssl_resend` walks the flight, finds the unacked KU, retransmits.
-3. Timer doubles up to `hs_timeout_max`; eventually `ssl_double_retransmit_timeout` exhausts the budget.
+When the peer's ACK of a post-handshake handshake message (KeyUpdate,
+NewConnectionId, or RequestConnectionId) is lost:
+
+1. The sender's retransmit timer fires.
+2. The retransmit machinery finds the unacked message and retransmits.
+3. Timer doubles up to `hs_timeout_max`; eventually
+   `ssl_double_retransmit_timeout` exhausts the budget.
 4. `mbedtls_ssl_read` returns `MBEDTLS_ERR_SSL_TIMEOUT` to the caller.
 
 ### High-level changes (slot-based design)
@@ -188,12 +220,18 @@ When the peer's ACK of a KeyUpdate is lost:
    an error return so callers can fail the send rather than silently
    dropping a pending retransmit.
 
-3. **Capture record bytes at send time.** In `ssl_tls13_write_key_update`,
-   `ssl_tls13_write_new_connection_id`,
-   `ssl_tls13_write_request_connection_id`: after `flush_output`, call
+3. **Capture record bytes at send time, and bring RCI into the
+   dispatch table.** In `ssl_tls13_write_key_update` and
+   `ssl_tls13_write_new_connection_id`: after `flush_output`, call
    `ssl_dtls13_register_post_hs_retransmit(bytes, len)` alongside the
-   existing `ssl_dtls13_register_pending_ack`. The bytes copy is the
-   freshly built record (epoch, seq, ciphertext) — captured before
+   existing `ssl_dtls13_register_pending_ack`. In
+   `ssl_tls13_write_request_connection_id`: add a new
+   `MBEDTLS_SSL_DTLS13_PENDING_ACK_REQUEST_CONNECTION_ID` enumerator,
+   add the matching call to `ssl_dtls13_register_pending_ack`, and add
+   the retransmit-slot registration. The on-ACK dispatch case for RCI
+   is a slot-clear no-op (`dtls13_req_cid_pending` is cleared by NCI
+   receipt, not by ACK — see §RCI asymmetry above). The bytes copy is
+   the freshly built record (epoch, seq, ciphertext) — captured before
    `out_buf` is reused.
 
 4. **Drive the timer.** Recompute the next deadline as
@@ -213,8 +251,11 @@ When the peer's ACK of a KeyUpdate is lost:
 7. **Surface budget-exhaust as TIMEOUT.** Set a fatal-error flag when
    any slot exceeds `hs_timeout_max`; the next `mbedtls_ssl_read` (or
    `_write`) returns `MBEDTLS_ERR_SSL_TIMEOUT`. Clear the
-   `ku_ack_pending` / `cid_update_ack_pending` flags as part of error
-   cleanup so a subsequent reset is well-defined.
+   `dtls13_ku_ack_pending`, `dtls13_cid_update_ack_pending`, and
+   `dtls13_req_cid_pending` flags as part of error cleanup so a
+   subsequent reset is well-defined. (Note: `dtls13_req_cid_pending`
+   is normally cleared on NCI receipt, but on RCI retransmit timeout
+   no NCI is coming, so the flag must be cleared here.)
 
 Steps 1–2 do not depend on the rest and can land first as
 preconditions; step 6 is the minimal `fetch_input` fix that step 3
