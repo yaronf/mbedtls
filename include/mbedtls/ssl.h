@@ -1646,12 +1646,15 @@ typedef struct {
 } mbedtls_ssl_dtls13_epoch_slot;
 
 /** Type tag for a DTLS 1.3 standalone post-handshake message awaiting ACK.
- *  Used in mbedtls_ssl_dtls13_pending_ack to dispatch on-ACK actions. */
+ *  Used in mbedtls_ssl_dtls13_pending_ack to dispatch on-ACK actions, and
+ *  in mbedtls_ssl_dtls13_post_hs_retransmit to identify the message kind
+ *  for retransmit accounting and debug output. */
 typedef enum {
     MBEDTLS_SSL_DTLS13_PENDING_ACK_NONE = 0,  /*!< slot is empty */
     MBEDTLS_SSL_DTLS13_PENDING_ACK_KEY_UPDATE, /*!< KeyUpdate (RFC 9147 §8) */
 #if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
     MBEDTLS_SSL_DTLS13_PENDING_ACK_NEW_CONNECTION_ID, /*!< NewConnectionId (RFC 9147 §9) */
+    MBEDTLS_SSL_DTLS13_PENDING_ACK_REQUEST_CONNECTION_ID, /*!< RequestConnectionId (RFC 9147 §9) */
 #endif
 } mbedtls_ssl_dtls13_pending_ack_type_t;
 
@@ -1663,9 +1666,49 @@ typedef struct {
     uint64_t sent_seq;
 } mbedtls_ssl_dtls13_pending_ack;
 
+/** A retransmit slot for a standalone DTLS 1.3 post-handshake handshake
+ *  message (KeyUpdate, NewConnectionId, RequestConnectionId).  Holds the
+ *  plaintext (with HS header) to retransmit, the original send epoch (for
+ *  cross-epoch retransmit per RFC 9147 §7.2: "same key material"), a ring
+ *  of recent (epoch, seq) values for delayed-ACK matching, and per-message
+ *  backoff state (RFC 9147 §5.8).  Occupied when type != NONE; cleared
+ *  (and bytes freed) on ACK match or budget exhaust.
+ *
+ *  Parallel to mbedtls_ssl_dtls13_pending_ack: that array drives state-
+ *  machine progress (per-type on-ACK dispatch); this array drives retransmit
+ *  progress.  The two are populated together at send and cleared together
+ *  on ACK match.  Both live on mbedtls_ssl_context (not handshake_params)
+ *  so their lifetime is independent of post-handshake handshake-state
+ *  teardown — see local-docs/keyupdate-retransmit-plan.md §"Alternative
+ *  (rejected): reuse handshake->flight" for the rationale.
+ *
+ *  Backoff is tracked as a relative remaining-time (retransmit_timeout_ms),
+ *  matching the existing handshake retransmit pattern.  On timer expiry,
+ *  the slot at the minimum timeout fires; all slots' timeouts are then
+ *  rebased so the BIO timer can be re-armed to the new minimum. */
+#define MBEDTLS_SSL_DTLS13_POST_HS_RETX_RING 8
+typedef struct {
+    mbedtls_ssl_dtls13_pending_ack_type_t type;     /*!< 0 == empty */
+    uint16_t send_epoch;                            /*!< original send epoch */
+    uint64_t sent_records[MBEDTLS_SSL_DTLS13_POST_HS_RETX_RING];      /*!< recent seqs */
+    uint8_t  sent_record_epoch[MBEDTLS_SSL_DTLS13_POST_HS_RETX_RING]; /*!< low byte of each */
+    uint8_t  sent_record_count;                     /*!< number of valid ring entries */
+    unsigned char *bytes;                           /*!< plaintext + HS header (heap) */
+    size_t bytes_len;                               /*!< length of bytes              */
+    uint32_t retransmit_timeout_ms;                 /*!< current backoff value (ms remaining) */
+    uint8_t retransmit_count;                       /*!< retransmits performed so far */
+} mbedtls_ssl_dtls13_post_hs_retransmit;
+
 /** Maximum number of concurrent standalone post-handshake messages awaiting
- *  ACK.  Currently 2: one KeyUpdate + one NewConnectionId. */
-#define MBEDTLS_SSL_DTLS13_MAX_PENDING_ACKS 2
+ *  ACK.  3 covers the worst realistic overlap: KeyUpdate + NewConnectionId
+ *  + RequestConnectionId in flight together (server with CID enabled
+ *  fan-out while AEAD-limit triggers a KU). */
+#define MBEDTLS_SSL_DTLS13_MAX_PENDING_ACKS 3
+
+/** Maximum number of concurrent standalone post-handshake messages with an
+ *  active retransmit slot.  Sized to match MBEDTLS_SSL_DTLS13_MAX_PENDING_ACKS
+ *  so the dispatch and retransmit arrays stay aligned. */
+#define MBEDTLS_SSL_DTLS13_MAX_POST_HS_RETRANSMIT 3
 
 /** Maximum number of (epoch, sequence_number) pairs we track for sending in
  *  outgoing ACK messages (RFC 9147 §7).  16 covers normal handshake flights;
@@ -1896,11 +1939,25 @@ struct mbedtls_ssl_context {
 #endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
 
     /** Pending-ACK slots for standalone post-handshake messages (KeyUpdate,
-     *  NewConnectionId).  Each slot holds the (epoch, seq) of the sent record
-     *  and a type tag.  ssl_dtls13_process_ack() iterates this array to match
-     *  incoming ACKs and dispatch on-ACK actions. */
+     *  NewConnectionId, RequestConnectionId).  Each slot holds the (epoch,
+     *  seq) of the sent record and a type tag.  ssl_dtls13_process_ack()
+     *  iterates this array to match incoming ACKs and dispatch on-ACK
+     *  actions.  These slots drive state-machine progress only; retransmit
+     *  storage/timer is separate (see dtls13_post_hs_retransmit below). */
     mbedtls_ssl_dtls13_pending_ack
         MBEDTLS_PRIVATE(dtls13_pending_acks)[MBEDTLS_SSL_DTLS13_MAX_PENDING_ACKS];
+
+    /** Retransmit slots for standalone post-handshake messages (RFC 9147
+     *  §5.8).  Parallel to dtls13_pending_acks[]: same set of message types,
+     *  plus the plaintext bytes, original send epoch, sent-record ring, and
+     *  per-message backoff state needed to retransmit on ACK loss.  Slots
+     *  are populated at send and cleared on ACK match or budget exhaust;
+     *  bytes are heap-allocated and must be freed in session_reset /
+     *  close_notify / ssl_free.  The retransmit timer is the soonest
+     *  deadline across all occupied slots. */
+    mbedtls_ssl_dtls13_post_hs_retransmit
+        MBEDTLS_PRIVATE(dtls13_post_hs_retransmit)
+            [MBEDTLS_SSL_DTLS13_MAX_POST_HS_RETRANSMIT];
 
     /** ACK record list for both handshake and post-handshake messages
      *  (RFC 9147 §7).  Records received from the peer are appended here as
@@ -5486,6 +5543,20 @@ static inline int mbedtls_ssl_dtls13_key_update_pending(
 {
     return ssl->MBEDTLS_PRIVATE(dtls13_ku_ack_pending);
 }
+
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+/**
+ * \brief          Return non-zero if the peer has not yet acknowledged a
+ *                 previously sent NewConnectionId.  Caller may use this to
+ *                 drain incoming records (via mbedtls_ssl_read()) until the
+ *                 ACK arrives or the post-hs retransmit budget exhausts.
+ */
+static inline int mbedtls_ssl_dtls13_new_connection_id_pending(
+    const mbedtls_ssl_context *ssl)
+{
+    return ssl->MBEDTLS_PRIVATE(dtls13_cid_update_ack_pending);
+}
+#endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
 
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 && MBEDTLS_SSL_PROTO_DTLS */
 

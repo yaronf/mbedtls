@@ -221,6 +221,18 @@ static int ssl_parse_record_header(mbedtls_ssl_context const *ssl,
                                    size_t len,
                                    mbedtls_record *rec);
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+/* Forward decls — post-hs retransmit helpers defined later in this file,
+ * referenced from earlier functions (fetch_input, process_ack). */
+static uint32_t ssl_dtls13_post_hs_retransmit_min_timeout(
+    const mbedtls_ssl_context *ssl);
+static void ssl_dtls13_clear_post_hs_retransmit_slot(
+    mbedtls_ssl_dtls13_post_hs_retransmit *slot);
+static void ssl_dtls13_post_hs_arm_timer(mbedtls_ssl_context *ssl);
+MBEDTLS_CHECK_RETURN_CRITICAL
+static int ssl_dtls13_post_hs_handle_timeout(mbedtls_ssl_context *ssl);
+#endif
+
 int mbedtls_ssl_check_record(mbedtls_ssl_context const *ssl,
                              unsigned char *buf,
                              size_t buflen)
@@ -2106,11 +2118,25 @@ int mbedtls_ssl_fetch_input(mbedtls_ssl_context *ssl, size_t nb_want)
             /* WAIT_ACK states (state > HANDSHAKE_OVER in the enum) still need
              * retransmit-timeout semantics — the WAIT_ACK handler will
              * trigger a resend on TIMEOUT.  Use retransmit_timeout for any
-             * state other than HANDSHAKE_OVER itself. */
+             * state other than HANDSHAKE_OVER itself.
+             *
+             * Post-handshake (state == HANDSHAKE_OVER): use the post-hs
+             * retransmit slot's smallest deadline if any slot is occupied,
+             * so a lost ACK on KU/NCI/RCI fires a TIMEOUT and triggers
+             * the slot retransmit walker (RFC 9147 §5.8). */
             if (ssl->state != MBEDTLS_SSL_HANDSHAKE_OVER) {
                 timeout = ssl->handshake->retransmit_timeout;
             } else {
-                timeout = ssl->conf->read_timeout;
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+                uint32_t post_hs_min_ms =
+                    ssl_dtls13_post_hs_retransmit_min_timeout(ssl);
+                if (post_hs_min_ms != 0) {
+                    timeout = post_hs_min_ms;
+                } else
+#endif
+                {
+                    timeout = ssl->conf->read_timeout;
+                }
             }
 
             MBEDTLS_SSL_DEBUG_MSG(3, ("f_recv_timeout: %lu ms", (unsigned long) timeout));
@@ -2158,6 +2184,23 @@ int mbedtls_ssl_fetch_input(mbedtls_ssl_context *ssl, size_t nb_want)
                 return MBEDTLS_ERR_SSL_WANT_READ;
             }
 #endif /* MBEDTLS_SSL_SRV_C && MBEDTLS_SSL_RENEGOTIATION */
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+            /* Post-handshake DTLS 1.3: a TIMEOUT here means a post-hs
+             * retransmit slot's deadline fired.  Walk slots, retransmit
+             * the one(s) at the min, and re-arm the timer.  Returns
+             * MBEDTLS_ERR_SSL_TIMEOUT if the per-slot budget is exhausted,
+             * else MBEDTLS_ERR_SSL_WANT_READ. */
+            if (ssl->state == MBEDTLS_SSL_HANDSHAKE_OVER &&
+                ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+                ssl_dtls13_post_hs_retransmit_min_timeout(ssl) != 0) {
+                ret = ssl_dtls13_post_hs_handle_timeout(ssl);
+                if (ret != 0) {
+                    return ret;
+                }
+                /* ret == 0: no-op (shouldn't happen given the min_timeout
+                 * guard above, but fall through defensively). */
+            }
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
         }
 
         if (ret < 0) {
@@ -2293,6 +2336,16 @@ static mbedtls_ssl_dtls13_epoch_slot *ssl_dtls13_epoch_pool_lookup_slot(
     mbedtls_ssl_context *ssl, uint64_t epoch);
 static const mbedtls_ssl_dtls13_epoch_slot *ssl_dtls13_epoch_pool_lookup_slot_const(
     const mbedtls_ssl_context *ssl, uint64_t epoch);
+
+/* Post-handshake retransmit registration helpers, defined alongside the
+ * pending-ACK helpers later in this file.  Used from
+ * mbedtls_ssl_write_handshake_msg_ext to capture the plaintext + (epoch, seq)
+ * of post-hs HS messages (KU/NCI/RCI) into dtls13_post_hs_retransmit[]. */
+static mbedtls_ssl_dtls13_pending_ack_type_t
+ssl_dtls13_pending_ack_type_for_hs_type(unsigned char hs_type);
+MBEDTLS_CHECK_RETURN_CRITICAL
+static int ssl_dtls13_register_post_hs_retransmit_if_applicable(
+    mbedtls_ssl_context *ssl, unsigned char hs_type);
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 
 MBEDTLS_CHECK_RETURN_CRITICAL
@@ -2425,18 +2478,22 @@ int mbedtls_ssl_resend(mbedtls_ssl_context *ssl)
 }
 
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_PROTO_DTLS)
-/* Switch to the epoch required for retransmitting a flight item.
+/* Switch to the epoch required for retransmitting a record.
  *
  * Saves the current transform and counter into *saved_transform / saved_ctr,
  * installs the retransmit epoch's transform and counter, and returns the pool
  * slot (or NULL for epoch 0) in *retx_slot_out.  On return, *saved_transform
  * is non-NULL iff a switch actually happened (caller must call
- * ssl_dtls13_retx_epoch_restore() after the write). */
-/* Returns 0 on success, 1 if the flight item should be skipped (epoch
- * evicted from pool — retransmitting at the wrong epoch is not allowed). */
+ * ssl_dtls13_retx_epoch_restore() after the write).
+ *
+ * Used by both the in-handshake flight retransmit path (passing the flight
+ * item's dtls13_send_epoch) and the post-handshake retransmit slots
+ * (passing the slot's send_epoch). */
+/* Returns 0 on success, 1 if retransmit should be skipped (epoch evicted
+ * from pool — retransmitting at the wrong epoch is not allowed). */
 static int ssl_dtls13_retx_epoch_switch(
     mbedtls_ssl_context *ssl,
-    const mbedtls_ssl_flight_item *cur,
+    uint16_t target_epoch,
     mbedtls_ssl_transform **saved_transform,
     unsigned char saved_ctr[8],
     mbedtls_ssl_dtls13_epoch_slot **retx_slot_out)
@@ -2452,14 +2509,14 @@ static int ssl_dtls13_retx_epoch_switch(
     }
 
     active_epoch = MBEDTLS_GET_UINT16_BE(ssl->cur_out_ctr, 0);
-    if (cur->dtls13_send_epoch == active_epoch) {
+    if (target_epoch == active_epoch) {
         return 0;
     }
 
     *saved_transform = ssl->transform_out;
     memcpy(saved_ctr, ssl->cur_out_ctr, 8);
 
-    if (cur->dtls13_send_epoch == 0) {
+    if (target_epoch == 0) {
         ssl->transform_out = NULL;
         /* Restore the saved epoch-0 counter so retransmits continue from the
          * correct sequence number (avoids replaying seq=0 for every retransmit,
@@ -2475,7 +2532,7 @@ static int ssl_dtls13_retx_epoch_switch(
     } else {
         mbedtls_ssl_dtls13_epoch_slot *slot =
             ssl_dtls13_epoch_pool_lookup_slot(ssl,
-                                              (uint64_t) cur->dtls13_send_epoch);
+                                              (uint64_t) target_epoch);
         if (slot != NULL) {
             ssl->transform_out = slot->transform;
             memcpy(ssl->cur_out_ctr, slot->out_ctr, 8);
@@ -2484,8 +2541,8 @@ static int ssl_dtls13_retx_epoch_switch(
             /* Epoch evicted — cannot retransmit at the correct epoch. */
             MBEDTLS_SSL_DEBUG_MSG(1,
                 ("DTLS 1.3: retransmit epoch %u evicted from pool, "
-                 "skipping flight item",
-                 (unsigned) cur->dtls13_send_epoch));
+                 "skipping retransmit",
+                 (unsigned) target_epoch));
             *saved_transform = NULL;
             *retx_slot_out   = NULL;
             return 1;
@@ -2494,7 +2551,7 @@ static int ssl_dtls13_retx_epoch_switch(
 
     mbedtls_ssl_update_out_pointers(ssl, ssl->transform_out);
     MBEDTLS_SSL_DEBUG_MSG(2, ("DTLS 1.3: retransmit epoch switch %u -> %u",
-                              active_epoch, cur->dtls13_send_epoch));
+                              active_epoch, target_epoch));
     return 0;
 }
 
@@ -2750,7 +2807,7 @@ int mbedtls_ssl_flight_transmit(mbedtls_ssl_context *ssl)
         mbedtls_ssl_transform *dtls13_saved_transform = NULL;
         unsigned char dtls13_saved_ctr[8];
         mbedtls_ssl_dtls13_epoch_slot *dtls13_retx_slot = NULL;
-        if (ssl_dtls13_retx_epoch_switch(ssl, cur,
+        if (ssl_dtls13_retx_epoch_switch(ssl, cur->dtls13_send_epoch,
                                          &dtls13_saved_transform,
                                          dtls13_saved_ctr,
                                          &dtls13_retx_slot) != 0) {
@@ -3128,12 +3185,22 @@ int mbedtls_ssl_write_handshake_msg_ext(mbedtls_ssl_context *ssl,
                  hs_type == MBEDTLS_SSL_HS_SERVER_HELLO) &&
                 (ssl->handshake == NULL ||
                  ssl->handshake->dtls13_frag_off == 0)) {
-                /* Post-handshake messages (KeyUpdate) are not retransmitted
-                 * by the flight machinery — skip the flight append. */
-                if (ssl->handshake != NULL &&
-                    hs_type != MBEDTLS_SSL_HS_KEY_UPDATE) {
-                    /* Skip the flight append on nbio retries — the message was
-                     * already appended on the first attempt. */
+                /* Post-handshake messages (KU/NCI/RCI) are retransmitted via
+                 * the dedicated dtls13_post_hs_retransmit[] slots, not the
+                 * handshake flight — they need a lifetime decoupled from
+                 * handshake teardown.  See local-docs/keyupdate-retransmit-
+                 * plan.md §"Alternative (rejected): reuse handshake->flight". */
+                if (ssl_dtls13_pending_ack_type_for_hs_type(hs_type)
+                    != MBEDTLS_SSL_DTLS13_PENDING_ACK_NONE) {
+                    if ((ret = ssl_dtls13_register_post_hs_retransmit_if_applicable(
+                             ssl, hs_type)) != 0) {
+                        MBEDTLS_SSL_DEBUG_RET(1, "register_post_hs_retransmit", ret);
+                        return ret;
+                    }
+                } else if (ssl->handshake != NULL) {
+                    /* In-handshake messages: append to the handshake flight.
+                     * Skip on nbio retries — the message was already appended
+                     * on the first attempt (when handshake was non-NULL). */
                     MBEDTLS_SSL_DEBUG_MSG(3, ("DTLS 1.3: appending hs msg type %u "
                                               "to retransmit flight",
                                               (unsigned) hs_type));
@@ -6962,11 +7029,53 @@ static int ssl_dtls13_process_ack(mbedtls_ssl_context *ssl,
                                                   (unsigned long long) seq));
                         ssl->dtls13_cid_update_ack_pending = 0;
                         break;
+                    case MBEDTLS_SSL_DTLS13_PENDING_ACK_REQUEST_CONNECTION_ID:
+                        /* No application-state progress on RCI ACK:
+                         * dtls13_req_cid_pending is cleared by the peer's
+                         * NewConnectionId response, not by the record-layer
+                         * ACK.  The slot clear below stops retransmit. */
+                        MBEDTLS_SSL_DEBUG_MSG(2, ("ACK: RequestConnectionId acknowledged "
+                                                  "(epoch=%llu seq=%llu)",
+                                                  (unsigned long long) epoch,
+                                                  (unsigned long long) seq));
+                        break;
 #endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
                     default:
                         break;
                 }
                 slot->type = MBEDTLS_SSL_DTLS13_PENDING_ACK_NONE;
+            }
+        }
+
+        /* Check post-hs retransmit slots: walk each slot's sent_records ring
+         * for a match.  An ACK can refer to the original send or to any
+         * retransmit; matching any ring entry stops retransmit for that
+         * slot. */
+        {
+            int s;
+            uint8_t epoch_lo = (uint8_t) (epoch & 0xFF);
+            for (s = 0; s < MBEDTLS_SSL_DTLS13_MAX_POST_HS_RETRANSMIT; s++) {
+                mbedtls_ssl_dtls13_post_hs_retransmit *rs =
+                    &ssl->dtls13_post_hs_retransmit[s];
+                uint8_t r;
+                if (rs->type == MBEDTLS_SSL_DTLS13_PENDING_ACK_NONE) {
+                    continue;
+                }
+                for (r = 0; r < rs->sent_record_count &&
+                            r < MBEDTLS_SSL_DTLS13_POST_HS_RETX_RING; r++) {
+                    if (rs->sent_records[r] == seq &&
+                        rs->sent_record_epoch[r] == epoch_lo) {
+                        MBEDTLS_SSL_DEBUG_MSG(2, ("ACK: matched post-hs "
+                                                  "retransmit slot %d type %d "
+                                                  "(epoch=%llu seq=%llu) — "
+                                                  "stopping retransmit",
+                                                  s, (int) rs->type,
+                                                  (unsigned long long) epoch,
+                                                  (unsigned long long) seq));
+                        ssl_dtls13_clear_post_hs_retransmit_slot(rs);
+                        break;
+                    }
+                }
             }
         }
 
@@ -6995,6 +7104,12 @@ static int ssl_dtls13_process_ack(mbedtls_ssl_context *ssl,
         MBEDTLS_SSL_DEBUG_MSG(2, ("ACK: full flight acked; cancelling retransmit timer"));
         mbedtls_ssl_set_timer(ssl, 0);
         hs->retransmit_state = MBEDTLS_SSL_RETRANS_FINISHED;
+        /* The set_timer(0) above cancels the BIO timer.  But if any post-hs
+         * retransmit slot is still occupied (e.g. a KU/NCI/RCI was sent
+         * after the handshake flight, and only the prior flight ACK has
+         * arrived so far), the post-hs retransmit deadline must keep the
+         * timer alive.  Re-arm to the soonest post-hs slot deadline. */
+        ssl_dtls13_post_hs_arm_timer(ssl);
     } else if (newly_acked) {
         /* Partial ACK: at least one item was newly acknowledged — confirmed
          * progress.  Retransmit the remaining unacked items immediately and
@@ -7129,6 +7244,9 @@ int mbedtls_ssl_handle_message_type(mbedtls_ssl_context *ssl)
         ssl->in_msgtype == MBEDTLS_SSL_MSG_ACK) {
         /* Process incoming ACK message (RFC 9147 §7). */
         int ku_was_pending = ssl->dtls13_ku_ack_pending;
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+        int cid_was_pending = ssl->dtls13_cid_update_ack_pending;
+#endif
         int retrans_was_finished =
             (ssl->handshake != NULL &&
              ssl->handshake->retransmit_state == MBEDTLS_SSL_RETRANS_FINISHED);
@@ -7148,6 +7266,16 @@ int mbedtls_ssl_handle_message_type(mbedtls_ssl_context *ssl)
         if (ku_was_pending && !ssl->dtls13_ku_ack_pending) {
             return MBEDTLS_ERR_SSL_WANT_READ;
         }
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+        /* Same surface-immediately for NewConnectionId ACK.  Callers
+         * polling mbedtls_ssl_dtls13_new_connection_id_pending() (e.g. the
+         * server's NCI drain loop) need WANT_READ to re-check the
+         * predicate; otherwise ssl_read blocks indefinitely on the next
+         * fetch_input. */
+        if (cid_was_pending && !ssl->dtls13_cid_update_ack_pending) {
+            return MBEDTLS_ERR_SSL_WANT_READ;
+        }
+#endif
         /* If this ACK completed the handshake flight (RETRANS_FINISHED just
          * set), surface immediately so that wait_ack_step()'s post-call check
          * fires without blocking in fetch_input for the next retransmit
@@ -7636,8 +7764,19 @@ static uint64_t ssl_dtls13_last_sent_seq(const mbedtls_ssl_context *ssl)
 /* Register a pending-ACK slot for a just-sent standalone post-handshake
  * message.  Records the (epoch, seq) of the sent record and the message type
  * so that ssl_dtls13_process_ack() can match and dispatch the on-ACK action.
- * Overwrites an existing slot of the same type if present (re-send case). */
-static void ssl_dtls13_register_pending_ack(
+ * Overwrites an existing slot of the same type if present (re-send case).
+ *
+ * Returns 0 on success, MBEDTLS_ERR_SSL_INTERNAL_ERROR if no slot is
+ * available.  The "full array" case implies a state-tracking invariant
+ * violation: each post-hs message type is guarded by its own pending flag
+ * (dtls13_ku_ack_pending, dtls13_cid_update_ack_pending,
+ * dtls13_req_cid_pending) and MBEDTLS_SSL_DTLS13_MAX_PENDING_ACKS is sized
+ * to cover the worst overlap of distinct types.  Silently dropping a
+ * pending registration would leave a sent message with no on-ACK dispatch
+ * (and, under the post-hs retransmit design, no retransmit slot either),
+ * so we surface the failure to the caller. */
+MBEDTLS_CHECK_RETURN_CRITICAL
+static int ssl_dtls13_register_pending_ack(
     mbedtls_ssl_context *ssl,
     mbedtls_ssl_dtls13_pending_ack_type_t type)
 {
@@ -7650,15 +7789,417 @@ static void ssl_dtls13_register_pending_ack(
             break;
         }
     }
-    /* If no free slot, overwrite slot 0 (should not happen with MAX_PENDING_ACKS=2
-     * and only two message types, each guarded by its own pending flag). */
     if (i == MBEDTLS_SSL_DTLS13_MAX_PENDING_ACKS) {
-        i = 0;
+        MBEDTLS_SSL_DEBUG_MSG(1, ("register_pending_ack: no free slot for type %d "
+                                  "(invariant violation: per-type pending flags "
+                                  "should have prevented this)", (int) type));
+        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
     }
 
     slots[i].type       = type;
     slots[i].sent_epoch = MBEDTLS_GET_UINT16_BE(ssl->cur_out_ctr, 0);
     slots[i].sent_seq   = ssl_dtls13_last_sent_seq(ssl);
+    return 0;
+}
+
+/* Free the bytes of a single retransmit slot and mark it empty.  Idempotent:
+ * safe to call on an already-empty slot.  Used both on ACK match and on
+ * partial-failure unwind. */
+static void ssl_dtls13_clear_post_hs_retransmit_slot(
+    mbedtls_ssl_dtls13_post_hs_retransmit *slot)
+{
+    if (slot->bytes != NULL) {
+        mbedtls_platform_zeroize(slot->bytes, slot->bytes_len);
+        mbedtls_free(slot->bytes);
+    }
+    memset(slot, 0, sizeof(*slot));   /* type = NONE, all counters reset */
+}
+
+/* Find the retransmit slot for a given type, return its index or -1.
+ * Slots are unique by type (re-sends overwrite the existing slot for that
+ * type, just like register_pending_ack). */
+static int ssl_dtls13_find_post_hs_retransmit_slot(
+    const mbedtls_ssl_context *ssl,
+    mbedtls_ssl_dtls13_pending_ack_type_t type)
+{
+    int i;
+    for (i = 0; i < MBEDTLS_SSL_DTLS13_MAX_POST_HS_RETRANSMIT; i++) {
+        if (ssl->dtls13_post_hs_retransmit[i].type == type) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* Register a retransmit slot for a just-sent standalone post-handshake
+ * message.  Heap-allocates a copy of the plaintext (HS header + body) and
+ * records the original send epoch + just-sent (epoch, seq) so the slot can
+ * drive RFC 9147 §5.8 retransmit on ACK loss.
+ *
+ * Returns 0 on success, MBEDTLS_ERR_SSL_INTERNAL_ERROR if no slot is
+ * available, or MBEDTLS_ERR_SSL_ALLOC_FAILED on bytes-buffer allocation
+ * failure.  As with register_pending_ack, the "full array" case is a
+ * state-tracking invariant violation that should not happen with correct
+ * per-type pending flags.
+ *
+ * The pending-ack registration and this retransmit registration are paired
+ * at every call site (KU/NCI/RCI write).  Calling this first (the failure-
+ * prone alloc path) lets the caller skip the pending-ack registration
+ * cleanly on failure; if pending-ack itself fails after a successful
+ * retransmit registration, the caller must call clear_post_hs_retransmit_
+ * by_type to unwind. */
+MBEDTLS_CHECK_RETURN_CRITICAL
+static int ssl_dtls13_register_post_hs_retransmit(
+    mbedtls_ssl_context *ssl,
+    mbedtls_ssl_dtls13_pending_ack_type_t type,
+    const unsigned char *plaintext, size_t len,
+    uint16_t send_epoch, uint64_t send_seq)
+{
+    mbedtls_ssl_dtls13_post_hs_retransmit *slots = ssl->dtls13_post_hs_retransmit;
+    int i;
+    unsigned char *bytes_copy;
+
+    /* Prefer an existing slot of the same type (re-send), then an empty slot. */
+    for (i = 0; i < MBEDTLS_SSL_DTLS13_MAX_POST_HS_RETRANSMIT; i++) {
+        if (slots[i].type == type || slots[i].type == MBEDTLS_SSL_DTLS13_PENDING_ACK_NONE) {
+            break;
+        }
+    }
+    if (i == MBEDTLS_SSL_DTLS13_MAX_POST_HS_RETRANSMIT) {
+        MBEDTLS_SSL_DEBUG_MSG(1, ("register_post_hs_retransmit: no free slot for "
+                                  "type %d (invariant violation)", (int) type));
+        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+    }
+
+    bytes_copy = mbedtls_calloc(1, len);
+    if (bytes_copy == NULL) {
+        MBEDTLS_SSL_DEBUG_MSG(1, ("register_post_hs_retransmit: alloc %"
+                                  MBEDTLS_PRINTF_SIZET " bytes failed", len));
+        return MBEDTLS_ERR_SSL_ALLOC_FAILED;
+    }
+    memcpy(bytes_copy, plaintext, len);
+
+    /* If we're reusing a slot of the same type, free its previous bytes. */
+    ssl_dtls13_clear_post_hs_retransmit_slot(&slots[i]);
+
+    slots[i].type             = type;
+    slots[i].send_epoch       = send_epoch;
+    slots[i].bytes            = bytes_copy;
+    slots[i].bytes_len        = len;
+    /* Ring of (epoch, seq) records: index 0 is the original send, slots 1..7
+     * are filled in by retransmits (newest at the next free index, then ring
+     * wraps).  Matching: walk all entries with index < sent_record_count. */
+    slots[i].sent_records[0]      = send_seq;
+    slots[i].sent_record_epoch[0] = (uint8_t) (send_epoch & 0xFF);
+    slots[i].sent_record_count    = 1;
+
+    slots[i].retransmit_timeout_ms = ssl->conf->hs_timeout_min;
+    slots[i].retransmit_count      = 0;
+    return 0;
+}
+
+/* Unwind helper: free the retransmit slot for a given type if present.
+ * Used to roll back a retransmit registration when a paired pending-ack
+ * registration fails. */
+static void ssl_dtls13_clear_post_hs_retransmit_by_type(
+    mbedtls_ssl_context *ssl,
+    mbedtls_ssl_dtls13_pending_ack_type_t type)
+{
+    int idx = ssl_dtls13_find_post_hs_retransmit_slot(ssl, type);
+    if (idx >= 0) {
+        ssl_dtls13_clear_post_hs_retransmit_slot(&ssl->dtls13_post_hs_retransmit[idx]);
+    }
+}
+
+/* Map a wire HS message type (e.g. MBEDTLS_SSL_HS_KEY_UPDATE = 24) to the
+ * corresponding pending-ack enum value, or NONE if the type is not a
+ * post-handshake handshake message that this machinery tracks (i.e. it's
+ * an in-handshake message, NewSessionTicket, etc.). */
+static mbedtls_ssl_dtls13_pending_ack_type_t
+ssl_dtls13_pending_ack_type_for_hs_type(unsigned char hs_type)
+{
+    switch (hs_type) {
+        case MBEDTLS_SSL_HS_KEY_UPDATE:
+            return MBEDTLS_SSL_DTLS13_PENDING_ACK_KEY_UPDATE;
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+        case MBEDTLS_SSL_HS_NEW_CONNECTION_ID:
+            return MBEDTLS_SSL_DTLS13_PENDING_ACK_NEW_CONNECTION_ID;
+        case MBEDTLS_SSL_HS_REQUEST_CONNECTION_ID:
+            return MBEDTLS_SSL_DTLS13_PENDING_ACK_REQUEST_CONNECTION_ID;
+#endif
+        default:
+            return MBEDTLS_SSL_DTLS13_PENDING_ACK_NONE;
+    }
+}
+
+/* If the just-written handshake message is a post-handshake handshake
+ * message we track for retransmit (KU/NCI/RCI), capture its plaintext
+ * (HS header + body, sitting in ssl->out_msg before encryption) into a
+ * retransmit slot.  Called from mbedtls_ssl_write_handshake_msg_ext at
+ * the same point flight_append runs for in-handshake messages.
+ *
+ * Returns 0 on success or no-op (non-tracked type), or an error code on
+ * failure.  The caller-facing register_pending_ack runs later in the
+ * KU/NCI/RCI write path, after flush_output; if that fails it must
+ * unwind via clear_post_hs_retransmit_by_type. */
+MBEDTLS_CHECK_RETURN_CRITICAL
+static int ssl_dtls13_register_post_hs_retransmit_if_applicable(
+    mbedtls_ssl_context *ssl, unsigned char hs_type)
+{
+    mbedtls_ssl_dtls13_pending_ack_type_t type =
+        ssl_dtls13_pending_ack_type_for_hs_type(hs_type);
+    uint16_t send_epoch;
+    uint64_t send_seq;
+
+    if (type == MBEDTLS_SSL_DTLS13_PENDING_ACK_NONE) {
+        return 0;
+    }
+
+    /* This is called from write_handshake_msg_ext at the flight_append
+     * point — *before* write_record increments cur_out_ctr.  So
+     * cur_out_ctr currently holds the (epoch, seq) of the record
+     * about to go on the wire. */
+    send_epoch = MBEDTLS_GET_UINT16_BE(ssl->cur_out_ctr, 0);
+    send_seq   = MBEDTLS_GET_UINT64_BE(ssl->cur_out_ctr, 0)
+                 & UINT64_C(0x0000FFFFFFFFFFFF);
+
+    return ssl_dtls13_register_post_hs_retransmit(
+        ssl, type, ssl->out_msg, ssl->out_msglen, send_epoch, send_seq);
+}
+
+/* Return the smallest retransmit_timeout_ms across occupied post-hs slots,
+ * or 0 if no slot is occupied.  Used by fetch_input to set the recv timeout
+ * post-handshake, and by the post-hs timer-arm helper. */
+static uint32_t ssl_dtls13_post_hs_retransmit_min_timeout(
+    const mbedtls_ssl_context *ssl)
+{
+    uint32_t min_ms = 0;
+    int i;
+    for (i = 0; i < MBEDTLS_SSL_DTLS13_MAX_POST_HS_RETRANSMIT; i++) {
+        const mbedtls_ssl_dtls13_post_hs_retransmit *slot =
+            &ssl->dtls13_post_hs_retransmit[i];
+        if (slot->type == MBEDTLS_SSL_DTLS13_PENDING_ACK_NONE) {
+            continue;
+        }
+        if (min_ms == 0 || slot->retransmit_timeout_ms < min_ms) {
+            min_ms = slot->retransmit_timeout_ms;
+        }
+    }
+    return min_ms;
+}
+
+/* Arm the BIO timer to the soonest post-hs retransmit deadline.  No-op if
+ * no slot is occupied (leaves the timer alone — a concurrent handshake
+ * retransmit may legitimately own it). */
+static void ssl_dtls13_post_hs_arm_timer(mbedtls_ssl_context *ssl)
+{
+    uint32_t min_ms = ssl_dtls13_post_hs_retransmit_min_timeout(ssl);
+    if (min_ms == 0) {
+        return;
+    }
+    MBEDTLS_SSL_DEBUG_MSG(2, ("post-hs retransmit: arm timer %u ms",
+                              (unsigned) min_ms));
+    mbedtls_ssl_set_timer(ssl, min_ms);
+}
+
+/* Retransmit the message in one occupied slot.  Re-encrypts the saved
+ * plaintext under the slot's original send_epoch (RFC 9147 §7.2: "same
+ * key material") and sends a fresh record; appends the new (epoch, seq)
+ * to the slot's sent_records ring so the peer's ACK can be matched
+ * regardless of which retransmit it referred to.
+ *
+ * Returns 0 on a successful retransmit.  Returns a non-zero error if the
+ * record-write fails; the slot is left intact so the caller can retry on
+ * the next timer fire. */
+MBEDTLS_CHECK_RETURN_CRITICAL
+static int ssl_dtls13_post_hs_retransmit_one(
+    mbedtls_ssl_context *ssl, int slot_idx)
+{
+    mbedtls_ssl_dtls13_post_hs_retransmit *slot =
+        &ssl->dtls13_post_hs_retransmit[slot_idx];
+    mbedtls_ssl_transform *saved_transform = NULL;
+    unsigned char saved_ctr[8];
+    mbedtls_ssl_dtls13_epoch_slot *retx_pool_slot = NULL;
+    uint64_t new_seq;
+    int ret;
+    int switch_ret;
+
+    /* Switch to the original send epoch via the epoch pool. */
+    switch_ret = ssl_dtls13_retx_epoch_switch(
+        ssl, slot->send_epoch, &saved_transform, saved_ctr, &retx_pool_slot);
+    if (switch_ret == 1) {
+        /* Epoch evicted — can't retransmit at the right keys.  RFC 9147
+         * §7.2 forbids using newer keys; treat as unrecoverable for this
+         * slot.  The caller will surface TIMEOUT once the budget is
+         * exhausted. */
+        MBEDTLS_SSL_DEBUG_MSG(1, ("post-hs retransmit: epoch %u evicted, "
+                                  "cannot retransmit slot %d",
+                                  (unsigned) slot->send_epoch, slot_idx));
+        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+    }
+
+    /* Snapshot the seq we're about to send for the ring entry. */
+    new_seq = MBEDTLS_GET_UINT64_BE(ssl->cur_out_ctr, 0)
+              & UINT64_C(0x0000FFFFFFFFFFFF);
+
+    /* Stage the saved plaintext (HS header + body) into out_msg. */
+    if (slot->bytes_len > MBEDTLS_SSL_OUT_CONTENT_LEN) {
+        ret = MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+        goto restore;
+    }
+    memcpy(ssl->out_msg, slot->bytes, slot->bytes_len);
+    ssl->out_msglen  = slot->bytes_len;
+    ssl->out_msgtype = MBEDTLS_SSL_MSG_HANDSHAKE;
+
+    /* Encrypt and send.  write_record reads cur_out_ctr (which now points
+     * at the retransmit-epoch counter) and increments it.  No fragmentation
+     * support here — post-hs HS messages are small (KU = 1 byte body, NCI
+     * = small CID list, RCI = 1 byte).  If a future post-hs message
+     * exceeds the MTU, this needs revisiting. */
+    ret = mbedtls_ssl_write_record(ssl, SSL_FORCE_FLUSH);
+    if (ret != 0) {
+        MBEDTLS_SSL_DEBUG_RET(1, "post-hs retransmit: write_record", ret);
+        goto restore;
+    }
+
+    /* Persist the updated counter back into the epoch-pool slot so the
+     * next retransmit at this epoch picks up where we left off. */
+    if (retx_pool_slot != NULL) {
+        memcpy(retx_pool_slot->out_ctr, ssl->cur_out_ctr, 8);
+    }
+
+    /* Append (send_epoch, new_seq) to the ring.  Index 0 is the original
+     * send (set at registration) — newest retransmits go at the next free
+     * index, then ring wraps onto 1..MAX-1. */
+    {
+        uint8_t r;
+        if (slot->sent_record_count < MBEDTLS_SSL_DTLS13_POST_HS_RETX_RING) {
+            r = slot->sent_record_count;
+            slot->sent_record_count++;
+        } else {
+            /* Ring full — overwrite oldest retransmit (index 1) and shift
+             * existing retransmits down so newest is always at the highest
+             * index < MAX.  Index 0 (original send) is preserved. */
+            for (r = 1; r < MBEDTLS_SSL_DTLS13_POST_HS_RETX_RING - 1; r++) {
+                slot->sent_records[r]      = slot->sent_records[r + 1];
+                slot->sent_record_epoch[r] = slot->sent_record_epoch[r + 1];
+            }
+            r = MBEDTLS_SSL_DTLS13_POST_HS_RETX_RING - 1;
+        }
+        slot->sent_records[r]      = new_seq;
+        slot->sent_record_epoch[r] = (uint8_t) (slot->send_epoch & 0xFF);
+    }
+
+    MBEDTLS_SSL_DEBUG_MSG(2, ("post-hs retransmit: slot %d type %d "
+                              "(epoch=%u new seq=%llu)",
+                              slot_idx, (int) slot->type,
+                              (unsigned) slot->send_epoch,
+                              (unsigned long long) new_seq));
+    ret = 0;
+
+restore:
+    if (saved_transform != NULL) {
+        ssl_dtls13_retx_epoch_restore(ssl, saved_transform, saved_ctr,
+                                      retx_pool_slot);
+    }
+    return ret;
+}
+
+/* Handle a BIO timer expiry attributable to post-hs retransmit (called
+ * from fetch_input's TIMEOUT branch when state == HANDSHAKE_OVER and at
+ * least one post-hs slot is occupied).  Fires the slot(s) at the minimum
+ * timeout, doubles their backoff, decrements others by the elapsed amount,
+ * and re-arms the BIO timer to the new min.
+ *
+ * Returns:
+ *   - MBEDTLS_ERR_SSL_TIMEOUT if any slot exceeded the budget
+ *     (hs_timeout_max).  Per-message pending flags are cleared so a
+ *     subsequent reset is well-defined; the connection should be torn down.
+ *   - MBEDTLS_ERR_SSL_WANT_READ on successful retransmit; the caller
+ *     should re-enter fetch_input with the new timer armed.
+ *   - other non-zero on transient/unrecoverable retransmit error. */
+MBEDTLS_CHECK_RETURN_CRITICAL
+static int ssl_dtls13_post_hs_handle_timeout(mbedtls_ssl_context *ssl)
+{
+    uint32_t fired_ms;
+    int i;
+    int ret;
+
+    fired_ms = ssl_dtls13_post_hs_retransmit_min_timeout(ssl);
+    if (fired_ms == 0) {
+        /* No slot occupied — caller misuse, but treat as no-op. */
+        return 0;
+    }
+
+    for (i = 0; i < MBEDTLS_SSL_DTLS13_MAX_POST_HS_RETRANSMIT; i++) {
+        mbedtls_ssl_dtls13_post_hs_retransmit *slot =
+            &ssl->dtls13_post_hs_retransmit[i];
+        if (slot->type == MBEDTLS_SSL_DTLS13_PENDING_ACK_NONE) {
+            continue;
+        }
+
+        if (slot->retransmit_timeout_ms == fired_ms) {
+            /* This slot fired.  Check budget, then retransmit. */
+            uint32_t new_timeout = 2 * slot->retransmit_timeout_ms;
+            if (new_timeout < slot->retransmit_timeout_ms ||
+                new_timeout > ssl->conf->hs_timeout_max) {
+                new_timeout = ssl->conf->hs_timeout_max;
+            }
+            if (slot->retransmit_timeout_ms >= ssl->conf->hs_timeout_max) {
+                /* Already at max and still no ACK — budget exhausted.  Emit
+                 * the conventional "handshake timeout" string so callers /
+                 * tests written against the in-handshake retransmit-exhaust
+                 * pattern match here too; the phrasing is slightly stretched
+                 * for post-handshake but the operational meaning is the
+                 * same: "retransmit budget exhausted, connection unusable". */
+                MBEDTLS_SSL_DEBUG_MSG(1, ("handshake timeout"));
+                MBEDTLS_SSL_DEBUG_MSG(2, ("post-hs retransmit: slot %d type %d "
+                                          "budget exhausted (timeout=%u, max=%u)",
+                                          i, (int) slot->type,
+                                          (unsigned) slot->retransmit_timeout_ms,
+                                          (unsigned) ssl->conf->hs_timeout_max));
+                /* Clear all per-message pending flags and slots so a reset
+                 * is well-defined.  The connection should be torn down by
+                 * the caller. */
+                ssl->dtls13_ku_ack_pending = 0;
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+                ssl->dtls13_cid_update_ack_pending = 0;
+                ssl->dtls13_req_cid_pending = 0;
+#endif
+                {
+                    int j;
+                    for (j = 0; j < MBEDTLS_SSL_DTLS13_MAX_POST_HS_RETRANSMIT; j++) {
+                        ssl_dtls13_clear_post_hs_retransmit_slot(
+                            &ssl->dtls13_post_hs_retransmit[j]);
+                    }
+                }
+                return MBEDTLS_ERR_SSL_TIMEOUT;
+            }
+            slot->retransmit_count++;
+            slot->retransmit_timeout_ms = new_timeout;
+            ret = ssl_dtls13_post_hs_retransmit_one(ssl, i);
+            if (ret != 0) {
+                /* Retransmit-one failed (e.g. epoch evicted).  Clear the
+                 * slot's pending flag so the application doesn't hang. */
+                MBEDTLS_SSL_DEBUG_RET(1, "post_hs_retransmit_one", ret);
+                /* Best-effort: drop this slot so timer-arm doesn't loop. */
+                ssl_dtls13_clear_post_hs_retransmit_slot(slot);
+                /* Continue the walk — other slots may still be valid. */
+            }
+        } else {
+            /* Other slot — its countdown advanced by `fired_ms`. */
+            if (slot->retransmit_timeout_ms > fired_ms) {
+                slot->retransmit_timeout_ms -= fired_ms;
+            } else {
+                /* Should not happen (fired_ms is the minimum), but guard. */
+                slot->retransmit_timeout_ms = 0;
+            }
+        }
+    }
+
+    /* Re-arm the timer to the new minimum. */
+    ssl_dtls13_post_hs_arm_timer(ssl);
+    return MBEDTLS_ERR_SSL_WANT_READ;
 }
 
 
@@ -7867,8 +8408,27 @@ static int ssl_tls13_write_key_update(mbedtls_ssl_context *ssl,
 
         memcpy(ssl->dtls13_ku_pending_secret, new_secret, hash_len);
 
-        ssl_dtls13_register_pending_ack(ssl, MBEDTLS_SSL_DTLS13_PENDING_ACK_KEY_UPDATE);
+        /* The KU record is already on the wire (flushed above).  If
+         * register_pending_ack fails (state-tracking invariant violation),
+         * we cannot recall the message; surface the error so the caller
+         * tears down the connection rather than leaving a sent KU with no
+         * on-ACK dispatch.  The retransmit slot for this KU was populated
+         * inside mbedtls_ssl_write_handshake_msg_ext (which sees the
+         * plaintext before encryption); see ssl_dtls13_register_post_hs_
+         * retransmit_if_applicable. */
+        ret = ssl_dtls13_register_pending_ack(
+            ssl, MBEDTLS_SSL_DTLS13_PENDING_ACK_KEY_UPDATE);
+        if (ret != 0) {
+            ssl_dtls13_clear_post_hs_retransmit_by_type(
+                ssl, MBEDTLS_SSL_DTLS13_PENDING_ACK_KEY_UPDATE);
+            goto cleanup;
+        }
         ssl->dtls13_ku_ack_pending = 1;
+
+        /* Arm the BIO timer to the post-hs retransmit deadline.  RFC 9147
+         * §5.8 / §7.2: if the peer's ACK is lost, fetch_input will fire
+         * TIMEOUT and ssl_dtls13_post_hs_handle_timeout will retransmit. */
+        ssl_dtls13_post_hs_arm_timer(ssl);
     }
 
 cleanup:
@@ -8230,11 +8790,26 @@ static int ssl_tls13_write_new_connection_id(mbedtls_ssl_context *ssl,
      * serialised at this point; if flush_output returns WANT_WRITE the caller
      * will retry the flush, but must not re-enter this function and send a
      * second NewConnectionId before the first is ACKed.  Setting the flag here
-     * ensures the guard at L8146 fires on any re-entry attempt. */
-    ssl_dtls13_register_pending_ack(ssl, MBEDTLS_SSL_DTLS13_PENDING_ACK_NEW_CONNECTION_ID);
+     * ensures the guard at L8146 fires on any re-entry attempt.
+     *
+     * The retransmit slot for this NCI was populated inside
+     * mbedtls_ssl_write_handshake_msg_ext (see register_post_hs_retransmit_
+     * if_applicable).  If register_pending_ack fails here, unwind the
+     * retransmit slot so we don't leave a sent NCI with retransmit state
+     * but no on-ACK dispatch. */
+    ret = ssl_dtls13_register_pending_ack(
+        ssl, MBEDTLS_SSL_DTLS13_PENDING_ACK_NEW_CONNECTION_ID);
+    if (ret != 0) {
+        ssl_dtls13_clear_post_hs_retransmit_by_type(
+            ssl, MBEDTLS_SSL_DTLS13_PENDING_ACK_NEW_CONNECTION_ID);
+        goto cleanup;
+    }
     ssl->dtls13_cid_update_ack_pending = 1;
 
     MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_flush_output(ssl));
+
+    /* Arm the BIO timer to the post-hs retransmit deadline (RFC 9147 §5.8). */
+    ssl_dtls13_post_hs_arm_timer(ssl);
 
 cleanup:
     return ret;
@@ -8460,12 +9035,29 @@ static int ssl_tls13_write_request_connection_id(mbedtls_ssl_context *ssl,
     MBEDTLS_SSL_DEBUG_MSG(2, ("RequestConnectionId sent (num_cids=%u)",
                               (unsigned) num_cids));
 
+    /* Register the dispatch slot so process_ack can match the peer's
+     * record-layer ACK and clear the retransmit flight item.  RCI's
+     * "fulfilled" condition (peer sends NewConnectionId) is independent of
+     * this ACK and is tracked by dtls13_req_cid_pending; this slot only
+     * stops retransmit. */
+    ret = ssl_dtls13_register_pending_ack(
+        ssl, MBEDTLS_SSL_DTLS13_PENDING_ACK_REQUEST_CONNECTION_ID);
+    if (ret != 0) {
+        goto cleanup;
+    }
+
+    /* Arm the BIO timer to the post-hs retransmit deadline (RFC 9147 §5.8). */
+    ssl_dtls13_post_hs_arm_timer(ssl);
+
 cleanup:
-    /* On any send error, clear the pending flag so the caller can retry.
-     * WANT_WRITE is the normal retryable case; for hard errors the
-     * connection will be torn down anyway. */
+    /* On any send error, clear the pending flag and the retransmit slot
+     * (populated inside mbedtls_ssl_write_handshake_msg_ext) so the caller
+     * can retry cleanly.  WANT_WRITE is the normal retryable case; for
+     * hard errors the connection will be torn down anyway. */
     if (ret != 0) {
         ssl->dtls13_req_cid_pending = 0;
+        ssl_dtls13_clear_post_hs_retransmit_by_type(
+            ssl, MBEDTLS_SSL_DTLS13_PENDING_ACK_REQUEST_CONNECTION_ID);
     }
     return ret;
 }
