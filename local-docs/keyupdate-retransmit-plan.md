@@ -59,7 +59,7 @@ starting from packet 8 (after the handshake is fully ACKed). Today the
 client hangs in `mbedtls_ssl_read`; the test expects exit 1 with the
 timeout log line.
 
-## Why the obvious fix didn't work
+## Why the obvious fix didn't work — and the misdiagnosis
 
 Attempted in session 2026-05-10:
 
@@ -82,18 +82,33 @@ Attempted in session 2026-05-10:
 
 After all four, the client's `f_recv_timeout` still showed `0 ms`
 (blocking) shortly after KU send. Instrumentation showed
-`retransmit_state = WAITING` was set immediately after KU send, but at
-the next f_recv_timeout call it had been cleared. The clear point was
-not located in the time available; suspects:
+`retransmit_state = WAITING` set immediately after KU send. The
+inference at the time was "WAITING got cleared between the KU send and
+the next `f_recv_timeout` call" — and several suspects were enumerated
+for that clear (stale handshake-flight ACK, state-machine transitions,
+read/handshake lifecycle bookkeeping). Step 4 was thought to be in place.
 
-- The previous handshake's flight items (still in the queue) get
-  matched by an old ACK that processes asynchronously, triggering
-  `process_ack`'s `all_acked → FINISHED` branch.
-- A state machine transition (CLIENT_FINISHED_WAIT_ACK exit, NST
-  receive, etc.) clears `retransmit_state` via a path I didn't
-  enumerate.
-- The client's `mbedtls_ssl_handshake` tail vs `mbedtls_ssl_read` entry
-  has lifecycle bookkeeping that resets retransmit state.
+**That diagnosis was wrong.** Re-reading the code:
+
+- `fetch_input` (`ssl_msg.c:2110-2114`) selects the timeout via
+  `ssl->state != MBEDTLS_SSL_HANDSHAKE_OVER`, **not** via
+  `retransmit_state`. After the handshake, `ssl->state ==
+  HANDSHAKE_OVER`, so the retransmit-timeout branch is unreachable
+  regardless of what `retransmit_state` holds. The default
+  `read_timeout = 0` (blocking) wins, hence `f_recv_timeout: 0`.
+- `retransmit_state` was *never* cleared. It stayed at `WAITING` —
+  `fetch_input` just doesn't consult it post-handshake.
+- Step 4's intended change (consult `retransmit_state` rather than
+  `state`) was the right idea but the prototype attempted in this
+  session evidently did not land correctly; the read path continued
+  using `read_timeout`. Whether step 4 was incorrectly written or got
+  reverted alongside the others wasn't recorded.
+
+So the "shared-flight reuse" path failed for a fixable reason — an
+incomplete step 4 — not because of any state-machine coupling between
+the handshake flight and post-hs messages. The original "Q1 dissolved
+by the design choice" framing carried this misdiagnosis forward; see
+§Q1 below for the corrected answer.
 
 Reverted all four changes; KU test remains failing.
 
@@ -162,74 +177,168 @@ When the peer's ACK of a KeyUpdate is lost:
 3. Timer doubles up to `hs_timeout_max`; eventually `ssl_double_retransmit_timeout` exhausts the budget.
 4. `mbedtls_ssl_read` returns `MBEDTLS_ERR_SSL_TIMEOUT` to the caller.
 
-### High-level changes
+### High-level changes (slot-based design)
 
-1. **Stop excluding KeyUpdate from the flight append** (`ssl_msg.c:3133-3134`).
-   Remove the `hs_type != MBEDTLS_SSL_HS_KEY_UPDATE` check. KU goes
-   through the same flight machinery as in-handshake messages.
+1. **Add `dtls13_post_hs_retransmit[]`** alongside `dtls13_pending_acks[]`
+   in `mbedtls_ssl_context`, sized `MBEDTLS_SSL_DTLS13_MAX_POST_HS_RETRANSMIT
+   = 3`. Bump `MBEDTLS_SSL_DTLS13_MAX_PENDING_ACKS` from 2 to 3 to keep
+   the arrays aligned.
 
-2. **Arm the retransmit timer after KU send.** In
-   `ssl_tls13_write_key_update`, after the `flush_output` call, call
-   `mbedtls_ssl_send_flight_completed(ssl)` (DTLS path only).
+2. **Replace `register_pending_ack`'s overwrite-slot-0 fallback** with
+   an error return so callers can fail the send rather than silently
+   dropping a pending retransmit.
 
-3. **Investigate and fix the WAITING-cleared-by-prior-ACK issue.**
-   This is the unresolved blocker. Options to investigate:
-   - Clear the previous flight (`flight_free`) before appending the new
-     KU item so old ACKs can't "all-ack" the queue.
-   - Replace flight reuse with a per-message flight (one flight per KU
-     send), distinct from the handshake's main flight. Cleaner separation
-     but bigger change.
+3. **Capture record bytes at send time.** In `ssl_tls13_write_key_update`,
+   `ssl_tls13_write_new_connection_id`,
+   `ssl_tls13_write_request_connection_id`: after `flush_output`, call
+   `ssl_dtls13_register_post_hs_retransmit(bytes, len)` alongside the
+   existing `ssl_dtls13_register_pending_ack`. The bytes copy is the
+   freshly built record (epoch, seq, ciphertext) — captured before
+   `out_buf` is reused.
 
-4. **Update `flight_transmit`'s state check** to keep the timer armed
-   when there's an active flight, even in HANDSHAKE_OVER. (Already
-   prototyped, didn't ship — depends on (3) above for correctness.)
+4. **Drive the timer.** Recompute the next deadline as
+   `min(existing handshake deadline, min(post_hs_retransmit slot
+   deadlines))` on every event that changes a deadline. On expiry,
+   walk slots, retransmit any past-due, double their backoff, surface
+   `TIMEOUT` if any exceeds `hs_timeout_max`.
 
-5. **Update `fetch_input`'s timeout choice** so post-handshake retransmit
-   is observable. (Already prototyped.)
+5. **Match ACKs to retransmit slots.** In `ssl_dtls13_process_ack`,
+   after the existing `dtls13_pending_acks[]` walk, walk
+   `dtls13_post_hs_retransmit[]` for the same `(epoch, seq)`, free
+   bytes, clear the slot, recompute the timer.
 
-### Recommended approach (broad scope): extend dtls13_pending_acks[] with retransmit data
+6. **Update `fetch_input`'s timeout choice** so the post-handshake
+   retransmit timer is honored — see §Q1 for the exact change.
 
-`dtls13_pending_acks[]` already tracks `(epoch, seq, type)` for post-hs
+7. **Surface budget-exhaust as TIMEOUT.** Set a fatal-error flag when
+   any slot exceeds `hs_timeout_max`; the next `mbedtls_ssl_read` (or
+   `_write`) returns `MBEDTLS_ERR_SSL_TIMEOUT`. Clear the
+   `ku_ack_pending` / `cid_update_ack_pending` flags as part of error
+   cleanup so a subsequent reset is well-defined.
+
+Steps 1–2 do not depend on the rest and can land first as
+preconditions; step 6 is the minimal `fetch_input` fix that step 3
+onward depends on.
+
+### Recommended approach (broad scope): sibling retransmit array, not slot extension
+
+`dtls13_pending_acks[]` today tracks `(epoch, seq, type)` for post-hs
 messages and dispatches per-type on-ACK actions (KU install, NCI ack
-clear). Extend each slot to carry the data needed to retransmit:
+clear). It is a **dispatch table** — "when ACK X arrives, do Y" —
+indexed by sent record number. Its lifetime is "alive from send until
+ACK arrives or session resets."
 
-- `unsigned char *bytes` (record bytes for retransmit; allocated on send)
-- `size_t bytes_len`
-- `uint32_t retransmit_timeout_ms` (current backoff value, doubled on expiry)
-- `mbedtls_ms_time_t next_retransmit_at` (deadline)
-- `uint8_t retransmit_count` (for budget cap)
+The retransmit machinery has a different lifetime: "alive from send
+until ACK arrives **or budget exhausts** (which can be tens of seconds
+in the fail case, ending in a fatal-error transition the dispatch
+table doesn't know about)." Cramming retransmit fields into the
+dispatch slots would make one struct responsible for two unrelated
+jobs.
+
+Use a **sibling array** instead:
+
+```c
+typedef struct {
+    mbedtls_ssl_dtls13_pending_ack_type_t type;  /* 0 == empty */
+    uint64_t sent_epoch;
+    uint64_t sent_seq;
+    unsigned char *bytes;                         /* record bytes for retransmit */
+    size_t bytes_len;
+    uint32_t retransmit_timeout_ms;               /* current backoff */
+    mbedtls_ms_time_t next_retransmit_at;         /* absolute deadline */
+    uint8_t retransmit_count;                     /* budget cap */
+} mbedtls_ssl_dtls13_post_hs_retransmit;
+
+#define MBEDTLS_SSL_DTLS13_MAX_POST_HS_RETRANSMIT 3
+mbedtls_ssl_dtls13_post_hs_retransmit
+    dtls13_post_hs_retransmit[MBEDTLS_SSL_DTLS13_MAX_POST_HS_RETRANSMIT];
+```
+
+The `(epoch, seq, type)` fields are duplicated between the two arrays
+on purpose: `dtls13_pending_acks[]` keeps its single-job role, the new
+array drives retransmit. A successful match clears both (single ACK
+matches both — a small loop in `process_ack` after the existing slot
+walk).
 
 Operation:
-- After sending a post-hs HS message, populate the slot (existing
-  `ssl_dtls13_register_pending_ack` already does the (epoch, seq, type)
-  part) AND save the record bytes + initialise the backoff state.
+- After sending a post-hs HS message, the existing
+  `ssl_dtls13_register_pending_ack` populates a `pending_acks[]` slot.
+  A new sibling `ssl_dtls13_register_post_hs_retransmit(bytes, len)`
+  populates a `post_hs_retransmit[]` slot. Both calls happen at the
+  same site (right after `flush_output` in
+  `ssl_tls13_write_key_update`, `ssl_tls13_write_new_connection_id`,
+  `ssl_tls13_write_request_connection_id`).
 - A single timer drives the next wakeup, set to the soonest
-  `next_retransmit_at` across all active slots.
-- On timer expiry: walk slots, retransmit any whose deadline passed,
-  double their `retransmit_timeout_ms`. If any slot's `retransmit_count`
-  exceeds the equivalent of `hs_timeout_max`, surface
-  `MBEDTLS_ERR_SSL_TIMEOUT`.
-- On `process_ack` matching a slot's (epoch, seq): existing per-type
-  dispatch fires; free the bytes and clear the slot.
-- On budget exhaustion: connection enters a fatal-error state; the next
-  `mbedtls_ssl_read` returns TIMEOUT.
+  `next_retransmit_at` across all active retransmit slots (recomputed
+  on every event that changes a deadline: register, ACK match,
+  retransmit, handshake state transition).
+- On timer expiry: walk retransmit slots, retransmit any whose deadline
+  passed, double their `retransmit_timeout_ms`. If any slot's
+  `retransmit_count` exceeds `hs_timeout_max`, surface
+  `MBEDTLS_ERR_SSL_TIMEOUT` to the next `mbedtls_ssl_read`.
+- On `process_ack` matching a `(epoch, seq)`: the existing dispatch
+  walk in `pending_acks[]` runs; afterward, walk
+  `post_hs_retransmit[]` for the same `(epoch, seq)`, free its bytes,
+  clear the slot, recompute the next-deadline.
+- On budget exhaustion: free the slot, set a fatal-error flag the next
+  read/write surfaces as `MBEDTLS_ERR_SSL_TIMEOUT`.
 
-This is the right design under broad scope:
+Why this is right under broad scope:
 - Same code path handles KeyUpdate, NewConnectionId, RequestConnectionId
   (and any future post-hs HS message types) uniformly.
-- Already integrated with the per-type ACK dispatch.
-- Adding a new message type = register on send + slot uses generic
-  retransmit; no per-type retransmit code.
+- Adding a new message type = register on send (two calls, both
+  alongside an existing pending-ack registration) + the existing
+  per-type dispatch in `pending_acks[]` already fires on match.
 - Single timer + on-expiry scan is the standard pattern.
+- Each struct keeps a single responsibility.
 
 Trade-offs:
-- `dtls13_pending_acks[]` becomes load-bearing for retransmit, not just
-  ACK matching — heavier responsibility, more invariants to maintain.
-- Each slot allocates a bytes buffer; needs cleanup paths in
-  `session_reset` and `ssl_free`.
-- `MBEDTLS_SSL_DTLS13_MAX_PENDING_ACKS` (currently 2) must cover the
-  worst case of overlapping post-hs messages. Probably stays at 2 for
-  KU + NCI; bumping to 3 if RCI must overlap with both.
+- Two parallel arrays instead of one richer one. The duplication of
+  `(epoch, seq, type)` is acceptable: it's three uint64s per slot,
+  with `MAX_POST_HS_RETRANSMIT = 3` that's ~72 bytes overhead — and it
+  preserves the conceptual split.
+- Each retransmit slot allocates a bytes buffer; needs cleanup paths
+  in `session_reset`, `ssl_close_notify`, and `ssl_free`. Specifically:
+  - **`session_reset` mid-retransmit**: walk and free all bytes, cancel
+    timer, zero the array.
+  - **`ssl_close_notify` while unACKed**: same — drop in-flight
+    retransmits.
+  - **`mbedtls_ssl_session_save`/`_load`**: post-hs retransmit state
+    is connection state, not session state. Do **not** serialize.
+    Add an explicit assertion.
+  - **OOM at register time**: surface `MBEDTLS_ERR_SSL_ALLOC_FAILED`
+    from the send path. Better the application sees the failure than
+    a "sent but never delivered" phantom message.
+- `MBEDTLS_SSL_DTLS13_MAX_POST_HS_RETRANSMIT = 3`: KU + NCI + RCI can
+  realistically overlap (server with CID enabled mid-NCI fan-out when
+  the AEAD-limit triggers a KU). 2 is not enough.
+
+### Existing `register_pending_ack` overflow fallback is a correctness bug
+
+`ssl_dtls13_register_pending_ack` at `ssl_msg.c:7647-7657` currently
+does:
+
+```c
+for (i = 0; i < MBEDTLS_SSL_DTLS13_MAX_PENDING_ACKS; i++) {
+    if (slots[i].type == type ||
+        slots[i].type == MBEDTLS_SSL_DTLS13_PENDING_ACK_NONE) {
+        break;
+    }
+}
+/* If no free slot, overwrite slot 0 (should not happen with
+ * MAX_PENDING_ACKS=2 and only two message types …). */
+if (i == MBEDTLS_SSL_DTLS13_MAX_PENDING_ACKS) {
+    i = 0;
+}
+```
+
+Today this is defensive-but-unreachable. Under the new design,
+overwriting slot 0 silently **drops a pending retransmit**, and once
+RCI is added, "only two message types" is no longer true. Replace the
+fallback with returning `MBEDTLS_ERR_SSL_INTERNAL_ERROR` (or similar)
+so callers can fail the send rather than lose the message. The
+`bumping MAX_PENDING_ACKS to 3` change should be applied to the
+existing dispatch array as well, so the array sizes stay aligned.
 
 ### Alternative (rejected for broad scope): per-message flight slot
 
@@ -238,15 +347,49 @@ A separate post-hs retransmit slot distinct from both
 single message type, but multiplies linearly with each new post-hs HS
 message type — wrong choice when fixing all three at once.
 
-### Alternative (rejected): direct reuse of `handshake->flight`
+### Alternative (viable, not chosen): direct reuse of `handshake->flight`
 
-Initially attempted in this session. Failed because prior handshake
-ACKs / state transitions clear `retransmit_state` on the shared flight,
-so a post-hs KU appended to the same queue gets its retransmit context
-wiped. Could probably be made to work with careful state separation,
-but the abstraction is wrong: a handshake flight is one *flight* (a
-contiguous group of related messages), whereas post-hs messages are
-independent and shouldn't share a queue.
+Initially attempted in this session and reverted. The original write-up
+claimed it failed because prior handshake ACKs / state transitions
+clear `retransmit_state` on the shared flight; that diagnosis was
+wrong (see Q1). The actual failure was an incomplete `fetch_input`
+timeout-selection change, which is a small follow-up.
+
+So shared-flight reuse is technically viable. It would need:
+
+1. Steps 1–4 from the original attempt (KU joins flight,
+   `send_flight_completed` arms timer, `flight_transmit` and
+   `fetch_input` aware of `flight != NULL` post-handshake).
+2. A per-message **flight prune on ACK** policy: today
+   `mbedtls_ssl_handshake_wrapup` retains the last flight "in case we
+   need to resend it" (singular). Under shared reuse, a post-hs KU
+   appended to that retained flight stays appended forever; the next
+   KU joins, etc. The flight grows. The current `process_ack`
+   `all_acked → retransmit_state = FINISHED` branch still fires (good)
+   but the flight items themselves are never freed. Need a free-acked-
+   items pass on each ACK or at the start of each post-hs send.
+3. A KU-budget exhaust → `MBEDTLS_ERR_SSL_TIMEOUT` surface path
+   (currently `fetch_input` returns TIMEOUT only when `state !=
+   HANDSHAKE_OVER`; needs the same broadening as Q1's fix).
+
+Why we still pick the slot-based design instead:
+
+- **Conceptual fit.** A handshake flight is a *flight* — a contiguous
+  group of related messages sent together. Post-hs messages are
+  independent (KU is its own logical flight-of-one; NCI is another).
+  Reusing the queue muddies what a "flight" means.
+- **Lifetime separation.** Handshake-flight items have one well-defined
+  lifetime (alive until the handshake completes plus a brief
+  retention window). Post-hs items have a different one (alive until
+  ACKed or budget exhausts). Sharing one queue means one set of
+  invariants doing two unrelated jobs.
+- **Scaling.** Adding NCI/RCI as additional shared-flight users
+  requires more flight-management bookkeeping; slot-based scales by
+  registering a new slot type with the existing dispatch.
+
+But the gap is narrower than the original framing suggested. If the
+slot-based design hits an unexpected obstacle, shared-flight is a
+realistic fallback.
 
 ## Scope
 
@@ -265,35 +408,83 @@ two more instances of the same RFC 9147 §7 compliance gap, and the
 scaling concern only points more strongly toward the shared-mechanism
 design.
 
-## Test plan — TDD: write failing tests first
+## Test plan — TDD: failing tests committed, implementation pending
 
-The first commit of this work should be **failing tests for every
-in-scope scenario**. The implementation commits then make them pass
-one by one. This locks in scope and provides a regression suite.
+Three failing tests have been committed (`cabbe587ca`, 2026-05-10).
+Implementation commits should flip them to passing one at a time. This
+locks in scope and provides a regression suite.
 
-### First commit: failing tests
+### Failing tests in tree (today)
 
-1. **Already in tree (failing today)** — `tests/dtls13/cases/keyupdate.yaml`
-   "KeyUpdate timeout: server ACK lost, client retransmit budget
-   exhausts". Asserts `client_handshake_timeout`. (Committed in
-   `b5ae66e562`.)
+1. `tests/dtls13/cases/keyupdate.yaml` — "KeyUpdate timeout:
+   client-initiated, server ACK lost". `corrupt_after_pkt: 7
+   corrupt_dir: s2c` (handshake + NST through clean; corrupts server's
+   KU ACK). Asserts `client_handshake_timeout`. Originally committed in
+   `b5ae66e562`; renamed in `cabbe587ca`.
 
-2. **Add: NewConnectionId timeout** — symmetric to the KU test. Client
-   triggers `send_new_cid=1`; proxy corrupts s2c after the post-handshake
-   point so server's ACK of NCI is lost. Server's NCI retransmit
-   eventually surfaces TIMEOUT. Asserts `server_handshake_timeout`.
+2. `tests/dtls13/cases/keyupdate.yaml` — "KeyUpdate timeout:
+   server-initiated, client ACK lost". `corrupt_after_pkt: 8
+   corrupt_dir: c2s` (handshake + NST_ACK + HTTP through clean;
+   corrupts client's KU ACK). Asserts `server_handshake_timeout`.
 
-3. **Add: server-initiated KeyUpdate timeout** — server triggers
-   `key_update=1`; proxy corrupts c2s after the post-handshake point so
-   client's ACK of server's KU is lost. Server's KU retransmit
-   eventually surfaces TIMEOUT. Asserts `server_handshake_timeout`.
+3. `tests/dtls13/cases/cid-update.yaml` — "NewConnectionId timeout:
+   server-initiated, client ACK lost". `corrupt_after_pkt: 8
+   corrupt_dir: c2s`, `send_new_cid: 1` on the server. Asserts
+   `server_handshake_timeout`.
 
-4. **Add: KeyUpdate retransmit progress (positive case)** — client sends
-   KU; proxy uses `drop=2` so ~50% of packets drop randomly, but
-   `MAX_HOLD=2` ensures the same packet isn't dropped indefinitely.
-   Client retransmits at least once before a non-dropped retransmission
-   gets through and is ACKed. Verifies retransmit *progress*, not just
-   budget exhaustion. Asserts `client_key_update_acked`.
+### Why threshold 8 for the c2s tests (calibration trap)
+
+Initial drafts used `corrupt_after_pkt: 4 corrupt_dir: c2s` for the
+server-initiated tests. These PASSED — but **for the wrong reason**.
+With threshold 4, the corruption fires before the client's NST ACK
+reaches the server, so the server times out in NST_WAIT_ACK (already
+fixed in `46f89e8f2c`) — not in KU/NCI retransmit (the bug we're
+trying to catch). The test would have stayed green even if the KU/NCI
+fix never landed.
+
+Threshold 8 lets c2s packets 1–8 (handshake CH + Finished+ACK + NST
+ACK + HTTP request) through clean, isolating the KU/NCI ACK path.
+
+If you ever add more post-handshake server-initiated retransmit tests,
+calibrate the threshold the same way: count c2s packets through the
+last "already-fixed" timeout milestone, then add 1.
+
+### Slot-overflow test (new)
+
+Send three overlapping post-hs messages (server-initiated NCI burst
+while a KU is in flight, RCI from the client at the same time) and
+assert one of:
+
+- (a) clean `MBEDTLS_ERR_SSL_ALLOC_FAILED` from the send path that
+  couldn't register — the application observes the failure.
+- (b) connection-level TIMEOUT if a registered message hits its budget.
+
+What we explicitly do **not** want: silent drop of one message while
+the others march on. This guards against a regression where someone
+"fixes" the new register-overflow error by reverting to the old
+overwrite-slot-0 behavior.
+
+### Positive retransmit-progress test (deferred)
+
+A test for retransmit *progress* (KU sent, peer ACK dropped once,
+retransmit succeeds) was considered but not added in `cabbe587ca`. It
+requires the proxy to randomly drop a single encrypted record, which
+udp_proxy's `drop=N` cannot do today (the random-drop path explicitly
+excludes `ApplicationData`, which is how DTLS 1.3 encrypted records
+classify).
+
+Options when adding this test:
+- Extend `corrupt_after_pkt` with a `corrupt_count=N` cap that
+  corrupts only the first N triggered packets, then lets subsequent
+  packets through. A retransmit after the corruption stops would be
+  non-corrupt and would get through.
+- Extend `drop=N` to include ApplicationData (would need a new option
+  or a flag to override the existing exclusion).
+- Add a dedicated `drop_post_hs_pkt=N` option that drops only the Nth
+  packet matching some pattern, deterministically.
+
+This is out of scope for the failing-test commit. Defer to the
+implementation PR.
 
 ### Subsequent commits: implementation, one test at a time
 
@@ -316,10 +507,34 @@ A reviewer can verify the diff against the matching test.
 - **Reciprocal KU on `update_requested=1`** — the reciprocal KU send
   goes through the same path; automatically covered.
 
+## API contract change: prolonged WANT_WRITE under retransmit
+
+Today, `mbedtls_ssl_send_key_update` returns `MBEDTLS_ERR_SSL_WANT_WRITE`
+while a previous KU is unACKed (`dtls13_ku_ack_pending == 1`). With the
+new retransmit, "previous KU is unACKed" can mean "the retransmit
+machinery is still trying for up to `hs_timeout_max`," which under
+default settings is tens of seconds.
+
+This is intentional, but applications need to know:
+
+- Observing prolonged `WANT_WRITE` on a KU call is **expected** during
+  ACK loss. It means retransmit is in progress.
+- On budget exhaust, the connection enters a fatal-error state. The
+  next `mbedtls_ssl_read` (or `_write`) returns
+  `MBEDTLS_ERR_SSL_TIMEOUT`, and the `ku_ack_pending` flag clears as
+  part of error cleanup.
+- An application that polls KU in a tight loop while seeing `WANT_WRITE`
+  will burn CPU but not deadlock — it eventually sees TIMEOUT.
+
+Documented here so the API contract is captured before integrators
+write workarounds.
+
 ## Out of scope
 
 - **KeyUpdate during a still-pending KU ACK** — already handled by the
-  `dtls13_ku_ack_pending` guard returning `WANT_WRITE`. No change needed.
+  `dtls13_ku_ack_pending` guard returning `WANT_WRITE`. No code change
+  needed; see "API contract change" above for the behavior under
+  retransmit.
 - **Changing the retransmit budget** (`hs_timeout_min`, `hs_timeout_max`)
   for post-hs messages specifically. Use the same configuration as the
   handshake retransmit; if separate tuning is desired, that's a
@@ -332,18 +547,52 @@ A reviewer can verify the diff against the matching test.
 
 ### Q1: What clears `retransmit_state` post-KU on the shared flight?
 
-**Dissolved by the design choice.** With the chosen design
-(`dtls13_pending_acks[]` slot extension), the new retransmit state
-lives on the slot, not on the shared `handshake->flight` /
-`handshake->retransmit_state`. Nothing the handshake state machine does
-will affect it. We don't need to find the offender for the rejected
-"direct flight reuse" approach.
+**Nothing clears it.** The premise of the question was wrong (see
+"Why the obvious fix didn't work — and the misdiagnosis" above). After
+`send_flight_completed` sets `retransmit_state = WAITING`, that value
+is preserved through the next `mbedtls_ssl_read` entry. The bug we
+observed (`f_recv_timeout: 0`, blocking read) comes from `fetch_input`
+selecting its timeout based on `ssl->state != HANDSHAKE_OVER`, not on
+`retransmit_state`. Post-handshake, `ssl->state == HANDSHAKE_OVER`, so
+the retransmit-timeout branch is unreachable and `read_timeout = 0`
+(blocking) is used.
 
-If for some reason we're forced back to the shared-flight design later,
-the bisection plan would be: instrument every `retransmit_state =`
-write site with a unique log tag, run the failing KU test, and find the
-write that fires after `send_flight_completed → WAITING` and before the
-first `f_recv_timeout: 0` line.
+The fix is to broaden `fetch_input`'s timeout selection: also use
+`retransmit_timeout` when `retransmit_state == WAITING`. Concretely,
+change the check at `ssl_msg.c:2110` from
+
+```c
+if (ssl->state != MBEDTLS_SSL_HANDSHAKE_OVER) {
+    timeout = ssl->handshake->retransmit_timeout;
+} else {
+    timeout = ssl->conf->read_timeout;
+}
+```
+
+to
+
+```c
+if (ssl->state != MBEDTLS_SSL_HANDSHAKE_OVER ||
+    (ssl->handshake != NULL &&
+     ssl->handshake->retransmit_state == MBEDTLS_SSL_RETRANS_WAITING)) {
+    timeout = ssl->handshake->retransmit_timeout;
+} else {
+    timeout = ssl->conf->read_timeout;
+}
+```
+
+(plus a NULL-guard on `ssl->handshake` for the existing branch, since
+`handshake` is no longer guaranteed alive post-wrapup in all paths —
+see `mbedtls_ssl_handshake_wrapup` at `ssl_tls.c:7539-7550` which
+**keeps** the handshake structure alive in DTLS specifically so a
+post-handshake retransmit can use it. Code today reaches
+`ssl->handshake->retransmit_timeout` for non-HANDSHAKE_OVER states only
+because the same wrapup code path runs in that order.)
+
+This change has implications for the **design choice** between
+shared-flight reuse and the slot-based design (see §Recommended
+approach). The shared-flight design is no longer "broken by state
+coupling" — it's a viable alternative on its merits.
 
 ### Q2: Same `mbedtls_ssl_set_timer` or a separate timer?
 
