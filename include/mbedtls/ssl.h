@@ -1454,6 +1454,15 @@ struct mbedtls_ssl_config {
     int(*MBEDTLS_PRIVATE(f_cookie_check))(void *, const unsigned char *, size_t,
                                           const unsigned char *, size_t);
     void *MBEDTLS_PRIVATE(p_cookie);                 /*!< context for the cookie callbacks   */
+
+    /** Stack-managed HRR/HVR cookie HMAC key (heap copy of the bytes
+     *  supplied to mbedtls_ssl_conf_dtls_cookie_secret).  NULL unless
+     *  the application configured a secret.  Zeroized on free.  See
+     *  the function's doc comment for the precedence rule against the
+     *  legacy f_cookie_* callbacks. */
+    unsigned char *MBEDTLS_PRIVATE(dtls_cookie_secret);
+    size_t MBEDTLS_PRIVATE(dtls_cookie_secret_len);
+    unsigned int MBEDTLS_PRIVATE(dtls_cookie_secret_flags);
 #endif
 
 #if defined(MBEDTLS_SSL_SESSION_TICKETS) && defined(MBEDTLS_SSL_SRV_C)
@@ -3226,6 +3235,63 @@ void mbedtls_ssl_conf_dtls_cookies(mbedtls_ssl_config *conf,
                                    mbedtls_ssl_cookie_write_t *f_cookie_write,
                                    mbedtls_ssl_cookie_check_t *f_cookie_check,
                                    void *p_cookie);
+
+/**
+ * \name DTLS HRR/HVR cookie secret flags
+ * \{
+ */
+/** Apply the cookie secret to DTLS 1.2 HelloVerifyRequest as well as
+ *  DTLS 1.3 HelloRetryRequest.  Off by default: configuring a secret
+ *  must never silently change the DTLS 1.2 cookie behaviour of an
+ *  application that previously used the legacy f_cookie_* callbacks. */
+#define MBEDTLS_SSL_COOKIE_SECRET_APPLY_TO_DTLS12    (1u << 0)
+/** \} name DTLS HRR/HVR cookie secret flags */
+
+/**
+ * \brief          Configure a server-side secret for the DTLS 1.3
+ *                 HelloRetryRequest cookie (and optionally the DTLS 1.2
+ *                 HelloVerifyRequest cookie).
+ *
+ *                 When configured, the stack constructs cookies
+ *                 internally using \p key as the HMAC key, including
+ *                 (for DTLS 1.3) the transcript content RFC 9147 §5.1
+ *                 requires for a stateless cookie exchange.  The
+ *                 application does not write any HMAC code; supplying a
+ *                 cluster-wide secret is sufficient.
+ *
+ *                 Precedence with the legacy
+ *                 mbedtls_ssl_conf_dtls_cookies() callbacks:
+ *                 - DTLS 1.3: the secret is the only mechanism that can
+ *                   produce a cookie satisfying RFC 9147 §5.1.  The
+ *                   legacy callbacks are never invoked on the DTLS 1.3
+ *                   path.
+ *                 - DTLS 1.2: the legacy callbacks always win when
+ *                   configured (no silent behaviour change on upgrade).
+ *                   The secret feeds DTLS 1.2 only when both no
+ *                   callbacks are set AND the
+ *                   MBEDTLS_SSL_COOKIE_SECRET_APPLY_TO_DTLS12 flag is
+ *                   passed.
+ *
+ * \param conf      SSL configuration.
+ * \param key       Secret HMAC key bytes (cluster-wide if applicable).
+ *                  The implementation copies the bytes; \p key need not
+ *                  outlive this call.  The copy is zeroized on free.
+ * \param key_len   Length of \p key in bytes.  Must be in [16, 64].
+ * \param flags     Bitmask of MBEDTLS_SSL_COOKIE_SECRET_* flags, or 0.
+ *
+ * \return          0 on success, MBEDTLS_ERR_SSL_BAD_INPUT_DATA on
+ *                  parameter validation failure, or
+ *                  MBEDTLS_ERR_SSL_ALLOC_FAILED on out-of-memory.
+ *
+ * \note            Safe to call repeatedly; each call replaces the
+ *                  previously configured secret (the prior copy is
+ *                  zeroized and freed).  Pass \p key == NULL,
+ *                  \p key_len == 0 to clear.
+ */
+int mbedtls_ssl_conf_dtls_cookie_secret(mbedtls_ssl_config *conf,
+                                        const unsigned char *key,
+                                        size_t key_len,
+                                        unsigned int flags);
 
 /**
  * \brief          Set client's transport-level identification info.

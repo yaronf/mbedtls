@@ -1563,6 +1563,68 @@ void mbedtls_ssl_conf_dtls_anti_replay(mbedtls_ssl_config *conf, char mode)
 }
 #endif
 
+#if defined(MBEDTLS_SSL_DTLS_HELLO_VERIFY) && defined(MBEDTLS_SSL_SRV_C)
+/* Key-length bounds: 16 bytes (128-bit min for HMAC security margin) to
+ * 64 bytes (one HMAC-SHA-512 block — beyond that, HMAC pre-hashes the
+ * key, which adds nothing). */
+#define MBEDTLS_SSL_COOKIE_SECRET_MIN_LEN   16
+#define MBEDTLS_SSL_COOKIE_SECRET_MAX_LEN   64
+
+int mbedtls_ssl_conf_dtls_cookie_secret(mbedtls_ssl_config *conf,
+                                        const unsigned char *key,
+                                        size_t key_len,
+                                        unsigned int flags)
+{
+    unsigned char *copy = NULL;
+
+    if (conf == NULL) {
+        return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
+    }
+
+    /* Clear-on-NULL semantics: (NULL, 0, 0) drops any previously
+     * configured secret. */
+    if (key == NULL && key_len == 0 && flags == 0) {
+        if (conf->dtls_cookie_secret != NULL) {
+            mbedtls_zeroize_and_free(conf->dtls_cookie_secret,
+                                     conf->dtls_cookie_secret_len);
+        }
+        conf->dtls_cookie_secret        = NULL;
+        conf->dtls_cookie_secret_len    = 0;
+        conf->dtls_cookie_secret_flags  = 0;
+        return 0;
+    }
+
+    /* Reject bogus shapes. */
+    if (key == NULL ||
+        key_len < MBEDTLS_SSL_COOKIE_SECRET_MIN_LEN ||
+        key_len > MBEDTLS_SSL_COOKIE_SECRET_MAX_LEN) {
+        return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
+    }
+    /* Reject unknown flag bits — future-proofing. */
+    if ((flags & ~MBEDTLS_SSL_COOKIE_SECRET_APPLY_TO_DTLS12) != 0) {
+        return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
+    }
+
+    /* Allocate the new copy first so a failure mid-way doesn't leave the
+     * config in a half-cleared state. */
+    copy = mbedtls_calloc(1, key_len);
+    if (copy == NULL) {
+        return MBEDTLS_ERR_SSL_ALLOC_FAILED;
+    }
+    memcpy(copy, key, key_len);
+
+    /* Swap in the new copy, zeroize+free the old (if any). */
+    if (conf->dtls_cookie_secret != NULL) {
+        mbedtls_zeroize_and_free(conf->dtls_cookie_secret,
+                                 conf->dtls_cookie_secret_len);
+    }
+    conf->dtls_cookie_secret        = copy;
+    conf->dtls_cookie_secret_len    = key_len;
+    conf->dtls_cookie_secret_flags  = flags;
+    return 0;
+}
+#endif /* MBEDTLS_SSL_DTLS_HELLO_VERIFY && MBEDTLS_SSL_SRV_C */
+
 void mbedtls_ssl_conf_dtls_badmac_limit(mbedtls_ssl_config *conf, unsigned limit)
 {
     conf->badmac_limit = limit;
@@ -5806,6 +5868,15 @@ void mbedtls_ssl_config_free(mbedtls_ssl_config *conf)
 
 #if defined(MBEDTLS_X509_CRT_PARSE_C)
     ssl_key_cert_free(conf->key_cert);
+#endif
+
+#if defined(MBEDTLS_SSL_DTLS_HELLO_VERIFY) && defined(MBEDTLS_SSL_SRV_C)
+    if (conf->dtls_cookie_secret != NULL) {
+        mbedtls_zeroize_and_free(conf->dtls_cookie_secret,
+                                 conf->dtls_cookie_secret_len);
+        conf->dtls_cookie_secret = NULL;
+        conf->dtls_cookie_secret_len = 0;
+    }
 #endif
 
     mbedtls_platform_zeroize(conf, sizeof(mbedtls_ssl_config));
