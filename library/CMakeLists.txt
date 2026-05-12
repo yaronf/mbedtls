@@ -22,6 +22,7 @@ set(src_tls
     ssl_ciphersuites.c
     ssl_client.c
     ssl_cookie.c
+    ssl_cookie_secret.c
     ssl_debug_helpers_generated.c
     ssl_msg.c
     ssl_ticket.c

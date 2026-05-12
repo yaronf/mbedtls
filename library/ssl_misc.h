@@ -1301,6 +1301,66 @@ void ssl_dtls13_epoch_pool_free(mbedtls_ssl_context *ssl);
 void ssl_dtls13_post_hs_retransmit_reset(mbedtls_ssl_context *ssl);
 
 /* ----------------------------------------------------------------------------
+ * Stack-managed DTLS cookie helpers (DTLS 1.2 HVR and DTLS 1.3 HRR),
+ * keyed off the secret installed by mbedtls_ssl_conf_dtls_cookie_secret().
+ *
+ * Internal because they're not the public callback API surface (which is
+ * mbedtls_ssl_cookie_write_t / _check_t).  The library's HVR/HRR write
+ * and check paths call into these directly when conf->dtls_cookie_secret
+ * is non-NULL.
+ *
+ * See library/ssl_cookie_secret.c for the wire format.  Phase 1 of
+ * local-docs/cookie-impl-plan.md introduces them; phase 2 makes the
+ * DTLS 1.3 helpers load-bearing for stateless transcript recovery.
+ * --------------------------------------------------------------------- */
+#if defined(MBEDTLS_SSL_DTLS_HELLO_VERIFY) && defined(MBEDTLS_SSL_SRV_C)
+
+/* DTLS 1.2 HVR cookie: timestamp || HMAC(secret, timestamp || cli_id).
+ * Total cookie length: 32 bytes (4 timestamp + 28 truncated HMAC). */
+MBEDTLS_CHECK_RETURN_CRITICAL
+int mbedtls_ssl_dtls12_hvr_cookie_write_from_secret(
+    const unsigned char *secret, size_t secret_len,
+    const unsigned char *cli_id, size_t cli_id_len,
+    unsigned char **p, unsigned char *end);
+
+MBEDTLS_CHECK_RETURN_CRITICAL
+int mbedtls_ssl_dtls12_hvr_cookie_check_from_secret(
+    const unsigned char *secret, size_t secret_len,
+    const unsigned char *cli_id, size_t cli_id_len,
+    const unsigned char *cookie, size_t cookie_len,
+    uint32_t timeout_seconds);
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+/* DTLS 1.3 HRR cookie:
+ *   ciphersuite_id(2) || timestamp(4) || ch1_hash(hash_len)
+ *   || HMAC(secret, timestamp || cli_id || ciphersuite_id || ch1_hash)
+ *
+ * Total cookie length: 6 + ch1_hash_len + 28 bytes. */
+MBEDTLS_CHECK_RETURN_CRITICAL
+int mbedtls_ssl_dtls13_hrr_cookie_write_from_secret(
+    const unsigned char *secret, size_t secret_len,
+    const unsigned char *cli_id, size_t cli_id_len,
+    uint16_t ciphersuite_id,
+    const unsigned char *ch1_hash, size_t ch1_hash_len,
+    unsigned char **p, unsigned char *end);
+
+/* On success, *ciphersuite_id_out receives the cookie's ciphersuite_id
+ * and *ch1_hash_out points into the caller's `cookie` buffer at the
+ * recovered H(ClientHello1) (length ch1_hash_len). */
+MBEDTLS_CHECK_RETURN_CRITICAL
+int mbedtls_ssl_dtls13_hrr_cookie_check_from_secret(
+    const unsigned char *secret, size_t secret_len,
+    const unsigned char *cli_id, size_t cli_id_len,
+    const unsigned char *cookie, size_t cookie_len,
+    size_t ch1_hash_len,
+    uint32_t timeout_seconds,
+    uint16_t *ciphersuite_id_out,
+    const unsigned char **ch1_hash_out);
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
+
+#endif /* MBEDTLS_SSL_DTLS_HELLO_VERIFY && MBEDTLS_SSL_SRV_C */
+
+/* ----------------------------------------------------------------------------
  * DTLS 1.3 fault-injection helpers — TEST ONLY, DO NOT USE IN PRODUCTION CODE.
  *
  * These functions craft and send intentionally malformed handshake messages to

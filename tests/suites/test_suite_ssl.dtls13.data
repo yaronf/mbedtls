@@ -90,3 +90,43 @@ ssl_dtls13_sne_mask_chacha20:"90cfdd1f36dab2b52c9584a845e8511877cba792c884ee3ed1
 DTLS 1.3: basic handshake
 depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:MBEDTLS_SSL_HANDSHAKE_WITH_CERT_ENABLED:PSA_WANT_ECC_SECP_R1_256:PSA_WANT_ALG_SHA_256:MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL_ENABLED:MBEDTLS_TIMING_C
 dtls13_handshake:
+
+DTLS 1.3 HRR cookie secret: round-trip (32-byte ch1_hash, AES-128-GCM-SHA256)
+depends_on:PSA_WANT_ALG_SHA_256
+ssl_dtls13_hrr_cookie_secret_roundtrip:"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f":"7f00000104d2":0x1301:"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+DTLS 1.3 HRR cookie secret: round-trip (48-byte ch1_hash, AES-256-GCM-SHA384)
+depends_on:PSA_WANT_ALG_SHA_256
+ssl_dtls13_hrr_cookie_secret_roundtrip:"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f":"7f00000104d2":0x1302:"112233445566778899aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff00"
+
+DTLS 1.3 HRR cookie secret: round-trip (16-byte secret, minimum length)
+depends_on:PSA_WANT_ALG_SHA_256
+ssl_dtls13_hrr_cookie_secret_roundtrip:"000102030405060708090a0b0c0d0e0f":"7f00000104d2":0x1301:"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+DTLS 1.3 HRR cookie secret: wrong-key rejection
+depends_on:PSA_WANT_ALG_SHA_256
+ssl_dtls13_hrr_cookie_secret_wrong_key:"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f":"a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf":"7f00000104d2":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+DTLS 1.3 HRR cookie secret: tampered HMAC byte 38 (first HMAC byte)
+depends_on:PSA_WANT_ALG_SHA_256
+ssl_dtls13_hrr_cookie_secret_tampered:"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f":"7f00000104d2":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef":38
+
+DTLS 1.3 HRR cookie secret: tampered HMAC byte 45 (mid-HMAC)
+depends_on:PSA_WANT_ALG_SHA_256
+ssl_dtls13_hrr_cookie_secret_tampered:"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f":"7f00000104d2":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef":45
+
+DTLS 1.3 HRR cookie secret: tampered HMAC byte 65 (last HMAC byte)
+depends_on:PSA_WANT_ALG_SHA_256
+ssl_dtls13_hrr_cookie_secret_tampered:"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f":"7f00000104d2":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef":65
+
+DTLS 1.3 HRR cookie secret: tampered ciphersuite_id byte
+depends_on:PSA_WANT_ALG_SHA_256
+ssl_dtls13_hrr_cookie_secret_tampered:"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f":"7f00000104d2":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef":0
+
+DTLS 1.3 HRR cookie secret: tampered timestamp byte
+depends_on:PSA_WANT_ALG_SHA_256
+ssl_dtls13_hrr_cookie_secret_tampered:"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f":"7f00000104d2":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef":3
+
+DTLS 1.3 HRR cookie secret: tampered ch1_hash byte
+depends_on:PSA_WANT_ALG_SHA_256
+ssl_dtls13_hrr_cookie_secret_tampered:"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f":"7f00000104d2":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef":15

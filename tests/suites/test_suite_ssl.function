@@ -6185,6 +6185,152 @@ exit:
 }
 /* END_CASE */
 
+/* BEGIN_CASE depends_on:MBEDTLS_SSL_DTLS_HELLO_VERIFY:MBEDTLS_SSL_SRV_C:MBEDTLS_SSL_PROTO_DTLS:MBEDTLS_SSL_PROTO_TLS1_3 */
+/*
+ * Round-trip the DTLS 1.3 HRR cookie through write_from_secret +
+ * check_from_secret with matching parameters; assert the recovered
+ * ciphersuite_id and H(CH1) match what was written.
+ *
+ * Plan reference: local-docs/cookie-impl-plan.md §1.5 test 12.
+ */
+void ssl_dtls13_hrr_cookie_secret_roundtrip(data_t *secret,
+                                            data_t *cli_id,
+                                            int ciphersuite_id_in,
+                                            data_t *ch1_hash)
+{
+    unsigned char cookie[2 + 4 + PSA_HASH_MAX_SIZE + 28];
+    unsigned char *p   = cookie;
+    unsigned char *end = cookie + sizeof(cookie);
+    uint16_t cs_out = 0;
+    const unsigned char *ch1_out = NULL;
+    size_t cookie_len;
+
+    PSA_INIT();
+
+    TEST_EQUAL(mbedtls_ssl_dtls13_hrr_cookie_write_from_secret(
+                   secret->x, secret->len,
+                   cli_id->x, cli_id->len,
+                   (uint16_t) ciphersuite_id_in,
+                   ch1_hash->x, ch1_hash->len,
+                   &p, end), 0);
+
+    cookie_len = (size_t) (p - cookie);
+    TEST_EQUAL(cookie_len, (size_t) (2 + 4 + ch1_hash->len + 28));
+
+    /* Timeout = 0 → freshness check disabled. */
+    TEST_EQUAL(mbedtls_ssl_dtls13_hrr_cookie_check_from_secret(
+                   secret->x, secret->len,
+                   cli_id->x, cli_id->len,
+                   cookie, cookie_len,
+                   ch1_hash->len,
+                   0 /* no timeout */,
+                   &cs_out, &ch1_out), 0);
+
+    TEST_EQUAL(cs_out, (uint16_t) ciphersuite_id_in);
+    TEST_ASSERT(ch1_out != NULL);
+    TEST_MEMORY_COMPARE(ch1_out, ch1_hash->len, ch1_hash->x, ch1_hash->len);
+
+exit:
+    PSA_DONE();
+}
+/* END_CASE */
+
+/* BEGIN_CASE depends_on:MBEDTLS_SSL_DTLS_HELLO_VERIFY:MBEDTLS_SSL_SRV_C:MBEDTLS_SSL_PROTO_DTLS:MBEDTLS_SSL_PROTO_TLS1_3 */
+/*
+ * Wrong secret rejects: write with key A, verify with key B; expect
+ * MBEDTLS_ERR_SSL_BAD_INPUT_DATA.
+ *
+ * Plan reference: local-docs/cookie-impl-plan.md §1.5 test 13.
+ */
+void ssl_dtls13_hrr_cookie_secret_wrong_key(data_t *secret_a,
+                                            data_t *secret_b,
+                                            data_t *cli_id,
+                                            data_t *ch1_hash)
+{
+    unsigned char cookie[2 + 4 + PSA_HASH_MAX_SIZE + 28];
+    unsigned char *p   = cookie;
+    unsigned char *end = cookie + sizeof(cookie);
+    uint16_t cs_out = 0;
+    const unsigned char *ch1_out = NULL;
+    size_t cookie_len;
+
+    PSA_INIT();
+
+    TEST_EQUAL(mbedtls_ssl_dtls13_hrr_cookie_write_from_secret(
+                   secret_a->x, secret_a->len,
+                   cli_id->x, cli_id->len,
+                   0x1301, /* TLS_AES_128_GCM_SHA256 */
+                   ch1_hash->x, ch1_hash->len,
+                   &p, end), 0);
+    cookie_len = (size_t) (p - cookie);
+
+    TEST_EQUAL(mbedtls_ssl_dtls13_hrr_cookie_check_from_secret(
+                   secret_b->x, secret_b->len,
+                   cli_id->x, cli_id->len,
+                   cookie, cookie_len,
+                   ch1_hash->len, 0,
+                   &cs_out, &ch1_out),
+               MBEDTLS_ERR_SSL_BAD_INPUT_DATA);
+
+exit:
+    PSA_DONE();
+}
+/* END_CASE */
+
+/* BEGIN_CASE depends_on:MBEDTLS_SSL_DTLS_HELLO_VERIFY:MBEDTLS_SSL_SRV_C:MBEDTLS_SSL_PROTO_DTLS:MBEDTLS_SSL_PROTO_TLS1_3 */
+/*
+ * Tampered field rejects: flip one bit in the HMAC region of the
+ * cookie, verify; expect MBEDTLS_ERR_SSL_BAD_INPUT_DATA.
+ *
+ * `byte_offset_in_cookie` is the index from the start of the cookie at
+ * which to flip the LSB.  Targeted positions (driven from .data) cover
+ * a sample of the HMAC region; for the wire format
+ *   ciphersuite_id(2) || timestamp(4) || ch1_hash(32) || hmac(28)
+ * the HMAC region starts at offset 38.
+ *
+ * Plan reference: local-docs/cookie-impl-plan.md §1.5 test 14.
+ */
+void ssl_dtls13_hrr_cookie_secret_tampered(data_t *secret,
+                                           data_t *cli_id,
+                                           data_t *ch1_hash,
+                                           int byte_offset_in_cookie)
+{
+    unsigned char cookie[2 + 4 + PSA_HASH_MAX_SIZE + 28];
+    unsigned char *p   = cookie;
+    unsigned char *end = cookie + sizeof(cookie);
+    uint16_t cs_out = 0;
+    const unsigned char *ch1_out = NULL;
+    size_t cookie_len;
+
+    PSA_INIT();
+
+    TEST_EQUAL(mbedtls_ssl_dtls13_hrr_cookie_write_from_secret(
+                   secret->x, secret->len,
+                   cli_id->x, cli_id->len,
+                   0x1301,
+                   ch1_hash->x, ch1_hash->len,
+                   &p, end), 0);
+    cookie_len = (size_t) (p - cookie);
+
+    TEST_ASSERT(byte_offset_in_cookie >= 0);
+    TEST_ASSERT((size_t) byte_offset_in_cookie < cookie_len);
+
+    /* Flip one bit. */
+    cookie[byte_offset_in_cookie] ^= 0x01;
+
+    TEST_EQUAL(mbedtls_ssl_dtls13_hrr_cookie_check_from_secret(
+                   secret->x, secret->len,
+                   cli_id->x, cli_id->len,
+                   cookie, cookie_len,
+                   ch1_hash->len, 0,
+                   &cs_out, &ch1_out),
+               MBEDTLS_ERR_SSL_BAD_INPUT_DATA);
+
+exit:
+    PSA_DONE();
+}
+/* END_CASE */
+
 /* BEGIN_CASE depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:PSA_WANT_KEY_TYPE_AES:PSA_WANT_ALG_ECB_NO_PADDING */
 /*
  * Test DTLS 1.3 sequence-number encryption mask, AES ciphers (Phase 1.7).
