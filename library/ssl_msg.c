@@ -17,6 +17,7 @@
 #include "mbedtls/platform.h"
 
 #include "mbedtls/ssl.h"
+#include "mbedtls/ssl_cookie.h" /* for MBEDTLS_SSL_COOKIE_TIMEOUT */
 #include "debug_internal.h"
 #include "ssl_debug_helpers.h"
 #include "mbedtls/error.h"
@@ -4484,11 +4485,31 @@ int mbedtls_ssl_check_dtls_clihlo_cookie(
 
     MBEDTLS_SSL_DEBUG_BUF(4, "cookie received from network",
                           in + sid_len + 61, cookie_len);
-    if (ssl->conf->f_cookie_check(ssl->conf->p_cookie,
-                                  in + sid_len + 61, cookie_len,
-                                  cli_id, cli_id_len) == 0) {
-        MBEDTLS_SSL_DEBUG_MSG(4, ("check cookie: valid"));
-        return 0;
+    /* Precedence (see local-docs/cookie-api-decision.md):
+     * - If legacy f_cookie_* callbacks are configured, they always win
+     *   for DTLS 1.2 (back-compat: a legacy app's behaviour does not
+     *   silently change when the new secret API is also configured).
+     * - Otherwise, if a secret is configured with APPLY_TO_DTLS12,
+     *   verify via the stack-managed cookie helper. */
+    if (ssl->conf->f_cookie_check != NULL) {
+        if (ssl->conf->f_cookie_check(ssl->conf->p_cookie,
+                                      in + sid_len + 61, cookie_len,
+                                      cli_id, cli_id_len) == 0) {
+            MBEDTLS_SSL_DEBUG_MSG(4, ("check cookie: valid"));
+            return 0;
+        }
+    } else if (ssl->conf->dtls_cookie_secret != NULL &&
+               (ssl->conf->dtls_cookie_secret_flags &
+                MBEDTLS_SSL_COOKIE_SECRET_APPLY_TO_DTLS12) != 0) {
+        if (mbedtls_ssl_dtls12_hvr_cookie_check_from_secret(
+                ssl->conf->dtls_cookie_secret,
+                ssl->conf->dtls_cookie_secret_len,
+                cli_id, cli_id_len,
+                in + sid_len + 61, cookie_len,
+                MBEDTLS_SSL_COOKIE_TIMEOUT) == 0) {
+            MBEDTLS_SSL_DEBUG_MSG(4, ("check cookie (secret): valid"));
+            return 0;
+        }
     }
 
     /*
@@ -4521,11 +4542,27 @@ int mbedtls_ssl_check_dtls_clihlo_cookie(
     obuf[25] = 0xfe;
     obuf[26] = 0xff;
 
-    /* Generate and write actual cookie */
+    /* Generate and write actual cookie.  Same precedence as the check
+     * path above: legacy callbacks always win for DTLS 1.2; the secret
+     * is a fallback for new applications that don't set callbacks. */
     p = obuf + 28;
-    if (ssl->conf->f_cookie_write(ssl->conf->p_cookie,
-                                  &p, obuf + buf_len,
-                                  cli_id, cli_id_len) != 0) {
+    if (ssl->conf->f_cookie_write != NULL) {
+        if (ssl->conf->f_cookie_write(ssl->conf->p_cookie,
+                                      &p, obuf + buf_len,
+                                      cli_id, cli_id_len) != 0) {
+            return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+        }
+    } else if (ssl->conf->dtls_cookie_secret != NULL &&
+               (ssl->conf->dtls_cookie_secret_flags &
+                MBEDTLS_SSL_COOKIE_SECRET_APPLY_TO_DTLS12) != 0) {
+        if (mbedtls_ssl_dtls12_hvr_cookie_write_from_secret(
+                ssl->conf->dtls_cookie_secret,
+                ssl->conf->dtls_cookie_secret_len,
+                cli_id, cli_id_len,
+                &p, obuf + buf_len) != 0) {
+            return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+        }
+    } else {
         return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
     }
 
@@ -4569,11 +4606,22 @@ static int ssl_handle_possible_reconnect(mbedtls_ssl_context *ssl)
     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
     size_t len = 0;
 
-    if (ssl->conf->f_cookie_write == NULL ||
-        ssl->conf->f_cookie_check == NULL) {
+    /* A DTLS 1.2 HVR cookie source is configured if either:
+     *   - the legacy f_cookie_* callbacks are set (both write and
+     *     check — partial config doesn't count), or
+     *   - the new dtls_cookie_secret is set with the APPLY_TO_DTLS12
+     *     flag (stack-managed cookies for new applications). */
+    int have_legacy_cb =
+        (ssl->conf->f_cookie_write != NULL &&
+         ssl->conf->f_cookie_check != NULL);
+    int have_secret_for_dtls12 =
+        (ssl->conf->dtls_cookie_secret != NULL &&
+         (ssl->conf->dtls_cookie_secret_flags &
+          MBEDTLS_SSL_COOKIE_SECRET_APPLY_TO_DTLS12) != 0);
+    if (!have_legacy_cb && !have_secret_for_dtls12) {
         /* If we can't use cookies to verify reachability of the peer,
          * drop the record. */
-        MBEDTLS_SSL_DEBUG_MSG(1, ("no cookie callbacks, "
+        MBEDTLS_SSL_DEBUG_MSG(1, ("no cookie callbacks or secret, "
                                   "can't check reconnect validity"));
         return 0;
     }

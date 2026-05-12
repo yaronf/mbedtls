@@ -139,6 +139,8 @@ int main(void)
 #define DFL_SIG_ALGS            NULL
 #define DFL_TRANSPORT           MBEDTLS_SSL_TRANSPORT_STREAM
 #define DFL_COOKIES             1
+#define DFL_DTLS_COOKIE_SECRET                ""
+#define DFL_DTLS_COOKIE_SECRET_APPLY_DTLS12   0
 #define DFL_ANTI_REPLAY         -1
 #define DFL_HS_TO_MIN           0
 #define DFL_HS_TO_MAX           0
@@ -725,6 +727,8 @@ struct options {
     int transport;              /* TLS or DTLS?                             */
     int cookies;                /* Use cookies for DTLS? -1 to break them   */
     int bad_cookie_on_retry;    /* force cookie-check failure (coverage)    */
+    const char *dtls_cookie_secret;          /* hex-encoded HMAC key, or "" */
+    int dtls_cookie_secret_apply_to_dtls12;  /* 0|1 — flag to the secret API */
     int anti_replay;            /* Use anti-replay for DTLS? -1 for default */
     uint32_t hs_to_min;         /* Initial value of DTLS handshake timer    */
     uint32_t hs_to_max;         /* Max value of DTLS handshake timer        */
@@ -1977,6 +1981,8 @@ int main(int argc, char *argv[])
     opt.sig_algs            = DFL_SIG_ALGS;
     opt.transport           = DFL_TRANSPORT;
     opt.cookies             = DFL_COOKIES;
+    opt.dtls_cookie_secret             = DFL_DTLS_COOKIE_SECRET;
+    opt.dtls_cookie_secret_apply_to_dtls12 = DFL_DTLS_COOKIE_SECRET_APPLY_DTLS12;
     opt.bad_cookie_on_retry = DFL_BAD_COOKIE_ON_RETRY;
     opt.anti_replay         = DFL_ANTI_REPLAY;
     opt.hs_to_min           = DFL_HS_TO_MIN;
@@ -2477,6 +2483,14 @@ usage:
         } else if (strcmp(p, "bad_cookie_on_retry") == 0) {
             opt.bad_cookie_on_retry = atoi(q);
             if (opt.bad_cookie_on_retry < 0 || opt.bad_cookie_on_retry > 1) {
+                goto usage;
+            }
+        } else if (strcmp(p, "dtls_cookie_secret") == 0) {
+            opt.dtls_cookie_secret = q;
+        } else if (strcmp(p, "dtls_cookie_secret_apply_to_dtls12") == 0) {
+            opt.dtls_cookie_secret_apply_to_dtls12 = atoi(q);
+            if (opt.dtls_cookie_secret_apply_to_dtls12 < 0 ||
+                opt.dtls_cookie_secret_apply_to_dtls12 > 1) {
                 goto usage;
             }
         } else if (strcmp(p, "anti_replay") == 0) {
@@ -3263,6 +3277,36 @@ usage:
         {
             ; /* Nothing to do */
         }
+
+#if defined(MBEDTLS_SSL_DTLS_HELLO_VERIFY)
+        /* New stack-managed cookie secret API (Phase 1 of the DTLS 1.3
+         * cookie work).  Independent of cookies=N: a deployment may
+         * configure the secret in addition to (or instead of) the
+         * legacy callbacks above — see the precedence rule in
+         * local-docs/cookie-api-decision.md. */
+        if (strlen(opt.dtls_cookie_secret) != 0) {
+            unsigned char secret_buf[64];
+            size_t secret_len = 0;
+            unsigned int secret_flags = 0;
+            if (mbedtls_test_unhexify(secret_buf, sizeof(secret_buf),
+                                      opt.dtls_cookie_secret,
+                                      &secret_len) != 0) {
+                mbedtls_printf(" failed\n  ! invalid dtls_cookie_secret hex\n");
+                goto exit;
+            }
+            if (opt.dtls_cookie_secret_apply_to_dtls12) {
+                secret_flags |= MBEDTLS_SSL_COOKIE_SECRET_APPLY_TO_DTLS12;
+            }
+            if ((ret = mbedtls_ssl_conf_dtls_cookie_secret(
+                     &conf, secret_buf, secret_len, secret_flags)) != 0) {
+                mbedtls_printf(" failed\n  ! mbedtls_ssl_conf_dtls_cookie_secret"
+                               " returned %d\n", ret);
+                mbedtls_platform_zeroize(secret_buf, sizeof(secret_buf));
+                goto exit;
+            }
+            mbedtls_platform_zeroize(secret_buf, sizeof(secret_buf));
+        }
+#endif /* MBEDTLS_SSL_DTLS_HELLO_VERIFY */
 
 #if defined(MBEDTLS_SSL_DTLS_ANTI_REPLAY)
         if (opt.anti_replay != DFL_ANTI_REPLAY) {

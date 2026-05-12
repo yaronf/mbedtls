@@ -55,6 +55,8 @@ param_map:
   force_ciphersuite: "force_ciphersuite={value}"
   bad_keyupdate:     "bad_keyupdate={value}"
   bad_cookie_on_retry: "bad_cookie_on_retry={value}"
+  dtls_cookie_secret: "dtls_cookie_secret={value}"
+  dtls_cookie_secret_apply_to_dtls12: "dtls_cookie_secret_apply_to_dtls12={value}"
   bad_new_cid:       "bad_new_cid={value}"
   bad_req_cid:       "bad_req_cid={value}"
   double_keyupdate:  "double_keyupdate={1 if value else 0}"
@@ -92,6 +94,12 @@ assertion_map:
   server_cookie_verified:
     flag: "-s"
     string: "cookie verified"
+  server_cookie_secret_verified:
+    flag: "-s"
+    string: "check cookie (secret): valid"
+  server_dtls12_cookie_passed:
+    flag: "-s"
+    string: "cookie verification passed"
   server_no_resend:
     flag: "-S"
     string: "resend"

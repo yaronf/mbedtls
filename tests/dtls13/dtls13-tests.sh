@@ -332,6 +332,55 @@ run_test    "DTLS 1.3 CID: CID: basic exchange with CID enabled" \
             -c "Use of Connection ID has been negotiated."
 
 # ======================================================================
+# Cases from: cookie-secret.yaml
+# ======================================================================
+
+requires_protocol_version dtls12
+requires_config_enabled MBEDTLS_SSL_DTLS_HELLO_VERIFY
+run_test    "DTLS cookie secret API: secret + APPLY_TO_DTLS12 (no legacy callbacks): DTLS 1.2 HVR via secret" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls12 cookies=0 dtls_cookie_secret=000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f dtls_cookie_secret_apply_to_dtls12=1 debug_level=2" \
+            "$P_CLI dtls=1 min_version=dtls12 max_version=dtls12 debug_level=2" \
+            0 \
+            -s "Protocol is DTLSv1.2" \
+            -c "Protocol is DTLSv1.2" \
+            -s "cookie verification passed"
+
+requires_protocol_version dtls12
+requires_config_enabled MBEDTLS_SSL_DTLS_HELLO_VERIFY
+run_test    "DTLS cookie secret API: secret without APPLY_TO_DTLS12, no callbacks: DTLS 1.2 has no cookie path" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls12 cookies=0 dtls_cookie_secret=000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f dtls_cookie_secret_apply_to_dtls12=0 debug_level=2" \
+            "$P_CLI dtls=1 min_version=dtls12 max_version=dtls12 debug_level=2" \
+            0 \
+            -s "Protocol is DTLSv1.2" \
+            -c "Protocol is DTLSv1.2"
+
+requires_protocol_version dtls12
+requires_config_enabled MBEDTLS_SSL_DTLS_HELLO_VERIFY
+requires_config_enabled MBEDTLS_SSL_COOKIE_C
+run_test    "DTLS cookie secret API: secret + legacy callbacks: DTLS 1.2 uses legacy callbacks (back-compat)" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls12 cookies=1 dtls_cookie_secret=000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f dtls_cookie_secret_apply_to_dtls12=0 debug_level=2" \
+            "$P_CLI dtls=1 min_version=dtls12 max_version=dtls12 debug_level=2" \
+            0 \
+            -s "Protocol is DTLSv1.2" \
+            -c "Protocol is DTLSv1.2" \
+            -s "cookie verification passed"
+
+requires_protocol_version dtls12
+requires_config_enabled MBEDTLS_SSL_DTLS_HELLO_VERIFY
+requires_config_enabled MBEDTLS_SSL_COOKIE_C
+run_test    "DTLS cookie secret API: secret + APPLY_TO_DTLS12 + legacy callbacks: callbacks still win for 1.2" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls12 cookies=1 dtls_cookie_secret=000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f dtls_cookie_secret_apply_to_dtls12=1 debug_level=2" \
+            "$P_CLI dtls=1 min_version=dtls12 max_version=dtls12 debug_level=2" \
+            0 \
+            -s "Protocol is DTLSv1.2" \
+            -c "Protocol is DTLSv1.2" \
+            -s "cookie verification passed"
+
+# ======================================================================
 # Cases from: fragmentation.yaml
 # ======================================================================
 

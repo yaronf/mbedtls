@@ -12,6 +12,7 @@
 #include "mbedtls/platform.h"
 
 #include "mbedtls/ssl.h"
+#include "mbedtls/ssl_cookie.h" /* for MBEDTLS_SSL_COOKIE_TIMEOUT */
 #include "debug_internal.h"
 #include "mbedtls/error.h"
 #include "mbedtls/platform_util.h"
@@ -1039,14 +1040,37 @@ static int ssl_parse_client_hello(mbedtls_ssl_context *ssl)
                               buf + cookie_offset + 1, cookie_len);
 
 #if defined(MBEDTLS_SSL_DTLS_HELLO_VERIFY)
-        if (ssl->conf->f_cookie_check != NULL
+        /* Cookie-verify precedence (see local-docs/cookie-api-decision.md):
+         *   1. Legacy f_cookie_check callback wins for DTLS 1.2 when
+         *      configured (back-compat).
+         *   2. Otherwise, fall back to the stack-managed secret if it's
+         *      configured with APPLY_TO_DTLS12. */
+        int have_legacy_check = (ssl->conf->f_cookie_check != NULL);
+        int have_secret_for_dtls12 =
+            (ssl->conf->dtls_cookie_secret != NULL &&
+             (ssl->conf->dtls_cookie_secret_flags &
+              MBEDTLS_SSL_COOKIE_SECRET_APPLY_TO_DTLS12) != 0);
+        if ((have_legacy_check || have_secret_for_dtls12)
 #if defined(MBEDTLS_SSL_RENEGOTIATION)
             && ssl->renego_status == MBEDTLS_SSL_INITIAL_HANDSHAKE
 #endif
             ) {
-            if (ssl->conf->f_cookie_check(ssl->conf->p_cookie,
-                                          buf + cookie_offset + 1, cookie_len,
-                                          ssl->cli_id, ssl->cli_id_len) != 0) {
+            int check_ret;
+            if (have_legacy_check) {
+                check_ret = ssl->conf->f_cookie_check(ssl->conf->p_cookie,
+                                                     buf + cookie_offset + 1,
+                                                     cookie_len,
+                                                     ssl->cli_id,
+                                                     ssl->cli_id_len);
+            } else {
+                check_ret = mbedtls_ssl_dtls12_hvr_cookie_check_from_secret(
+                    ssl->conf->dtls_cookie_secret,
+                    ssl->conf->dtls_cookie_secret_len,
+                    ssl->cli_id, ssl->cli_id_len,
+                    buf + cookie_offset + 1, cookie_len,
+                    MBEDTLS_SSL_COOKIE_TIMEOUT);
+            }
+            if (check_ret != 0) {
                 MBEDTLS_SSL_DEBUG_MSG(2, ("cookie verification failed"));
                 ssl->handshake->cookie_verify_result = 1;
             } else {
@@ -1876,20 +1900,38 @@ static int ssl_write_hello_verify_request(mbedtls_ssl_context *ssl)
     MBEDTLS_SSL_DEBUG_BUF(3, "server version", p, 2);
     p += 2;
 
-    /* If we get here, f_cookie_check is not null */
-    if (ssl->conf->f_cookie_write == NULL) {
-        MBEDTLS_SSL_DEBUG_MSG(1, ("inconsistent cookie callbacks"));
-        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
-    }
-
     /* Skip length byte until we know the length */
     cookie_len_byte = p++;
 
-    if ((ret = ssl->conf->f_cookie_write(ssl->conf->p_cookie,
-                                         &p, ssl->out_buf + MBEDTLS_SSL_OUT_BUFFER_LEN,
-                                         ssl->cli_id, ssl->cli_id_len)) != 0) {
-        MBEDTLS_SSL_DEBUG_RET(1, "f_cookie_write", ret);
-        return ret;
+    /* Cookie-write precedence (see local-docs/cookie-api-decision.md):
+     * legacy f_cookie_write always wins for DTLS 1.2 if configured;
+     * otherwise fall back to the stack-managed secret when it's set
+     * with APPLY_TO_DTLS12.  At least one source must be present —
+     * the upstream code paths only reach here once the check side has
+     * agreed a source is available, so an internal error indicates a
+     * configuration drift between check time and write time. */
+    if (ssl->conf->f_cookie_write != NULL) {
+        if ((ret = ssl->conf->f_cookie_write(ssl->conf->p_cookie,
+                                             &p, ssl->out_buf + MBEDTLS_SSL_OUT_BUFFER_LEN,
+                                             ssl->cli_id, ssl->cli_id_len)) != 0) {
+            MBEDTLS_SSL_DEBUG_RET(1, "f_cookie_write", ret);
+            return ret;
+        }
+    } else if (ssl->conf->dtls_cookie_secret != NULL &&
+               (ssl->conf->dtls_cookie_secret_flags &
+                MBEDTLS_SSL_COOKIE_SECRET_APPLY_TO_DTLS12) != 0) {
+        if ((ret = mbedtls_ssl_dtls12_hvr_cookie_write_from_secret(
+                 ssl->conf->dtls_cookie_secret,
+                 ssl->conf->dtls_cookie_secret_len,
+                 ssl->cli_id, ssl->cli_id_len,
+                 &p, ssl->out_buf + MBEDTLS_SSL_OUT_BUFFER_LEN)) != 0) {
+            MBEDTLS_SSL_DEBUG_RET(1, "dtls12_hvr_cookie_write_from_secret",
+                                  ret);
+            return ret;
+        }
+    } else {
+        MBEDTLS_SSL_DEBUG_MSG(1, ("no cookie source configured"));
+        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
     }
 
     *cookie_len_byte = (unsigned char) (p - (cookie_len_byte + 1));
