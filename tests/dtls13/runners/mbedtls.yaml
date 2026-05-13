@@ -57,6 +57,8 @@ param_map:
   bad_cookie_on_retry: "bad_cookie_on_retry={value}"
   dtls_cookie_secret: "dtls_cookie_secret={value}"
   dtls_cookie_secret_apply_to_dtls12: "dtls_cookie_secret_apply_to_dtls12={value}"
+  bad_hrr_cookie_hmac:    "bad_hrr_cookie_hmac={value}"
+  expire_hrr_cookie_secs: "expire_hrr_cookie_secs={value}"
   bad_new_cid:       "bad_new_cid={value}"
   bad_req_cid:       "bad_req_cid={value}"
   double_keyupdate:  "double_keyupdate={1 if value else 0}"
@@ -104,6 +106,9 @@ assertion_map:
   server_hrr_cookie_secret_verified:
     flag: "-s"
     string: "HRR cookie (secret) verified"
+  server_hrr_cookie_secret_verify_failed:
+    flag: "-s"
+    string: "HRR cookie (secret): verification failed"
   # DTLS 1.3 HRR — legacy callback path:
   server_hrr_cookie_legacy_sent:
     flag: "-s"

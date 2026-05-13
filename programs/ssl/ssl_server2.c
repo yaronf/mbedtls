@@ -23,6 +23,14 @@ int main(void)
 
 #include <stdint.h>
 
+/* DTLS 1.3 fault-injection helpers — TEST ONLY, declared in library/ssl_misc.h
+ * (internal header, not in our include path).  Forward-declare here so we can
+ * call them without exporting them in the public API. */
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_DTLS_HELLO_VERIFY)
+void mbedtls_ssl_dtls13_test_set_hrr_cookie_fault(int fault_mode,
+                                                  uint32_t expire_seconds);
+#endif
+
 #if !defined(_MSC_VER)
 #include <inttypes.h>
 #endif
@@ -141,6 +149,8 @@ int main(void)
 #define DFL_COOKIES             1
 #define DFL_DTLS_COOKIE_SECRET                ""
 #define DFL_DTLS_COOKIE_SECRET_APPLY_DTLS12   0
+#define DFL_BAD_HRR_COOKIE_HMAC               0
+#define DFL_EXPIRE_HRR_COOKIE_SECS            0
 #define DFL_ANTI_REPLAY         -1
 #define DFL_HS_TO_MIN           0
 #define DFL_HS_TO_MAX           0
@@ -368,7 +378,9 @@ int main(void)
 #define USAGE_COOKIES \
     "    cookies=0/1/-1      default: 1 (enabled)\n"        \
     "                        0: disabled, -1: library default (broken)\n" \
-    "    bad_cookie_on_retry=1  default: 0; force cookie-check failure (coverage)\n"
+    "    bad_cookie_on_retry=1  default: 0; force cookie-check failure (coverage)\n" \
+    "    bad_hrr_cookie_hmac=1  default: 0; TEST: corrupt last HMAC byte of HRR cookie\n" \
+    "    expire_hrr_cookie_secs=N default: 0; TEST: backdate HRR cookie timestamp by N seconds\n"
 #else
 #define USAGE_COOKIES ""
 #endif
@@ -729,6 +741,8 @@ struct options {
     int bad_cookie_on_retry;    /* force cookie-check failure (coverage)    */
     const char *dtls_cookie_secret;          /* hex-encoded HMAC key, or "" */
     int dtls_cookie_secret_apply_to_dtls12;  /* 0|1 — flag to the secret API */
+    int bad_hrr_cookie_hmac;       /* TEST: corrupt last HMAC byte of HRR cookie */
+    int expire_hrr_cookie_secs;    /* TEST: backdate HRR cookie timestamp (secs) */
     int anti_replay;            /* Use anti-replay for DTLS? -1 for default */
     uint32_t hs_to_min;         /* Initial value of DTLS handshake timer    */
     uint32_t hs_to_max;         /* Max value of DTLS handshake timer        */
@@ -1983,6 +1997,8 @@ int main(int argc, char *argv[])
     opt.cookies             = DFL_COOKIES;
     opt.dtls_cookie_secret             = DFL_DTLS_COOKIE_SECRET;
     opt.dtls_cookie_secret_apply_to_dtls12 = DFL_DTLS_COOKIE_SECRET_APPLY_DTLS12;
+    opt.bad_hrr_cookie_hmac    = DFL_BAD_HRR_COOKIE_HMAC;
+    opt.expire_hrr_cookie_secs = DFL_EXPIRE_HRR_COOKIE_SECS;
     opt.bad_cookie_on_retry = DFL_BAD_COOKIE_ON_RETRY;
     opt.anti_replay         = DFL_ANTI_REPLAY;
     opt.hs_to_min           = DFL_HS_TO_MIN;
@@ -2491,6 +2507,16 @@ usage:
             opt.dtls_cookie_secret_apply_to_dtls12 = atoi(q);
             if (opt.dtls_cookie_secret_apply_to_dtls12 < 0 ||
                 opt.dtls_cookie_secret_apply_to_dtls12 > 1) {
+                goto usage;
+            }
+        } else if (strcmp(p, "bad_hrr_cookie_hmac") == 0) {
+            opt.bad_hrr_cookie_hmac = atoi(q);
+            if (opt.bad_hrr_cookie_hmac < 0 || opt.bad_hrr_cookie_hmac > 1) {
+                goto usage;
+            }
+        } else if (strcmp(p, "expire_hrr_cookie_secs") == 0) {
+            opt.expire_hrr_cookie_secs = atoi(q);
+            if (opt.expire_hrr_cookie_secs < 0) {
                 goto usage;
             }
         } else if (strcmp(p, "anti_replay") == 0) {
@@ -3307,6 +3333,18 @@ usage:
             mbedtls_platform_zeroize(secret_buf, sizeof(secret_buf));
         }
 #endif /* MBEDTLS_SSL_DTLS_HELLO_VERIFY */
+
+#if defined(MBEDTLS_SSL_DTLS_HELLO_VERIFY) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+        /* TEST ONLY: arm a one-shot fault on the next DTLS 1.3 HRR cookie
+         * minted by the library, used to drive negative-path integration
+         * tests in tests/dtls13/cases/hrr-cookie.yaml. */
+        if (opt.bad_hrr_cookie_hmac) {
+            mbedtls_ssl_dtls13_test_set_hrr_cookie_fault(1, 0);
+        } else if (opt.expire_hrr_cookie_secs > 0) {
+            mbedtls_ssl_dtls13_test_set_hrr_cookie_fault(
+                2, (uint32_t) opt.expire_hrr_cookie_secs);
+        }
+#endif
 
 #if defined(MBEDTLS_SSL_DTLS_ANTI_REPLAY)
         if (opt.anti_replay != DFL_ANTI_REPLAY) {

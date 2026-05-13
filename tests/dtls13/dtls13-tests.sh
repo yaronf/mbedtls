@@ -534,6 +534,28 @@ run_test    "DTLS 1.3: DTLS 1.3 HRR cookie: secret + legacy callbacks → secret
             -s "HRR cookie (secret)" \
             -s "HRR cookie (secret) verified"
 
+requires_protocol_version dtls13
+requires_config_enabled MBEDTLS_SSL_DTLS_HELLO_VERIFY
+run_test    "DTLS 1.3: DTLS 1.3 HRR cookie: tampered HMAC → server rejects (handshake_failure)" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 groups=secp384r1 cookies=0 dtls_cookie_secret=000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f bad_hrr_cookie_hmac=1 debug_level=2" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=2" \
+            1 \
+            -c "received HelloRetryRequest message" \
+            -s "HRR cookie (secret)" \
+            -s "HRR cookie (secret): verification failed"
+
+requires_protocol_version dtls13
+requires_config_enabled MBEDTLS_SSL_DTLS_HELLO_VERIFY
+run_test    "DTLS 1.3: DTLS 1.3 HRR cookie: expired timestamp → server rejects (handshake_failure)" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 groups=secp384r1 cookies=0 dtls_cookie_secret=000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f expire_hrr_cookie_secs=3600 debug_level=2" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=2" \
+            1 \
+            -c "received HelloRetryRequest message" \
+            -s "HRR cookie (secret)" \
+            -s "HRR cookie (secret): verification failed"
+
 # ======================================================================
 # Cases from: keyupdate.yaml
 # ======================================================================

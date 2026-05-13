@@ -82,6 +82,23 @@ static uint32_t ssl_cookie_secret_now(void)
 #endif
 }
 
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+/* ------------------------------------------------------------------ */
+/* TEST-ONLY: fault injection for DTLS 1.3 HRR cookie writes.         */
+/* Process-global, single-use (consumed on next write).  Used by      */
+/* ssl_server2 to drive negative-path integration tests.              */
+/* ------------------------------------------------------------------ */
+static int      g_test_hrr_cookie_fault_mode;       /* 0 = disabled */
+static uint32_t g_test_hrr_cookie_expire_seconds;
+
+void mbedtls_ssl_dtls13_test_set_hrr_cookie_fault(int fault_mode,
+                                                  uint32_t expire_seconds)
+{
+    g_test_hrr_cookie_fault_mode    = fault_mode;
+    g_test_hrr_cookie_expire_seconds = expire_seconds;
+}
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
+
 /* ------------------------------------------------------------------ */
 /* DTLS 1.2 HVR cookie (no transcript binding)                        */
 /* ------------------------------------------------------------------ */
@@ -256,6 +273,12 @@ int mbedtls_ssl_dtls13_hrr_cookie_write_from_secret(
     }
 
     t = ssl_cookie_secret_now();
+    /* TEST ONLY: mode 2 — backdate the timestamp so the verifier sees
+     * the cookie as expired.  Consumed on use. */
+    if (g_test_hrr_cookie_fault_mode == 2) {
+        t -= g_test_hrr_cookie_expire_seconds;
+        g_test_hrr_cookie_fault_mode = 0;
+    }
     MBEDTLS_PUT_UINT16_BE(ciphersuite_id, cs_be, 0);
     MBEDTLS_PUT_UINT32_BE(t, ts_be, 0);
 
@@ -279,6 +302,13 @@ int mbedtls_ssl_dtls13_hrr_cookie_write_from_secret(
     status = psa_mac_sign_finish(&op, *p + 6 + ch1_hash_len,
                                  COOKIE_SECRET_HMAC_LEN, &out_len);
     if (status != PSA_SUCCESS) { ret = PSA_TO_MBEDTLS_ERR(status); goto exit; }
+
+    /* TEST ONLY: mode 1 — corrupt the last HMAC byte so the verifier
+     * rejects the cookie.  Consumed on use. */
+    if (g_test_hrr_cookie_fault_mode == 1) {
+        (*p)[cookie_len - 1] ^= 0xFF;
+        g_test_hrr_cookie_fault_mode = 0;
+    }
 
     *p += cookie_len;
     ret = 0;

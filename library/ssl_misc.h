@@ -1413,6 +1413,30 @@ int mbedtls_ssl_dtls13_test_send_bad_request_connection_id(
     mbedtls_ssl_context *ssl, int bad_type);
 #endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
 
+#if defined(MBEDTLS_SSL_DTLS_HELLO_VERIFY) && defined(MBEDTLS_SSL_SRV_C) && \
+    defined(MBEDTLS_SSL_PROTO_TLS1_3)
+/**
+ * \brief  TEST ONLY: inject a fault into the next DTLS 1.3 HRR cookie minted
+ *         by `mbedtls_ssl_dtls13_hrr_cookie_write_from_secret`.
+ *
+ *         Process-global, single-use, server-side only.  Used by ssl_server2
+ *         to drive negative-path integration tests (plan §1.5/9, §1.5/10).
+ *
+ * \param fault_mode  0 = none (clear any pending fault)
+ *                    1 = flip the last byte of the HMAC region after write
+ *                        (verifier sees a bad-HMAC cookie)
+ *                    2 = mint cookie with timestamp offset `expire_seconds`
+ *                        into the past (verifier sees an expired cookie)
+ * \param expire_seconds  Mode 2 only; seconds to subtract from "now" before
+ *                        building the cookie.  Set well above
+ *                        MBEDTLS_SSL_COOKIE_TIMEOUT to make the test
+ *                        deterministic.
+ */
+void mbedtls_ssl_dtls13_test_set_hrr_cookie_fault(int fault_mode,
+                                                  uint32_t expire_seconds);
+#endif /* MBEDTLS_SSL_DTLS_HELLO_VERIFY && MBEDTLS_SSL_SRV_C
+          && MBEDTLS_SSL_PROTO_TLS1_3 */
+
 /**
  * \brief  Common handler for DTLS 1.3 WAIT_ACK states.
  *
