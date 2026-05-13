@@ -285,6 +285,28 @@ SRV_DELAY_SECONDS=0
 
 EMIT_FOOTER = """\
 
+# DTLS 1.3 stateless-cookie cluster test (T6 of Phase 2 — see
+# local-docs/cookie-impl-plan.md §2.5.6).  This is a multi-process
+# scenario (two ssl_server2 instances + udp_proxy with mid-stream
+# redirect) that doesn't fit the single-server `run_test` shape, so
+# it lives in a standalone script and is invoked here as a synthetic
+# test entry that integrates with ssl-opt.sh's TESTS/PASSES/FAILS
+# counters.  print_name handles TESTS++; we just emit PASS/FAIL.
+if [ -x "$(dirname "$0")/cluster-test.sh" ]; then
+    print_name "DTLS 1.3: stateless cluster (CH1 → server A, CH2 → server B)"
+    cluster_log="$(mktemp -t cluster-test.XXXXXX)"
+    if "$(dirname "$0")/cluster-test.sh" >"$cluster_log" 2>&1; then
+        record_outcome "PASS"
+        rm -f "$cluster_log"
+    else
+        record_outcome "FAIL" "cluster test failed"
+        echo "  ! cluster test failed; output:"
+        cat "$cluster_log" | sed 's/^/  ! /'
+        rm -f "$cluster_log"
+        FAILS=$(( FAILS + 1 ))
+    fi
+fi
+
 if [ $FAILS -gt 255 ]; then
     FAILS=255
 fi

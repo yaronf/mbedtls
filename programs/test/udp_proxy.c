@@ -73,6 +73,9 @@ int main(void)
 #define DFL_SERVER_PORT         "4433"
 #define DFL_LISTEN_ADDR         "localhost"
 #define DFL_LISTEN_PORT         "5556"
+#define DFL_UPSTREAM_B_ADDR     ""
+#define DFL_UPSTREAM_B_PORT     ""
+#define DFL_REDIRECT_AFTER_S2C  0
 #define DFL_PACK                0
 
 #if defined(MBEDTLS_TIMING_C)
@@ -90,6 +93,13 @@ int main(void)
     "    server_port=%%d      default: 4433\n"                              \
     "    listen_addr=%%s      default: localhost\n"                         \
     "    listen_port=%%d      default: 4433\n"                              \
+    "    upstream_b_addr=%%s  default: \"\" (cluster mode disabled)\n"      \
+    "    upstream_b_port=%%d  default: \"\" (cluster mode disabled)\n"      \
+    "    redirect_after_s2c=%%d default: 0 (no redirect)\n"                 \
+    "                        After N S->C packets, switch upstream from\n"   \
+    "                        server_addr/port to upstream_b_addr/port.\n"    \
+    "                        For DTLS 1.3 stateless-cookie testing\n"        \
+    "                        (CH1 to server A, CH2 to server B).\n"          \
     "\n"                                                                    \
     "    duplicate=%%d        default: 0 (no duplication)\n"                \
     "                        duplicate about 1:N packets randomly\n"        \
@@ -146,6 +156,15 @@ static struct options {
     const char *server_port;    /* port to forward packets to               */
     const char *listen_addr;    /* address for accepting client connections */
     const char *listen_port;    /* port for accepting client connections    */
+    /* "Cluster" mode for DTLS 1.3 stateless-cookie testing: after the
+     * first N server-to-client packets, tear down the connection to
+     * upstream A and reconnect to upstream B for all subsequent
+     * traffic.  The client never sees the switch; this models an
+     * L4 load balancer or NAT that redirects flows between cluster
+     * members behind the same VIP. */
+    const char *upstream_b_addr;
+    const char *upstream_b_port;
+    unsigned redirect_after_s2c; /* 0 disables; >0 = switch after N pkts */
 
     int duplicate;              /* duplicate 1 in N packets (none if 0)     */
     int delay;                  /* delay 1 packet in N (none if 0)          */
@@ -194,6 +213,9 @@ static void get_options(int argc, char *argv[])
     opt.server_port    = DFL_SERVER_PORT;
     opt.listen_addr    = DFL_LISTEN_ADDR;
     opt.listen_port    = DFL_LISTEN_PORT;
+    opt.upstream_b_addr = DFL_UPSTREAM_B_ADDR;
+    opt.upstream_b_port = DFL_UPSTREAM_B_PORT;
+    opt.redirect_after_s2c = DFL_REDIRECT_AFTER_S2C;
     opt.pack           = DFL_PACK;
     /* Other members default to 0 */
 
@@ -217,6 +239,12 @@ static void get_options(int argc, char *argv[])
             opt.listen_addr = q;
         } else if (strcmp(p, "listen_port") == 0) {
             opt.listen_port = q;
+        } else if (strcmp(p, "upstream_b_addr") == 0) {
+            opt.upstream_b_addr = q;
+        } else if (strcmp(p, "upstream_b_port") == 0) {
+            opt.upstream_b_port = q;
+        } else if (strcmp(p, "redirect_after_s2c") == 0) {
+            opt.redirect_after_s2c = (unsigned) atoi(q);
         } else if (strcmp(p, "duplicate") == 0) {
             opt.duplicate = atoi(q);
             if (opt.duplicate < 0 || opt.duplicate > 20) {
@@ -987,6 +1015,53 @@ accept:
             if ((ret = handle_message("S -> C",
                                       &client_fd, &server_fd)) != 0) {
                 goto accept;
+            }
+
+            /* DTLS 1.3 cluster-mode (stateless cookie testing): after
+             * N server-to-client packets, swap upstream from A to B.
+             * Models an L4 load balancer redirecting flows mid-stream
+             * between cluster members that share the same cookie
+             * secret.  The client's view of the proxy doesn't change;
+             * only our outgoing socket to "the server" is replaced. */
+            if (opt.redirect_after_s2c > 0 &&
+                opt.upstream_b_addr[0] != '\0') {
+                static unsigned s2c_count = 0;
+                static int redirected = 0;
+                if (!redirected) {
+                    s2c_count++;
+                    if (s2c_count >= opt.redirect_after_s2c) {
+                        mbedtls_printf("  . Cluster-mode redirect: "
+                                       "%u S->C pkt(s) seen, switching upstream "
+                                       "to UDP/%s/%s ...",
+                                       s2c_count,
+                                       opt.upstream_b_addr,
+                                       opt.upstream_b_port);
+                        fflush(stdout);
+                        mbedtls_net_free(&server_fd);
+                        mbedtls_net_init(&server_fd);
+                        if ((ret = mbedtls_net_connect(
+                                 &server_fd, opt.upstream_b_addr,
+                                 opt.upstream_b_port,
+                                 MBEDTLS_NET_PROTO_UDP)) != 0) {
+                            mbedtls_printf(" failed\n  ! "
+                                           "mbedtls_net_connect returned %d\n",
+                                           ret);
+                            goto exit;
+                        }
+                        mbedtls_printf(" ok\n");
+                        /* nb_fds may need recomputing since the new
+                         * socket has a different fd number. */
+                        nb_fds = client_fd.fd;
+                        if (nb_fds < server_fd.fd) {
+                            nb_fds = server_fd.fd;
+                        }
+                        if (nb_fds < listen_fd.fd) {
+                            nb_fds = listen_fd.fd;
+                        }
+                        ++nb_fds;
+                        redirected = 1;
+                    }
+                }
             }
         }
 
