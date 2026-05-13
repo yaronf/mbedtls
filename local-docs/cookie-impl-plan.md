@@ -465,6 +465,408 @@ A single core commit:
 Possibly a follow-up cleanup commit if NULL-guard / state-retention
 audit (§2.2 third bullet) turns up sites worth tidying.
 
+### 2.5 Implementation addendum: audit findings, refined design
+
+§2.1–§2.4 described the *what*. This section is the *how*, written
+after auditing the codebase: it lists the actual sites that read
+`ssl->handshake` in the HRR window, sketches the rewritten CH2 entry
+path, and pins down the cluster-test plumbing.
+
+#### 2.5.1 The DTLS 1.2 precedent: how mbedtls already handles this
+
+Before designing anything new, look at what DTLS 1.2 already does for
+HVR — because mbedtls *is* already stateless in DTLS 1.2 and we should
+copy that shape, not reinvent it.
+
+When DTLS 1.2 needs an HVR (`ssl_tls12_server.c:1882` →
+`ssl_write_hello_verify_request`), the state machine sets state to
+`MBEDTLS_SSL_SERVER_HELLO_VERIFY_REQUEST_SENT`, sends HVR, and on the
+next `mbedtls_ssl_handshake_step` returns
+`MBEDTLS_ERR_SSL_HELLO_VERIFY_REQUIRED` *to the application*
+(`ssl_tls12_server.c:3486–3487`). The application
+(`programs/ssl/ssl_server2.c:3803–3806`) then:
+
+1. Sees the signaling error, prints "hello verification requested"
+2. Goes to its `reset:` label
+3. Calls `mbedtls_net_free(&client_fd)` and `mbedtls_ssl_session_reset(&ssl)`
+4. Goes back to `net_accept` and waits for the next datagram
+
+Between HVR-send and CH2-receive the server holds zero handshake
+state. The cookie carries everything. **That is the model.**
+
+The reconnect path (`ssl_msg.c:4604` `ssl_handle_possible_reconnect`)
+is the same shape from the opposite direction: when an unexpected
+ClientHello shows up on a fresh epoch-0 record, the cookie is
+validated *before* any `handshake_params` allocation
+(`mbedtls_ssl_check_dtls_clihlo_cookie` operates on the raw record
+buffer). Only when the cookie verifies does the code call
+`mbedtls_ssl_session_reset_int(ssl, 1)` and return
+`MBEDTLS_ERR_SSL_CLIENT_RECONNECT` for the app to handle.
+
+What Phase 1 of *DTLS 1.3* did differently — and shouldn't have:
+after HRR-send the state machine moves to `MBEDTLS_SSL_CLIENT_HELLO`
+and **stays inside `mbedtls_ssl_handshake()`'s loop**, keeping
+`handshake_params` allocated, calling `mbedtls_ssl_send_flight_completed`
+to arm a retransmit timer (`ssl_tls13_server.c:2797–2803`). That is
+the DoS gap — and it's *new behaviour* introduced by the DTLS 1.3
+work, not an architectural property of the codebase.
+
+The fix is therefore "make DTLS 1.3 match DTLS 1.2", not "invent a
+new statelessness mechanism."
+
+#### 2.5.2 Audit: `ssl->handshake` reads after HRR-send
+
+If we naïvely free `ssl->handshake` after `ssl_tls13_write_hello_retry_request`
+returns *without* also taking the DTLS-1.2-style escape route, every
+site below NULL-derefs. They are all in `library/ssl_msg.c` and they
+all belong to the DTLS retransmit machinery:
+
+| site | function | field |
+| ---- | -------- | ----- |
+| ssl_msg.c:405–439 | `ssl_double_retransmit_timeout`, `ssl_reset_retransmit_timeout` | `retransmit_timeout`, `mtu` |
+| ssl_msg.c:2129    | `mbedtls_ssl_fetch_input` (timer scheduling) | `retransmit_timeout` |
+| ssl_msg.c:2528–2572 | epoch-0 counter save/restore on flight resend | `dtls13_epoch0_out_ctr` |
+| ssl_msg.c:2592–2880 | `mbedtls_ssl_resend_hello_request` (retransmit sender) | `retransmit_state`, `flight`, `cur_msg`, `cur_msg_p`, `dtls13_frag_off` |
+| ssl_msg.c:2922–2933 | `mbedtls_ssl_send_flight_completed` | `retransmit_timeout`, `retransmit_state` |
+| ssl_msg.c:7008    | `ssl_dtls13_process_ack` (entry) | direct `hs = ssl->handshake` |
+| ssl_msg.c:7299–7300 | `mbedtls_ssl_handle_message_type` (ACK path) | `retransmit_state` |
+| ssl_tls13_generic.c:85 | `fetch_handshake_msg` (DTLS msg_seq advance) | `in_msg_seq` (already guarded) |
+| ssl_tls13_server.c:1253, 1501 | `parse_client_hello` (CH2 entry) | `handshake = ssl->handshake`, `hello_retry_request_flag` |
+
+These fall into three groups:
+
+1. **Retransmit machinery** (everything in `ssl_msg.c` above). Only
+   matters if the server keeps a flight to retransmit. The DTLS 1.2
+   model doesn't (HVR is fire-and-forget; client retransmits CH1 if
+   it doesn't see the HVR); DTLS 1.3 should match. So once we adopt
+   the DTLS 1.2 escape pattern, these sites never run between
+   HRR-send and CH2-receive.
+
+2. **`fetch_handshake_msg` `in_msg_seq` advance** (ssl_tls13_generic.c:85).
+   Already NULL-guarded. CH2 arrives as a fresh handshake from the
+   server's POV after `session_reset`, so `in_msg_seq` is freshly 0
+   and the guard is irrelevant.
+
+3. **`parse_client_hello` entry** (ssl_tls13_server.c:1253). Assumes
+   `ssl->handshake != NULL`. After `session_reset`, the next
+   `handshake_step` calls `ssl_handshake_init` (via the same path
+   `mbedtls_ssl_setup` uses), so `ssl->handshake` is allocated again
+   before CH2 parsing. No change required here.
+
+#### 2.5.3 Rewritten HRR-send: copy the DTLS 1.2 escape pattern
+
+After HRR-send completes, the server should signal "I'm done with this
+attempt, reset me and wait for the retry" — exactly what the DTLS 1.2
+HVR path does. Concretely:
+
+```c
+/* ssl_tls13_server.c — ssl_tls13_write_hello_retry_request */
+static int ssl_tls13_write_hello_retry_request(mbedtls_ssl_context *ssl)
+{
+    /* ... existing write code (unchanged) ... */
+    ssl->handshake->hello_retry_request_flag = 1;
+
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+        ssl->conf->dtls_cookie_secret != NULL) {
+        /* Stateless DTLS 1.3 (RFC 9147 §5.1): we keep no state across
+         * HRR.  The cookie carries H(CH1) and the ciphersuite_id.
+         * Signal the application to reset and wait for the retried
+         * ClientHello — mirrors the DTLS 1.2 HVR path. */
+        mbedtls_ssl_handshake_set_state(
+            ssl, MBEDTLS_SSL_SERVER_HELLO_RETRY_REQUEST_SENT);
+        return 0;
+    }
+
+    /* Legacy/stateful path (no secret cookie, or TLS-over-TCP) —
+     * unchanged from Phase 1. */
+    mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_CLIENT_HELLO);
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+        mbedtls_ssl_send_flight_completed(ssl);
+    }
+#endif
+    return 0;
+}
+```
+
+The new state `MBEDTLS_SSL_SERVER_HELLO_RETRY_REQUEST_SENT` is the
+DTLS 1.3 analogue of DTLS 1.2's `SERVER_HELLO_VERIFY_REQUEST_SENT`.
+The state-machine handler for it returns the signaling error:
+
+```c
+/* ssl_tls13_server.c — state machine in mbedtls_ssl_handshake_server_step */
+case MBEDTLS_SSL_SERVER_HELLO_RETRY_REQUEST_SENT:
+    return MBEDTLS_ERR_SSL_HELLO_VERIFY_REQUIRED;
+```
+
+(Reuse the existing error code — semantically it means exactly what we
+need: "no failure, but please reset and wait for retry". A new code
+like `MBEDTLS_ERR_SSL_HELLO_RETRY_REQUIRED` is cleaner but introduces
+a public-API surface change that's hard to justify when the existing
+code communicates the same thing.)
+
+The application loop in `ssl_server2.c:3803` already handles this:
+prints "hello verification requested", goes to `reset:`, calls
+`mbedtls_net_free` + `mbedtls_ssl_session_reset`, returns to
+`net_accept`. **No application change required.** That is the whole
+point of copying the DTLS 1.2 pattern.
+
+#### 2.5.4 CH2 entry: transcript recovery from cookie
+
+After session_reset, the freshly-allocated `handshake_params` has:
+- `transcript == empty` (no CH1 hashed in)
+- `hello_retry_request_flag == 0` (we have no record of having sent
+  an HRR)
+- `ciphersuite_info == NULL` (no CS selected yet)
+
+CH2 contains the cookie ext, so the existing Phase 1 cookie-verify
+site in `parse_client_hello` (ssl_tls13_server.c:~1723) already pulls
+out `cookie_cs_id` and `ch1_hash_in_cookie`. Phase 2 uses them:
+
+```c
+/* Inside the COOKIE extension parse block, after
+ * mbedtls_ssl_dtls13_hrr_cookie_check_from_secret returns success. */
+
+/* The cookie says CH1 negotiated this ciphersuite.  Re-select it now
+ * so the transcript hash uses the right algorithm. */
+const mbedtls_ssl_ciphersuite_t *cs =
+    mbedtls_ssl_ciphersuite_from_id(cookie_cs_id);
+if (cs == NULL || !mbedtls_ssl_tls13_cipher_suite_is_offered(ssl, cookie_cs_id)) {
+    /* Cookie names a ciphersuite we no longer support — bail. */
+    return MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE;
+}
+ssl->handshake->ciphersuite_info = cs;
+ssl->handshake->hello_retry_request_flag = 1;
+
+/* Replay H(CH1) into the transcript so subsequent transcript-hash
+ * computations match what they would have been in the stateful flow.
+ * mbedtls_ssl_reset_transcript_for_hrr already understands the
+ * RFC 8446 §4.4.1 message_hash substitution; we just need to feed
+ * it the recovered H(CH1) instead of the in-memory transcript. */
+ret = mbedtls_ssl_dtls13_replay_ch1_hash_into_transcript(
+    ssl, ch1_hash_in_cookie, hash_len);
+if (ret != 0) return ret;
+```
+
+The helper `replay_ch1_hash_into_transcript` is the only new library
+function we need on this path — and it's a thin wrapper around the
+existing transcript-reset code.
+
+Ordering note: the cookie is a TLS extension (RFC 8446 §4.2.2), parsed
+inside the existing extension-walk loop. The per-extension parsers in
+`parse_client_hello` don't read the running transcript hash — they
+read CH bytes, set flags, and stash state. The transcript hash is
+only *read* after the loop terminates (PSK binder check at
+ssl_tls13_server.c:~706, and HRR/SH write paths). So whether the
+cookie extension arrives first, last, or in the middle of CH2 doesn't
+matter: by the time anyone reads the transcript, we've already
+recovered H(CH1) into it. No two-pass parse needed.
+
+#### 2.5.5 Cluster-test plumbing decision
+
+**Use udp_proxy as the redirector.** Two ssl_server2 instances bind
+different ports with the same `dtls_cookie_secret`. The client speaks
+only to udp_proxy. udp_proxy gets a new CLI flag pair:
+
+```
+upstream_b=ADDR:PORT
+redirect_after_server_pkts=N
+```
+
+After udp_proxy has forwarded N packets *from* the original upstream
+(server A) *to* the client, it tears down `server_fd`, calls
+`mbedtls_net_connect` with `upstream_b`, and continues. The client
+side never sees the swap.
+
+Why not the alternative (teach ssl_client2 to switch destinations)?
+- ssl_client2 would have to know about the cookie protocol to time the
+  switch correctly. Bleeding the test scaffolding into the client is
+  worse than putting it in the proxy.
+- The proxy approach is closer to the deployment model the cluster
+  property claims to cover (NAT/L4 LB redirecting flows between
+  servers behind the same VIP).
+
+Why not skip the test entirely?
+- Statelessness is the *only* user-visible benefit of Phase 2. A test
+  that doesn't exercise the cluster behaviour leaves the architectural
+  goal unverified.
+
+Estimated effort: ~80 lines in udp_proxy.c plus a new YAML runner
+hook to spin up two server binaries. Within the budget for a Phase 2
+landing.
+
+#### 2.5.6 Failing tests first (TDD)
+
+Land these tests *before* any production code change. Each test
+captures a property the implementation must satisfy. They should all
+fail on the current tree; once Phase 2 is complete they all pass.
+Following the project's habit (we did this for the post-handshake
+retransmit work), the failing tests are the spec.
+
+The tests are split between YAML integration tests
+(`tests/dtls13/cases/`) and white-box unit tests
+(`tests/suites/test_suite_ssl.dtls13`). Where a test needs a new
+internal accessor (e.g. peeking at `ssl->handshake == NULL`), the
+accessor is added under the existing `MBEDTLS_PRIVATE` /
+test-only-hooks pattern in `library/ssl_misc.h`.
+
+**T1 — white-box: handshake state is freed after HRR send.**
+Drive a server through a CH1+HRR exchange (use the helper
+`mbedtls_test_ssl_perform_handshake` already in the test suite, or
+inline a minimal harness). After the HRR-write step returns, assert
+`ssl->handshake == NULL`. Today (Phase 1) this is non-NULL.
+
+**T2 — white-box: HRR-send returns HELLO_VERIFY_REQUIRED to caller.**
+Same harness as T1. Assert that the *next* `mbedtls_ssl_handshake_step`
+returns `MBEDTLS_ERR_SSL_HELLO_VERIFY_REQUIRED`. Today it returns 0
+and stays inside the handshake loop.
+
+**T3 — white-box: HRR-send does NOT arm a DTLS retransmit timer.**
+After HRR-send, inspect the (newly added test accessor for)
+`retransmit_timeout` / `retransmit_state` fields. They must reflect
+"no pending flight." Today `send_flight_completed` is called and the
+timer is armed.
+
+**T4 — integration: stateless HRR exchange completes end-to-end.**
+Plain DTLS 1.3 client + server, server configured with
+`dtls_cookie_secret`, no `f_cookie_*` callbacks. Assert: handshake
+completes, server log shows the DTLS-1.2-style "hello verification
+requested" line *and* the "HRR cookie (secret) verified" line. Today
+the first log line is absent because the state machine never returns
+HELLO_VERIFY_REQUIRED for DTLS 1.3. (This is the Phase 1 regression
+anchor: must pass after Phase 2 to prove no functional regression.)
+
+**T5 — integration: client retransmits CH1, server stays consistent.**
+Use udp_proxy to drop the first server→client packet (the HRR), so
+the client retransmits CH1. The server, being stateless, mints a
+fresh HRR with the same H(CH1). Assert: handshake eventually
+completes. Today the server is in `MBEDTLS_SSL_CLIENT_HELLO` after
+HRR send, holding state; a retransmitted CH1 is treated as a
+duplicate / out-of-sequence message rather than a fresh start.
+
+**T6 — integration: the cluster property (the headline test).**
+Two `ssl_server2` instances, same `dtls_cookie_secret`, different
+ports. udp_proxy forwards CH1→serverA, returns HRR to client,
+forwards CH2→serverB. Assert: handshake completes against server B.
+Today serverB has no `handshake_params` matching this client's HRR
+and the handshake fails. This is the only test that directly
+verifies the architectural goal of Phase 2.
+
+**T7 — integration: transcript binding actually matters
+(`ch1_hash` consumed, not just verified).** Server-side fault hook:
+inject a one-bit flip into `ch1_hash` *inside the cookie* before
+HMAC, then re-HMAC over the flipped data using the configured
+secret (the server has both, so the cookie passes HMAC but encodes
+the wrong CH1 hash). When the client echoes the cookie back, the
+server reconstructs a transcript from a wrong H(CH1) and key
+derivation later in the handshake fails because the Finished MAC
+will mismatch. Assert: handshake fails with the right error
+(`MBEDTLS_ERR_SSL_BAD_HS_FINISHED` or similar). Reuse the existing
+`mbedtls_ssl_dtls13_test_set_hrr_cookie_fault` setter from Phase 1
+step 5; add a new mode 3 ("flip a ch1_hash byte and re-HMAC").
+Today the cookie's `ch1_hash` is verified but unused — the in-memory
+transcript is authoritative — so the test would pass today
+*falsely* (handshake succeeds despite the flip). Phase 2 step 2
+makes it fail correctly. This is the test that distinguishes "Phase
+1 with HMAC binding" from "Phase 2 with transcript recovery."
+
+**T8 — negative: secret cookie configured but DTLS 1.2 client connects.**
+Phase 2 only changes DTLS 1.3 behaviour; DTLS 1.2 must remain
+on its existing stateless HVR pattern. Re-run an existing Phase 1
+DTLS-1.2-with-secret test post-Phase-2; assert it still passes.
+Regression anchor.
+
+**T9 — white-box: legacy callback path is unchanged.**
+Server configured with only `f_cookie_write`/`f_cookie_check` (no
+secret). Drive HRR. Assert: `ssl->handshake != NULL` after HRR
+send (legacy stays stateful for back-compat) and HRR retransmits
+fire on a timer (legacy keeps the flight). This is the back-compat
+anchor — Phase 2 must NOT change behaviour for applications that
+haven't migrated to the secret API.
+
+#### Commit ordering for the TDD lands
+
+These tests land as the FIRST commit of Phase 2, before any
+implementation. Run state:
+
+| Test | Phase 1 (today) | After P2 step 1 | After P2 step 2 | After P2 step 3 |
+| ---- | --------------- | --------------- | --------------- | --------------- |
+| T1   | FAIL            | PASS            | PASS            | PASS            |
+| T2   | FAIL            | PASS            | PASS            | PASS            |
+| T3   | FAIL            | PASS            | PASS            | PASS            |
+| T4   | FAIL            | FAIL (no xscript)| PASS           | PASS            |
+| T5   | FAIL            | FAIL            | PASS            | PASS            |
+| T6   | N/A (no plumbing)| N/A            | N/A             | PASS            |
+| T7   | FAIL (false PASS today, see note) | FAIL  | PASS  | PASS    |
+| T8   | PASS            | PASS            | PASS            | PASS            |
+| T9   | PASS            | PASS            | PASS            | PASS            |
+
+Tests that are expected to fail mid-series (T4, T5, T7 after step 1)
+must be marked with `requires_dtls13_phase2_complete` or similar so
+CI's "all failing tests must fail with the expected pattern" gate
+doesn't mistake them for real regressions. The simpler option: don't
+commit T4–T7 until the implementation commit they pair with. That
+gives up the pure-TDD ordering for review hygiene, which is the right
+tradeoff in a multi-step landing.
+
+**Pragmatic recommendation**: land T1–T3, T8, T9 as the first commit
+(all PASS-or-FAIL deterministic against the current tree). Land T4–T7
+each in the same commit as the production change that makes them
+pass. Net result: every commit has green CI, no temporary
+expected-failure infrastructure needed.
+
+#### 2.5.7 Refined commit topology
+
+Replaces §2.4. Phase 2 lands as **four** small commits, not three:
+
+0. **Failing-tests-first scaffold.** T1, T2, T3, T8, T9 from §2.5.6.
+   T1–T3 fail; T8–T9 pass. Adds any new test-only accessors needed
+   (`mbedtls_test_ssl_handshake_is_null`, `mbedtls_test_ssl_retransmit_state`).
+
+1. **Adopt the DTLS 1.2 escape pattern for DTLS 1.3 HRR.** Add the
+   `MBEDTLS_SSL_SERVER_HELLO_RETRY_REQUEST_SENT` state. After HRR-send
+   (when the secret cookie is configured), move to that state instead
+   of `MBEDTLS_SSL_CLIENT_HELLO`, skip the `send_flight_completed`
+   call, and return `MBEDTLS_ERR_SSL_HELLO_VERIFY_REQUIRED` from the
+   state machine on the next step. Application loop in ssl_server2
+   is already wired (`reset:` label handles it). T1–T3 pass; T4–T5
+   land in this commit but FAIL (we leave them in so the next commit
+   has a green target); T7's "flip-and-re-HMAC" test mode is added
+   and FAILS today.
+
+2. **Restore transcript from cookie on CH2.** Wire the ciphersuite
+   recovery + `replay_ch1_hash_into_transcript` helper described in
+   §2.5.4. T4, T5, T7 pass.
+
+3. **Cluster test (udp_proxy redirect + two-server YAML).** Plumbing
+   commit. Adds the udp_proxy flags, the YAML schema entry for a
+   second server instance, T6. No library changes. T6 passes.
+
+Note: alternatively, fold commit 0 into commit 1 (TDD-with-failing-
+intermediate-commits doesn't survive `git bisect` well). The split
+above keeps every commit green except step 1, which is acceptable
+for review hygiene but means `git bisect` on a future bug would
+need to know to skip step 1. Decision can be deferred to landing
+time.
+
+#### 2.5.8 Risks not yet mitigated
+
+- **`set_client_transport_id` on the retried CH.** Today the server
+  application calls this once per `net_accept`, before
+  `mbedtls_ssl_handshake`. The DTLS 1.2 HVR pattern already requires
+  the application to call it again after `session_reset` (because
+  `session_reset` clears `cli_id`); Phase 2's DTLS 1.3 path will hit
+  the same code path. ssl_server2 already handles this — line 3656
+  is inside the same loop as the `reset:` label.
+- **Concurrent CH1+HRR exchanges from the same client.** If client
+  retransmits CH1 before our HRR reaches it, the server will mint a
+  *second* HRR with a fresh timestamp. Both HRRs are valid (same
+  H(CH1), same secret) but only one CH2 will follow. The second
+  HRR's cookie won't be echoed back; the cookie expires harmlessly.
+  No state to leak. **Verify with a YAML test:** drive a CH1
+  retransmit via udp_proxy duplication and assert the server still
+  handshakes successfully.
+
 ---
 
 ## Cross-phase concerns
