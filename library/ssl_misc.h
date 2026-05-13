@@ -754,6 +754,23 @@ struct mbedtls_ssl_handshake_params {
      */
     uint8_t hello_retry_request_flag;
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3) && \
+    defined(MBEDTLS_SSL_DTLS_HELLO_VERIFY) && defined(MBEDTLS_SSL_SRV_C)
+    /**
+     * H(ClientHello1) captured by mbedtls_ssl_reset_transcript_for_hrr at
+     * the moment of HRR send, before the transcript is replaced with the
+     * synthetic message_hash record.  Used by the stack-managed cookie
+     * write path (Phase 1 of the DTLS 1.3 cookie work) to embed the hash
+     * in the HRR cookie extension per RFC 9147 §5.1.
+     *
+     * Length is dtls13_hrr_ch1_hash_len, which is the ciphersuite's
+     * transcript hash length (32 for SHA-256, 48 for SHA-384).  Zero
+     * means uncaptured (not on the HRR path).
+     */
+    unsigned char dtls13_hrr_ch1_hash[MBEDTLS_TLS1_3_MD_MAX_SIZE];
+    uint8_t dtls13_hrr_ch1_hash_len;
+#endif
+
 #if defined(MBEDTLS_SSL_TLS1_3_COMPATIBILITY_MODE)
     /**
      * Flag indicating if, in the course of the current handshake, a dummy

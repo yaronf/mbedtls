@@ -495,6 +495,45 @@ run_test    "DTLS 1.3: HRR+cookie: bad cookie on retry causes server handshake_f
             -c "received HelloRetryRequest message" \
             -s "cookie verification failed"
 
+requires_protocol_version dtls13
+requires_config_enabled MBEDTLS_SSL_DTLS_HELLO_VERIFY
+run_test    "DTLS 1.3: DTLS 1.3 HRR cookie: neither secret nor callbacks → no HRR cookie" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 groups=secp384r1 cookies=0 debug_level=2" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=2" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -c "received HelloRetryRequest message" \
+            -S "HRR cookie ("
+
+requires_protocol_version dtls13
+requires_config_enabled MBEDTLS_SSL_DTLS_HELLO_VERIFY
+run_test    "DTLS 1.3: DTLS 1.3 HRR cookie via secret API (no legacy callbacks): secret-path used" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 groups=secp384r1 cookies=0 dtls_cookie_secret=000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f dtls_cookie_secret_apply_to_dtls12=0 debug_level=2" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=2" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -c "received HelloRetryRequest message" \
+            -s "HRR cookie (secret)" \
+            -s "HRR cookie (secret) verified"
+
+requires_protocol_version dtls13
+requires_config_enabled MBEDTLS_SSL_DTLS_HELLO_VERIFY
+requires_config_enabled MBEDTLS_SSL_COOKIE_C
+run_test    "DTLS 1.3: DTLS 1.3 HRR cookie: secret + legacy callbacks → secret wins for DTLS 1.3" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 groups=secp384r1 cookies=1 dtls_cookie_secret=000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f dtls_cookie_secret_apply_to_dtls12=0 debug_level=2" \
+            "$P_CLI dtls=1 force_version=dtls13 debug_level=2" \
+            0 \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -c "received HelloRetryRequest message" \
+            -s "HRR cookie (secret)" \
+            -s "HRR cookie (secret) verified"
+
 # ======================================================================
 # Cases from: keyupdate.yaml
 # ======================================================================

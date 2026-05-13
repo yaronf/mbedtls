@@ -15,6 +15,9 @@
 #include "mbedtls/constant_time.h"
 #include "mbedtls/oid.h"
 #include "mbedtls/psa_util.h"
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_DTLS_HELLO_VERIFY)
+#include "mbedtls/ssl_cookie.h" /* MBEDTLS_SSL_COOKIE_TIMEOUT */
+#endif
 
 #include "ssl_tls13_keys.h"
 #include "ssl_debug_helpers.h"
@@ -1691,17 +1694,23 @@ static int ssl_tls13_parse_client_hello(mbedtls_ssl_context *ssl,
 #if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_DTLS_HELLO_VERIFY)
             case MBEDTLS_TLS_EXT_COOKIE:
                 /*
-                 * DTLS 1.3 (RFC 9147 §5.6 / RFC 8446 §4.2.2): on a second
+                 * DTLS 1.3 (RFC 9147 §5.1 / RFC 8446 §4.2.2): on a second
                  * ClientHello following our HRR, validate the echoed cookie.
                  * Ignore on the first ClientHello (no HRR yet).
                  *
                  * Extension data layout:
                  *   cookie_data_length (2)
                  *   cookie_data        (cookie_data_length)
+                 *
+                 * Precedence (mirrors the write path; see
+                 * local-docs/cookie-api-decision.md): secret-based path
+                 * first (the only one that can carry §5.1 transcript
+                 * binding), legacy f_cookie_check as back-compat fallback.
                  */
                 if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
                     ssl->handshake->hello_retry_request_flag &&
-                    ssl->conf->f_cookie_check != NULL) {
+                    (ssl->conf->dtls_cookie_secret != NULL ||
+                     ssl->conf->f_cookie_check != NULL)) {
                     uint16_t cookie_data_len;
 
                     MBEDTLS_SSL_DEBUG_MSG(3, ("found cookie extension (second ClientHello)"));
@@ -1720,17 +1729,78 @@ static int ssl_tls13_parse_client_hello(mbedtls_ssl_context *ssl,
                         return MBEDTLS_ERR_SSL_DECODE_ERROR;
                     }
 
-                    if (ssl->conf->f_cookie_check(
-                            ssl->conf->p_cookie,
-                            p + 2, cookie_data_len,
-                            ssl->cli_id, ssl->cli_id_len) != 0) {
-                        MBEDTLS_SSL_DEBUG_MSG(1, ("cookie verification failed"));
-                        MBEDTLS_SSL_PEND_FATAL_ALERT(
-                            MBEDTLS_SSL_ALERT_MSG_HANDSHAKE_FAILURE,
-                            MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE);
-                        return MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE;
+                    if (ssl->conf->dtls_cookie_secret != NULL) {
+                        const mbedtls_ssl_ciphersuite_t *cs =
+                            ssl->handshake->ciphersuite_info;
+                        psa_algorithm_t psa_hash_alg;
+                        size_t hash_len;
+                        uint16_t cookie_cs_id = 0;
+                        const unsigned char *ch1_hash_in_cookie = NULL;
+
+                        if (cs == NULL) {
+                            MBEDTLS_SSL_DEBUG_MSG(1, ("HRR cookie (secret): no ciphersuite info"));
+                            MBEDTLS_SSL_PEND_FATAL_ALERT(
+                                MBEDTLS_SSL_ALERT_MSG_HANDSHAKE_FAILURE,
+                                MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE);
+                            return MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE;
+                        }
+                        psa_hash_alg = mbedtls_md_psa_alg_from_type(
+                            (mbedtls_md_type_t) cs->mac);
+                        hash_len = PSA_HASH_LENGTH(psa_hash_alg);
+
+                        if (mbedtls_ssl_dtls13_hrr_cookie_check_from_secret(
+                                ssl->conf->dtls_cookie_secret,
+                                ssl->conf->dtls_cookie_secret_len,
+                                ssl->cli_id, ssl->cli_id_len,
+                                p + 2, cookie_data_len,
+                                hash_len,
+                                MBEDTLS_SSL_COOKIE_TIMEOUT,
+                                &cookie_cs_id,
+                                &ch1_hash_in_cookie) != 0) {
+                            MBEDTLS_SSL_DEBUG_MSG(1, ("HRR cookie (secret): verification failed"));
+                            MBEDTLS_SSL_PEND_FATAL_ALERT(
+                                MBEDTLS_SSL_ALERT_MSG_HANDSHAKE_FAILURE,
+                                MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE);
+                            return MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE;
+                        }
+                        /* Sanity-check: the cookie's ciphersuite_id MUST
+                         * match the one currently selected for this
+                         * handshake.  Mismatch indicates either a client
+                         * that changed its mind across HRR or a cookie
+                         * minted for a different connection. */
+                        if (cookie_cs_id != (uint16_t) cs->id) {
+                            MBEDTLS_SSL_DEBUG_MSG(1,
+                                ("HRR cookie (secret): ciphersuite mismatch (cookie=%u, selected=%u)",
+                                 (unsigned) cookie_cs_id, (unsigned) cs->id));
+                            MBEDTLS_SSL_PEND_FATAL_ALERT(
+                                MBEDTLS_SSL_ALERT_MSG_HANDSHAKE_FAILURE,
+                                MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE);
+                            return MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE;
+                        }
+                        MBEDTLS_SSL_DEBUG_MSG(2, ("HRR cookie (secret) verified"));
+                        /* Phase 1: handshake state is kept alive across
+                         * HRR, so the in-memory transcript is authoritative
+                         * and we do not need to use ch1_hash_in_cookie.
+                         * Phase 2 (stateless-across-HRR) will consume it. */
+                        (void) ch1_hash_in_cookie;
+                    } else {
+                        /* Legacy callback path — reachability-only cookie
+                         * (cannot satisfy §5.1 transcript binding).  Log
+                         * strings preserved verbatim from the original
+                         * implementation for back-compat with existing
+                         * test assertions. */
+                        if (ssl->conf->f_cookie_check(
+                                ssl->conf->p_cookie,
+                                p + 2, cookie_data_len,
+                                ssl->cli_id, ssl->cli_id_len) != 0) {
+                            MBEDTLS_SSL_DEBUG_MSG(1, ("cookie verification failed"));
+                            MBEDTLS_SSL_PEND_FATAL_ALERT(
+                                MBEDTLS_SSL_ALERT_MSG_HANDSHAKE_FAILURE,
+                                MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE);
+                            return MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE;
+                        }
+                        MBEDTLS_SSL_DEBUG_MSG(2, ("cookie verified"));
                     }
-                    MBEDTLS_SSL_DEBUG_MSG(2, ("cookie verified"));
                 }
                 break;
 #endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_DTLS_HELLO_VERIFY */
@@ -1750,7 +1820,8 @@ static int ssl_tls13_parse_client_hello(mbedtls_ssl_context *ssl,
      * cookie extension.  If it is absent, abort with missing_extension. */
     if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
         ssl->handshake->hello_retry_request_flag &&
-        ssl->conf->f_cookie_check != NULL &&
+        (ssl->conf->dtls_cookie_secret != NULL ||
+         ssl->conf->f_cookie_check != NULL) &&
         !(handshake->received_extensions & MBEDTLS_SSL_EXT_MASK(COOKIE))) {
         MBEDTLS_SSL_DEBUG_MSG(1, ("second ClientHello missing required cookie extension"));
         MBEDTLS_SSL_PEND_FATAL_ALERT(MBEDTLS_SSL_ALERT_MSG_MISSING_EXTENSION,
@@ -2480,16 +2551,69 @@ static int ssl_tls13_write_server_hello_body(mbedtls_ssl_context *ssl,
      *   cookie_data_length (2)
      *   cookie_data (cookie_data_length)
      */
+    /* DTLS 1.3 HRR cookie precedence (see local-docs/cookie-api-decision.md):
+     * the secret-based path is the only one that can carry the §5.1
+     * transcript content.  The legacy f_cookie_write callback cannot
+     * (no transcript parameter in its signature), so it is never
+     * invoked from the DTLS 1.3 HRR path. */
+    int have_secret_for_dtls13 =
+        (ssl->conf->dtls_cookie_secret != NULL);
     if (is_hrr &&
         ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
-        ssl->conf->f_cookie_write != NULL) {
+        have_secret_for_dtls13) {
         unsigned char *cookie_len_byte;
+        const mbedtls_ssl_ciphersuite_t *cs =
+            ssl->handshake->ciphersuite_info;
+        uint16_t ciphersuite_id = (uint16_t) cs->id;
 
         MBEDTLS_SSL_CHK_BUF_PTR(p, end, 6);
         MBEDTLS_PUT_UINT16_BE(MBEDTLS_TLS_EXT_COOKIE, p, 0);
         /* extension_data_length placeholder — filled in below */
         cookie_len_byte = p + 2;
         p += 6; /* type(2) + ext_data_len(2) + cookie_data_len(2) */
+
+        unsigned char *cookie_start = p;
+        if (ssl->handshake->dtls13_hrr_ch1_hash_len == 0) {
+            /* reset_transcript_for_hrr should have populated this
+             * before write_hello_retry_request runs. */
+            MBEDTLS_SSL_DEBUG_MSG(1, ("HRR cookie: H(CH1) not captured"));
+            return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+        }
+        if ((ret = mbedtls_ssl_dtls13_hrr_cookie_write_from_secret(
+                 ssl->conf->dtls_cookie_secret,
+                 ssl->conf->dtls_cookie_secret_len,
+                 ssl->cli_id, ssl->cli_id_len,
+                 ciphersuite_id,
+                 ssl->handshake->dtls13_hrr_ch1_hash,
+                 ssl->handshake->dtls13_hrr_ch1_hash_len,
+                 &p, end)) != 0) {
+            MBEDTLS_SSL_DEBUG_RET(1, "dtls13_hrr_cookie_write_from_secret", ret);
+            return ret;
+        }
+        size_t cookie_data_len = (size_t)(p - cookie_start);
+
+        /* Fill in cookie_data_length (2 bytes immediately before cookie) */
+        MBEDTLS_PUT_UINT16_BE(cookie_data_len, cookie_len_byte + 2, 0);
+        /* Fill in extension_data_length = cookie_data_len + 2 */
+        MBEDTLS_PUT_UINT16_BE(cookie_data_len + 2, cookie_len_byte, 0);
+
+        mbedtls_ssl_tls13_set_hs_sent_ext_mask(ssl, MBEDTLS_TLS_EXT_COOKIE);
+        MBEDTLS_SSL_DEBUG_BUF(3, "HRR cookie (secret)",
+                              cookie_start, cookie_data_len);
+    } else if (is_hrr &&
+               ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+               ssl->conf->f_cookie_write != NULL) {
+        /* Legacy callback path: pre-existing behaviour, kept so that
+         * applications still get a (reachability-only) cookie when
+         * they haven't migrated to the secret API.  This cookie does
+         * NOT satisfy §5.1's transcript-binding requirement; callers
+         * that care must configure the secret. */
+        unsigned char *cookie_len_byte;
+
+        MBEDTLS_SSL_CHK_BUF_PTR(p, end, 6);
+        MBEDTLS_PUT_UINT16_BE(MBEDTLS_TLS_EXT_COOKIE, p, 0);
+        cookie_len_byte = p + 2;
+        p += 6;
 
         unsigned char *cookie_start = p;
         if ((ret = ssl->conf->f_cookie_write(ssl->conf->p_cookie,
@@ -2501,13 +2625,12 @@ static int ssl_tls13_write_server_hello_body(mbedtls_ssl_context *ssl,
         }
         size_t cookie_data_len = (size_t)(p - cookie_start);
 
-        /* Fill in cookie_data_length (2 bytes immediately before cookie) */
         MBEDTLS_PUT_UINT16_BE(cookie_data_len, cookie_len_byte + 2, 0);
-        /* Fill in extension_data_length = cookie_data_len + 2 */
         MBEDTLS_PUT_UINT16_BE(cookie_data_len + 2, cookie_len_byte, 0);
 
         mbedtls_ssl_tls13_set_hs_sent_ext_mask(ssl, MBEDTLS_TLS_EXT_COOKIE);
-        MBEDTLS_SSL_DEBUG_BUF(3, "HRR cookie", cookie_start, cookie_data_len);
+        MBEDTLS_SSL_DEBUG_BUF(3, "HRR cookie (legacy)",
+                              cookie_start, cookie_data_len);
     }
 #endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_DTLS_HELLO_VERIFY */
 

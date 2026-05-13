@@ -97,6 +97,21 @@ assertion_map:
   server_cookie_secret_verified:
     flag: "-s"
     string: "check cookie (secret): valid"
+  # DTLS 1.3 HRR — secret-based cookie path:
+  server_hrr_cookie_secret_sent:
+    flag: "-s"
+    string: "HRR cookie (secret)"
+  server_hrr_cookie_secret_verified:
+    flag: "-s"
+    string: "HRR cookie (secret) verified"
+  # DTLS 1.3 HRR — legacy callback path:
+  server_hrr_cookie_legacy_sent:
+    flag: "-s"
+    string: "HRR cookie (legacy)"
+  # Negative: no cookie extension was sent in HRR at all.
+  server_no_hrr_cookie:
+    flag: "-S"
+    string: "HRR cookie ("
   server_dtls12_cookie_passed:
     flag: "-s"
     string: "cookie verification passed"

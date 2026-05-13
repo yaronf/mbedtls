@@ -37,3 +37,78 @@ cases:
       assert:
         - client_hrr_received
         - server_cookie_verification_failed
+
+  # ----------------------------------------------------------------------------
+  # DTLS 1.3 HRR cookie via the new secret API (RFC 9147 §5.1 transcript binding)
+  # See local-docs/cookie-impl-plan.md §1.5 tests 0, 1, 6.
+  # ----------------------------------------------------------------------------
+
+  - name: "DTLS 1.3 HRR cookie: neither secret nor callbacks → no HRR cookie"
+    requires:
+      - config: MBEDTLS_SSL_DTLS_HELLO_VERIFY
+    # Plan §1.5/0: server has no secret AND no legacy callbacks.
+    # Row 4 of the precedence table — server still sends HRR (because the
+    # client's first CH lacks key_share for the only supported group), but
+    # without a cookie extension.  The handshake completes (client doesn't
+    # require a cookie).  This anchors "do nothing" as a real config.
+    server:
+      groups: secp384r1
+      cookies: 0
+      debug_level: 2
+    client:
+      debug_level: 2
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - client_hrr_received
+        - server_no_hrr_cookie
+
+  - name: "DTLS 1.3 HRR cookie via secret API (no legacy callbacks): secret-path used"
+    requires:
+      - config: MBEDTLS_SSL_DTLS_HELLO_VERIFY
+    # Plan §1.5/1: server has only the new secret configured (cookies=0,
+    # no legacy callbacks).  HRR cookie is written/verified via the new
+    # secret-based path.  Handshake completes.
+    server:
+      groups: secp384r1
+      cookies: 0
+      dtls_cookie_secret: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      dtls_cookie_secret_apply_to_dtls12: 0
+      debug_level: 2
+    client:
+      debug_level: 2
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - client_hrr_received
+        - server_hrr_cookie_secret_sent
+        - server_hrr_cookie_secret_verified
+
+  - name: "DTLS 1.3 HRR cookie: secret + legacy callbacks → secret wins for DTLS 1.3"
+    requires:
+      - config: MBEDTLS_SSL_DTLS_HELLO_VERIFY
+      - config: MBEDTLS_SSL_COOKIE_C
+    # Plan §1.5/6: server has BOTH the new secret AND the legacy
+    # cookie callbacks configured.  Per the precedence rule, DTLS 1.3
+    # always uses the secret (the legacy callbacks cannot carry §5.1
+    # transcript binding).  Assert the secret path was used, not legacy.
+    server:
+      groups: secp384r1
+      cookies: 1
+      dtls_cookie_secret: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      dtls_cookie_secret_apply_to_dtls12: 0
+      debug_level: 2
+    client:
+      debug_level: 2
+    expect:
+      exit: 0
+      assert:
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - client_hrr_received
+        - server_hrr_cookie_secret_sent
+        - server_hrr_cookie_secret_verified

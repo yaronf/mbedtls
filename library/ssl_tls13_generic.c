@@ -1460,6 +1460,23 @@ int mbedtls_ssl_reset_transcript_for_hrr(mbedtls_ssl_context *ssl)
         return ret;
     }
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && \
+    defined(MBEDTLS_SSL_DTLS_HELLO_VERIFY) && defined(MBEDTLS_SSL_SRV_C)
+    /* Stash H(CH1) into handshake state for the DTLS 1.3 HRR cookie
+     * write site (RFC 9147 §5.1).  This is the only point at which
+     * the bare H(CH1) is available — below we mutate the transcript
+     * to the synthetic message_hash form.  The cookie write site
+     * runs later (inside ssl_tls13_write_hello_retry_request) and
+     * needs this value to embed in the cookie. */
+    if (ssl->conf->endpoint == MBEDTLS_SSL_IS_SERVER &&
+        ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+        hash_len <= sizeof(ssl->handshake->dtls13_hrr_ch1_hash)) {
+        memcpy(ssl->handshake->dtls13_hrr_ch1_hash,
+               hash_transcript + 4, hash_len);
+        ssl->handshake->dtls13_hrr_ch1_hash_len = (uint8_t) hash_len;
+    }
+#endif
+
     hash_transcript[0] = MBEDTLS_SSL_HS_MESSAGE_HASH;
     hash_transcript[1] = 0;
     hash_transcript[2] = 0;
