@@ -4750,6 +4750,12 @@ void mbedtls_ssl_handshake_free(mbedtls_ssl_context *ssl)
 #endif
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3) && \
+    defined(MBEDTLS_SSL_DTLS_HELLO_VERIFY) && defined(MBEDTLS_SSL_SRV_C)
+    mbedtls_free(handshake->dtls13_hrr_recovered_cookie_ext);
+    handshake->dtls13_hrr_recovered_cookie_ext = NULL;
+    handshake->dtls13_hrr_recovered_cookie_ext_len = 0;
+#endif
 
 #if defined(MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH)
     /* If the buffers are too big - reallocate. Because of the way Mbed TLS

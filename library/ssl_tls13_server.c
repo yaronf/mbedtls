@@ -1233,6 +1233,18 @@ static int ssl_tls13_pick_key_cert(mbedtls_ssl_context *ssl)
 #define SSL_CLIENT_HELLO_HRR_REQUIRED 1
 #define SSL_CLIENT_HELLO_TLS1_2       2
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_DTLS_HELLO_VERIFY)
+/* Forward declaration: parse_client_hello reconstructs the HRR's
+ * wire bytes for transcript replay on the Phase 2 stateless-recovery
+ * path; the definition lives near the bottom of the file. */
+MBEDTLS_CHECK_RETURN_CRITICAL
+static int ssl_tls13_write_server_hello_body(mbedtls_ssl_context *ssl,
+                                             unsigned char *buf,
+                                             unsigned char *end,
+                                             size_t *out_len,
+                                             int is_hrr);
+#endif
+
 MBEDTLS_CHECK_RETURN_CRITICAL
 static int ssl_tls13_parse_client_hello(mbedtls_ssl_context *ssl,
                                         const unsigned char *buf,
@@ -1696,7 +1708,6 @@ static int ssl_tls13_parse_client_hello(mbedtls_ssl_context *ssl,
                 /*
                  * DTLS 1.3 (RFC 9147 §5.1 / RFC 8446 §4.2.2): on a second
                  * ClientHello following our HRR, validate the echoed cookie.
-                 * Ignore on the first ClientHello (no HRR yet).
                  *
                  * Extension data layout:
                  *   cookie_data_length (2)
@@ -1706,11 +1717,19 @@ static int ssl_tls13_parse_client_hello(mbedtls_ssl_context *ssl,
                  * local-docs/cookie-api-decision.md): secret-based path
                  * first (the only one that can carry §5.1 transcript
                  * binding), legacy f_cookie_check as back-compat fallback.
-                 */
+                 *
+                 * Phase 2 of the cookie work (stateless server, see
+                 * local-docs/cookie-impl-plan.md §2.5): on the secret
+                 * path the server arrives at CH2 with a freshly-
+                 * allocated handshake_params (hello_retry_request_flag
+                 * is 0).  The cookie extension itself is the signal
+                 * "this is CH2"; we don't need a stateful flag.  The
+                 * legacy path keeps the flag check because it relies
+                 * on the pre-Phase-2 stateful flow. */
                 if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
-                    ssl->handshake->hello_retry_request_flag &&
-                    (ssl->conf->dtls_cookie_secret != NULL ||
-                     ssl->conf->f_cookie_check != NULL)) {
+                    ((ssl->conf->dtls_cookie_secret != NULL) ||
+                     (ssl->handshake->hello_retry_request_flag &&
+                      ssl->conf->f_cookie_check != NULL))) {
                     uint16_t cookie_data_len;
 
                     MBEDTLS_SSL_DEBUG_MSG(3, ("found cookie extension (second ClientHello)"));
@@ -1730,15 +1749,48 @@ static int ssl_tls13_parse_client_hello(mbedtls_ssl_context *ssl,
                     }
 
                     if (ssl->conf->dtls_cookie_secret != NULL) {
-                        const mbedtls_ssl_ciphersuite_t *cs =
-                            ssl->handshake->ciphersuite_info;
+                        /* Phase 2 of the DTLS 1.3 cookie work
+                         * (local-docs/cookie-impl-plan.md §2.5): the
+                         * server arrives at CH2 statelessly — no
+                         * ciphersuite_info, no transcript.  The cookie
+                         * carries both: its first 2 bytes are the
+                         * ciphersuite_id (used to derive hash_len for
+                         * HMAC verification), and after the timestamp
+                         * comes H(CH1) which we replay into the fresh
+                         * transcript. */
+                        const mbedtls_ssl_ciphersuite_t *cs;
                         psa_algorithm_t psa_hash_alg;
                         size_t hash_len;
                         uint16_t cookie_cs_id = 0;
                         const unsigned char *ch1_hash_in_cookie = NULL;
 
+                        /* Cookie wire format starts with ciphersuite_id
+                         * (2 bytes, big-endian).  Read it before HMAC
+                         * verify so we know which hash to use. */
+                        if (cookie_data_len < 2) {
+                            MBEDTLS_SSL_DEBUG_MSG(1,
+                                ("HRR cookie (secret): truncated"));
+                            MBEDTLS_SSL_PEND_FATAL_ALERT(
+                                MBEDTLS_SSL_ALERT_MSG_HANDSHAKE_FAILURE,
+                                MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE);
+                            return MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE;
+                        }
+                        cookie_cs_id = MBEDTLS_GET_UINT16_BE(p, 2);
+                        cs = mbedtls_ssl_ciphersuite_from_id(cookie_cs_id);
                         if (cs == NULL) {
-                            MBEDTLS_SSL_DEBUG_MSG(1, ("HRR cookie (secret): no ciphersuite info"));
+                            MBEDTLS_SSL_DEBUG_MSG(1,
+                                ("HRR cookie (secret): unknown ciphersuite_id %u",
+                                 (unsigned) cookie_cs_id));
+                            MBEDTLS_SSL_PEND_FATAL_ALERT(
+                                MBEDTLS_SSL_ALERT_MSG_HANDSHAKE_FAILURE,
+                                MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE);
+                            return MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE;
+                        }
+                        if (!mbedtls_ssl_tls13_cipher_suite_is_offered(
+                                ssl, cookie_cs_id)) {
+                            MBEDTLS_SSL_DEBUG_MSG(1,
+                                ("HRR cookie (secret): ciphersuite_id %u not offered in CH2",
+                                 (unsigned) cookie_cs_id));
                             MBEDTLS_SSL_PEND_FATAL_ALERT(
                                 MBEDTLS_SSL_ALERT_MSG_HANDSHAKE_FAILURE,
                                 MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE);
@@ -1763,26 +1815,51 @@ static int ssl_tls13_parse_client_hello(mbedtls_ssl_context *ssl,
                                 MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE);
                             return MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE;
                         }
-                        /* Sanity-check: the cookie's ciphersuite_id MUST
-                         * match the one currently selected for this
-                         * handshake.  Mismatch indicates either a client
-                         * that changed its mind across HRR or a cookie
-                         * minted for a different connection. */
-                        if (cookie_cs_id != (uint16_t) cs->id) {
-                            MBEDTLS_SSL_DEBUG_MSG(1,
-                                ("HRR cookie (secret): ciphersuite mismatch (cookie=%u, selected=%u)",
-                                 (unsigned) cookie_cs_id, (unsigned) cs->id));
-                            MBEDTLS_SSL_PEND_FATAL_ALERT(
-                                MBEDTLS_SSL_ALERT_MSG_HANDSHAKE_FAILURE,
-                                MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE);
-                            return MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE;
-                        }
                         MBEDTLS_SSL_DEBUG_MSG(2, ("HRR cookie (secret) verified"));
-                        /* Phase 1: handshake state is kept alive across
-                         * HRR, so the in-memory transcript is authoritative
-                         * and we do not need to use ch1_hash_in_cookie.
-                         * Phase 2 (stateless-across-HRR) will consume it. */
-                        (void) ch1_hash_in_cookie;
+
+                        /* Install the recovered ciphersuite and replay
+                         * H(CH1) into the (fresh) transcript so later
+                         * transcript-hash reads see the post-CH1
+                         * state.  Without this, key derivation later in
+                         * the handshake uses the wrong transcript and
+                         * the client's Finished MAC mismatches. */
+                        ssl->handshake->ciphersuite_info = cs;
+                        ssl->handshake->hello_retry_request_flag = 1;
+                        ret = mbedtls_ssl_dtls13_replay_ch1_into_transcript(
+                            ssl, ch1_hash_in_cookie, hash_len);
+                        if (ret != 0) {
+                            MBEDTLS_SSL_DEBUG_RET(1,
+                                "mbedtls_ssl_dtls13_replay_ch1_into_transcript", ret);
+                            return ret;
+                        }
+
+                        /* Stash this CH2 cookie extension's wire bytes
+                         * (the full ext: type || ext_data_len || ...
+                         * starting 4 bytes before `p`).  We need these
+                         * when reconstructing the HRR after the
+                         * extension loop terminates — the original
+                         * HRR's cookie extension carried the same
+                         * cookie bytes (the client echoes them
+                         * verbatim), so the reconstruction must use
+                         * exactly these bytes to make the transcript
+                         * hash match the client's. */
+                        {
+                            size_t ext_wire_len =
+                                4 + (size_t) extension_data_len;
+                            mbedtls_free(
+                                ssl->handshake->dtls13_hrr_recovered_cookie_ext);
+                            ssl->handshake->dtls13_hrr_recovered_cookie_ext =
+                                mbedtls_calloc(1, ext_wire_len);
+                            if (ssl->handshake->dtls13_hrr_recovered_cookie_ext == NULL) {
+                                ssl->handshake->dtls13_hrr_recovered_cookie_ext_len = 0;
+                                return MBEDTLS_ERR_SSL_ALLOC_FAILED;
+                            }
+                            memcpy(
+                                ssl->handshake->dtls13_hrr_recovered_cookie_ext,
+                                p - 4, ext_wire_len);
+                            ssl->handshake->dtls13_hrr_recovered_cookie_ext_len =
+                                ext_wire_len;
+                        }
                     } else {
                         /* Legacy callback path — reachability-only cookie
                          * (cannot satisfy §5.1 transcript binding).  Log
@@ -1832,6 +1909,65 @@ static int ssl_tls13_parse_client_hello(mbedtls_ssl_context *ssl,
 
     MBEDTLS_SSL_PRINT_EXTS(3, MBEDTLS_SSL_HS_CLIENT_HELLO,
                            handshake->received_extensions);
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_DTLS_HELLO_VERIFY)
+    /* Phase 2 of the cookie work (local-docs/cookie-impl-plan.md §2.5):
+     * on the CH2 stateless-recovery path the freshly-allocated
+     * transcript has H(CH1) replayed (by the cookie extension parser
+     * above) but is missing the HRR bytes the client added to its
+     * own transcript on HRR receipt.  Reconstruct the HRR wire bytes
+     * deterministically — the inputs are all available
+     * (ciphersuite from cookie, session_id_echo from CH2,
+     * selected_group re-derived during this CH2's
+     * supported_groups parsing, cookie-ext bytes stashed from CH2's
+     * cookie ext) — and feed them through update_checksum.  After
+     * this the server's transcript matches the client's at the
+     * post-HRR/pre-CH2 point. */
+    if (ssl->handshake->dtls13_hrr_recovered_cookie_ext != NULL) {
+        unsigned char *hrr_buf = NULL;
+        const size_t hrr_buf_cap = MBEDTLS_SSL_OUT_CONTENT_LEN;
+        size_t hrr_body_len = 0;
+
+        /* write_hrr_key_share_ext (called inside write_server_hello_body)
+         * checks key_exchange_mode and skips emitting key_share if it
+         * isn't EPHEMERAL.  On CH2 that field isn't set yet (the
+         * post-extension-loop determine_key_exchange_mode step runs
+         * later).  For the secret-cookie HRR path we know the mode is
+         * ephemeral (DTLS 1.3 HRR is only sent for cert-mode key
+         * agreement); set it explicitly so the reconstruction
+         * includes the key_share extension. */
+        ssl->handshake->key_exchange_mode =
+            MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL;
+
+        hrr_buf = mbedtls_calloc(1, hrr_buf_cap);
+        if (hrr_buf == NULL) {
+            return MBEDTLS_ERR_SSL_ALLOC_FAILED;
+        }
+        ret = ssl_tls13_write_server_hello_body(ssl, hrr_buf,
+                                                hrr_buf + hrr_buf_cap,
+                                                &hrr_body_len, 1);
+        if (ret != 0) {
+            mbedtls_free(hrr_buf);
+            MBEDTLS_SSL_DEBUG_RET(1,
+                "HRR reconstruction (ssl_tls13_write_server_hello_body)", ret);
+            return ret;
+        }
+        ret = mbedtls_ssl_add_hs_msg_to_checksum(
+            ssl, MBEDTLS_SSL_HS_SERVER_HELLO, hrr_buf, hrr_body_len);
+        mbedtls_free(hrr_buf);
+        if (ret != 0) {
+            MBEDTLS_SSL_DEBUG_RET(1,
+                "HRR reconstruction (add_hs_msg_to_checksum)", ret);
+            return ret;
+        }
+        /* Consume the stash — recovery happens at most once per
+         * handshake, and a second CH from the client (e.g. due to a
+         * lost ACK) would be a fresh CH1 from our POV. */
+        mbedtls_free(ssl->handshake->dtls13_hrr_recovered_cookie_ext);
+        ssl->handshake->dtls13_hrr_recovered_cookie_ext = NULL;
+        ssl->handshake->dtls13_hrr_recovered_cookie_ext_len = 0;
+    }
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_DTLS_HELLO_VERIFY */
 
     ret = mbedtls_ssl_add_hs_hdr_to_checksum(ssl,
                                              MBEDTLS_SSL_HS_CLIENT_HELLO,
@@ -2369,10 +2505,27 @@ static int ssl_tls13_write_hrr_key_share_ext(mbedtls_ssl_context *ssl,
 
     /* We should only send the key_share extension if the client's initial
      * key share was not acceptable. */
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_DTLS_HELLO_VERIFY)
+    /* Phase 2 of the cookie work (local-docs/cookie-impl-plan.md §2.5):
+     * on the CH2 recovery path we're reconstructing the original
+     * HRR's bytes for the transcript hash.  The original HRR did
+     * include the key_share extension (otherwise the client wouldn't
+     * have known which group to use for its key_share in CH2).  By
+     * the time we get here on CH2, offered_group_id is non-zero
+     * (CH2's key_share matched), but we must still emit key_share in
+     * the reconstructed HRR. */
+    int reconstructing_hrr =
+        (ssl->handshake->dtls13_hrr_recovered_cookie_ext != NULL);
+    if (ssl->handshake->offered_group_id != 0 && !reconstructing_hrr) {
+        MBEDTLS_SSL_DEBUG_MSG(4, ("Skip key_share extension in HRR"));
+        return 0;
+    }
+#else
     if (ssl->handshake->offered_group_id != 0) {
         MBEDTLS_SSL_DEBUG_MSG(4, ("Skip key_share extension in HRR"));
         return 0;
     }
+#endif
 
     if (selected_group == 0) {
         MBEDTLS_SSL_DEBUG_MSG(1, ("no matching named group found"));
@@ -2559,6 +2712,28 @@ static int ssl_tls13_write_server_hello_body(mbedtls_ssl_context *ssl,
     int have_secret_for_dtls13 =
         (ssl->conf->dtls_cookie_secret != NULL);
     if (is_hrr &&
+        ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+        have_secret_for_dtls13 &&
+        ssl->handshake->dtls13_hrr_recovered_cookie_ext != NULL) {
+        /* Phase 2 of the cookie work
+         * (local-docs/cookie-impl-plan.md §2.5): on the CH2 recovery
+         * path the server is reconstructing the HRR's bytes only to
+         * feed them into the transcript hash; it must emit the exact
+         * cookie extension that the client echoed in CH2 (i.e. the
+         * one in the original HRR), not a freshly-minted one with a
+         * new timestamp. */
+        MBEDTLS_SSL_CHK_BUF_PTR(
+            p, end,
+            ssl->handshake->dtls13_hrr_recovered_cookie_ext_len);
+        memcpy(p, ssl->handshake->dtls13_hrr_recovered_cookie_ext,
+               ssl->handshake->dtls13_hrr_recovered_cookie_ext_len);
+        p += ssl->handshake->dtls13_hrr_recovered_cookie_ext_len;
+        mbedtls_ssl_tls13_set_hs_sent_ext_mask(ssl, MBEDTLS_TLS_EXT_COOKIE);
+        MBEDTLS_SSL_DEBUG_BUF(
+            3, "HRR cookie (secret, replayed)",
+            ssl->handshake->dtls13_hrr_recovered_cookie_ext,
+            ssl->handshake->dtls13_hrr_recovered_cookie_ext_len);
+    } else if (is_hrr &&
         ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
         have_secret_for_dtls13) {
         unsigned char *cookie_len_byte;
@@ -2783,6 +2958,23 @@ static int ssl_tls13_write_hello_retry_request(mbedtls_ssl_context *ssl)
 
     ssl->handshake->hello_retry_request_flag = 1;
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_DTLS_HELLO_VERIFY)
+    /* Phase 2 of the DTLS 1.3 cookie work
+     * (local-docs/cookie-impl-plan.md §2.5): when the application has
+     * configured a stack-managed cookie secret, follow the DTLS 1.2 HVR
+     * pattern — free handshake state, signal the application to reset
+     * and wait for the retried ClientHello.  All transcript material
+     * is in the cookie; we don't need to keep handshake_params alive
+     * across HRR. */
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+        ssl->conf->dtls_cookie_secret != NULL) {
+        mbedtls_ssl_handshake_set_state(
+            ssl, MBEDTLS_SSL_TLS1_3_SERVER_HELLO_RETRY_REQUEST_SENT);
+        MBEDTLS_SSL_DEBUG_MSG(2, ("<= write hello retry request"));
+        return 0;
+    }
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_DTLS_HELLO_VERIFY */
+
 #if defined(MBEDTLS_SSL_TLS1_3_COMPATIBILITY_MODE)
     /* DTLS 1.3 (RFC 9147 §5): compatibility mode is prohibited; skip CCS. */
     if (ssl->conf->transport != MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
@@ -2795,9 +2987,10 @@ static int ssl_tls13_write_hello_retry_request(mbedtls_ssl_context *ssl)
     }
 
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
-    /* DTLS: arm the retransmit timer so the HRR is resent if the second
-     * ClientHello is lost.  Without this the server has no flight to
-     * retransmit and simply waits forever for the retried CH. */
+    /* DTLS, legacy / stateful path: arm the retransmit timer so the HRR
+     * is resent if the second ClientHello is lost.  The secret-cookie
+     * path above doesn't need this because the client retransmits CH1
+     * if HRR is lost (the server re-mints a deterministic HRR). */
     if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
         mbedtls_ssl_send_flight_completed(ssl);
     }
@@ -3838,6 +4031,16 @@ int mbedtls_ssl_tls13_handshake_server_step(mbedtls_ssl_context *ssl)
                 return ret;
             }
             break;
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_DTLS_HELLO_VERIFY)
+        case MBEDTLS_SSL_TLS1_3_SERVER_HELLO_RETRY_REQUEST_SENT:
+            /* DTLS 1.3 stateless server (see local-docs/cookie-impl-plan.md
+             * §2.5): the HRR has been written; signal the application
+             * to reset the context and wait for the retried ClientHello.
+             * Mirrors MBEDTLS_SSL_SERVER_HELLO_VERIFY_REQUEST_SENT in
+             * ssl_tls12_server.c. */
+            return MBEDTLS_ERR_SSL_HELLO_VERIFY_REQUIRED;
+#endif
 
         case MBEDTLS_SSL_SERVER_HELLO:
             ret = ssl_tls13_write_server_hello(ssl);

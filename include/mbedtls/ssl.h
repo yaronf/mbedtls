@@ -734,6 +734,12 @@ typedef enum {
      * its Finished flight before the server has confirmed receipt, preventing
      * retransmit when the Finished is lost. */
     MBEDTLS_SSL_TLS1_3_CLIENT_FINISHED_WAIT_ACK,
+    /* DTLS 1.3 only: server has sent HRR via the stateless (secret-cookie)
+     * path and is signaling the application to reset the context and wait
+     * for the retried ClientHello — mirrors the DTLS 1.2
+     * SERVER_HELLO_VERIFY_REQUEST_SENT state.  See
+     * local-docs/cookie-impl-plan.md §2.5. */
+    MBEDTLS_SSL_TLS1_3_SERVER_HELLO_RETRY_REQUEST_SENT,
 }
 mbedtls_ssl_states;
 

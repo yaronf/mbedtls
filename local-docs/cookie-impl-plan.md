@@ -662,6 +662,38 @@ cookie extension arrives first, last, or in the middle of CH2 doesn't
 matter: by the time anyone reads the transcript, we've already
 recovered H(CH1) into it. No two-pass parse needed.
 
+**The HRR-must-also-be-in-the-transcript subtlety.** §1.2 correctly
+notes that `mbedtls_ssl_reset_transcript_for_hrr` doesn't need HRR
+bytes — but the *caller* of that function still has to add the HRR
+to the transcript afterwards.  In Phase 1's stateful flow this happens
+naturally inside `ssl_tls13_write_hello_retry_request`: it calls
+`reset_transcript_for_hrr` to install the synthetic CH1, then
+`add_hs_msg_to_checksum(HRR)` right after.  Phase 2 throws that state
+away, so on CH2 the recovery code must do *both* steps:
+
+1. `replay_ch1_into_transcript(ssl, ch1_hash, hash_len)` — installs
+   `message_hash || hash_len || H(CH1)` (recovered from cookie).
+2. Reconstruct the HRR wire bytes deterministically from
+   (ciphersuite_id from cookie, session_id_echo from CH2,
+   selected_group re-derived from CH2's supported_groups, cookie ext
+   bytes echoed in CH2) and feed them through
+   `add_hs_msg_to_checksum(HRR)`.
+
+Step 2 is the new work.  It does **not** require an on-wire change —
+the cookie stays at 66 bytes for SHA-256.  All inputs are already
+available: ciphersuite_id comes from the cookie; session_id_echo and
+the cookie-ext bytes come from CH2 (the client echoes CH1's
+session_id and our cookie); the selected_group is computable by
+running the same group-selection logic on CH2's supported_groups
+(RFC 8446 §4.1.2 requires CH2 to offer the same groups as CH1).
+
+The cleanest factoring: split `ssl_tls13_write_server_hello_body`
+into a "produce bytes into a buffer" function (used both for sending
+and for transcript reconstruction) and the existing "send" wrapper.
+Phase 2's CH2-recovery path calls the byte-producing function with
+`is_hrr=1`, feeds the bytes through `add_hs_msg_to_checksum`, and
+discards them.  No new wire format.
+
 #### 2.5.5 Cluster-test plumbing decision
 
 **Use udp_proxy as the redirector.** Two ssl_server2 instances bind

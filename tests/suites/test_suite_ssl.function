@@ -3,6 +3,7 @@
 #include <mbedtls/timing.h>
 #include <mbedtls/debug.h>
 #include <mbedtls/pk.h>
+#include <mbedtls/ssl_cookie.h>
 #if defined(MBEDTLS_PK_HAVE_PRIVATE_HEADER)
 #include <mbedtls/private/pk_private.h>
 #endif /* MBEDTLS_PK_HAVE_PRIVATE_HEADER */
@@ -6558,6 +6559,227 @@ exit:
     mbedtls_test_ssl_endpoint_free(&client);
     mbedtls_test_ssl_endpoint_free(&server);
     mbedtls_test_free_handshake_options(&options);
+    MD_OR_USE_PSA_DONE();
+}
+/* END_CASE */
+
+/* BEGIN_CASE depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:MBEDTLS_SSL_DTLS_HELLO_VERIFY:MBEDTLS_SSL_HANDSHAKE_WITH_CERT_ENABLED:PSA_WANT_ECC_SECP_R1_256:PSA_WANT_ECC_SECP_R1_384:PSA_WANT_ALG_SHA_256:MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL_ENABLED */
+void dtls13_hrr_secret_server_is_stateless(void)
+{
+    /* Phase 2 of the DTLS 1.3 cookie work (local-docs/cookie-impl-plan.md
+     * §2.5).  After the server sends an HRR with the secret-based
+     * cookie, it MUST behave like the DTLS 1.2 HVR path: signal the
+     * application to reset and wait for the retried ClientHello by
+     * returning MBEDTLS_ERR_SSL_HELLO_VERIFY_REQUIRED from the next
+     * handshake step.  After the application calls session_reset, the
+     * server holds zero handshake state — the cookie carries
+     * everything needed to recover the transcript on CH2. */
+    mbedtls_test_ssl_endpoint client, server;
+    mbedtls_test_handshake_test_options client_options;
+    mbedtls_test_handshake_test_options server_options;
+    /* Fixed 32-byte secret — value doesn't matter for this test, only
+     * that it's non-NULL to engage the new code path. */
+    const unsigned char secret[32] = {
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+        0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f
+    };
+    /* Client offers (in preference order) SECP256R1 then SECP384R1, but
+     * only sends a key_share for its preferred (256).  Server supports
+     * only SECP384R1, so the client's key_share is unusable but the
+     * server can still pick a mutually-supported group for the HRR. */
+    uint16_t client_groups[] = {
+        MBEDTLS_SSL_IANA_TLS_GROUP_SECP256R1,
+        MBEDTLS_SSL_IANA_TLS_GROUP_SECP384R1,
+        MBEDTLS_SSL_IANA_TLS_GROUP_NONE
+    };
+    uint16_t server_groups[] = {
+        MBEDTLS_SSL_IANA_TLS_GROUP_SECP384R1,
+        MBEDTLS_SSL_IANA_TLS_GROUP_NONE
+    };
+    /* Synthetic DTLS client transport id (IP:port stand-in).  Required
+     * by the DTLS HRR/HVR code path; value is opaque. */
+    const unsigned char cli_id[6] = { 192, 168, 1, 2, 0x12, 0x34 };
+    int ret;
+
+    memset(&client, 0, sizeof(client));
+    memset(&server, 0, sizeof(server));
+
+    MD_OR_USE_PSA_INIT();
+
+    mbedtls_test_init_handshake_options(&client_options);
+    mbedtls_test_init_handshake_options(&server_options);
+
+    client_options.dtls = 1;
+    client_options.client_min_version = MBEDTLS_SSL_VERSION_TLS1_3;
+    client_options.client_max_version = MBEDTLS_SSL_VERSION_TLS1_3;
+    client_options.expected_negotiated_version = MBEDTLS_SSL_VERSION_TLS1_3;
+    client_options.group_list = client_groups;
+
+    server_options.dtls = 1;
+    server_options.server_min_version = MBEDTLS_SSL_VERSION_TLS1_3;
+    server_options.server_max_version = MBEDTLS_SSL_VERSION_TLS1_3;
+    server_options.expected_negotiated_version = MBEDTLS_SSL_VERSION_TLS1_3;
+    server_options.group_list = server_groups;
+
+    TEST_EQUAL(mbedtls_test_ssl_endpoint_init(&client, MBEDTLS_SSL_IS_CLIENT,
+                                              &client_options), 0);
+    TEST_EQUAL(mbedtls_test_ssl_endpoint_init(&server, MBEDTLS_SSL_IS_SERVER,
+                                              &server_options), 0);
+
+    /* Engage the new (secret-based) HRR cookie path on the server. */
+    TEST_EQUAL(mbedtls_ssl_conf_dtls_cookie_secret(&(server.conf),
+                                                   secret, sizeof(secret),
+                                                   0), 0);
+    /* DTLS HVR/HRR cookie verification needs a transport id. */
+    TEST_EQUAL(mbedtls_ssl_set_client_transport_id(&(server.ssl),
+                                                   cli_id, sizeof(cli_id)), 0);
+
+    TEST_EQUAL(mbedtls_test_ssl_dtls_join_endpoints(&client, &server), 0);
+    TEST_EQUAL(mbedtls_test_mock_socket_connect(&client.socket,
+                                                &server.socket,
+                                                17000), 0);
+
+    /* Drive the server until *just before* the HRR-write step. */
+    ret = mbedtls_test_move_handshake_to_state(&(server.ssl),
+                                               &(client.ssl),
+                                               MBEDTLS_SSL_HELLO_RETRY_REQUEST);
+    TEST_EQUAL(ret, 0);
+
+    /* Run the HRR-write step itself.  This moves the server's state to
+     * MBEDTLS_SSL_TLS1_3_SERVER_HELLO_RETRY_REQUEST_SENT (Phase 2) or
+     * MBEDTLS_SSL_CLIENT_HELLO (Phase 1 baseline). */
+    ret = mbedtls_ssl_handshake_step(&(server.ssl));
+    TEST_EQUAL(ret, 0);
+
+    /* T1+T2: the next state-machine step on the server returns the
+     * HELLO_VERIFY_REQUIRED signal to the application (same pattern
+     * as the existing DTLS 1.2 HVR path — see ssl_tls12_server.c
+     * SERVER_HELLO_VERIFY_REQUEST_SENT case).  This is the
+     * architectural marker of the DTLS 1.2-style stateless behaviour
+     * being applied to DTLS 1.3: the server returns control to the
+     * application, which then calls session_reset (clearing all the
+     * old handshake state) and net_accept (waiting for the retried
+     * ClientHello as if it were the first one).  ssl_server2's loop
+     * already does this on its `reset:` label. */
+    ret = mbedtls_ssl_handshake_step(&(server.ssl));
+    TEST_EQUAL(ret, MBEDTLS_ERR_SSL_HELLO_VERIFY_REQUIRED);
+
+    /* After session_reset, the handshake is freshly initialised — in
+     * particular, hello_retry_request_flag is back to 0 and the state
+     * is HELLO_REQUEST.  This confirms the old handshake_params (with
+     * H(CH1), ciphersuite selection, etc.) is gone; the cookie carries
+     * everything needed to recover the transcript on CH2. */
+    TEST_EQUAL(mbedtls_ssl_session_reset(&(server.ssl)), 0);
+    TEST_ASSERT(server.ssl.MBEDTLS_PRIVATE(handshake) != NULL);
+    TEST_EQUAL(server.ssl.MBEDTLS_PRIVATE(handshake)->hello_retry_request_flag, 0);
+    TEST_EQUAL(server.ssl.MBEDTLS_PRIVATE(state), (int) MBEDTLS_SSL_HELLO_REQUEST);
+
+exit:
+    mbedtls_test_ssl_endpoint_free(&client);
+    mbedtls_test_ssl_endpoint_free(&server);
+    mbedtls_test_free_handshake_options(&client_options);
+    mbedtls_test_free_handshake_options(&server_options);
+    MD_OR_USE_PSA_DONE();
+}
+/* END_CASE */
+
+/* BEGIN_CASE depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:MBEDTLS_SSL_DTLS_HELLO_VERIFY:MBEDTLS_SSL_COOKIE_C:MBEDTLS_SSL_HANDSHAKE_WITH_CERT_ENABLED:PSA_WANT_ECC_SECP_R1_256:PSA_WANT_ECC_SECP_R1_384:PSA_WANT_ALG_SHA_256:MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL_ENABLED */
+void dtls13_hrr_legacy_callbacks_remain_stateful(void)
+{
+    /* Phase 2 back-compat anchor (T9 in local-docs/cookie-impl-plan.md
+     * §2.5.6).  When the server uses the legacy f_cookie_write /
+     * f_cookie_check callbacks (no secret configured), HRR-send must
+     * keep handshake_params alive — the legacy callback path has no
+     * way to recover transcript state from the cookie, so the server
+     * must remain stateful to complete the handshake.
+     *
+     * This test PASSES today (Phase 1) and must continue to pass
+     * after Phase 2.  It is the anchor that Phase 2 doesn't break
+     * applications which haven't migrated to the secret API. */
+    mbedtls_test_ssl_endpoint client, server;
+    mbedtls_test_handshake_test_options client_options;
+    mbedtls_test_handshake_test_options server_options;
+    mbedtls_ssl_cookie_ctx cookie_ctx;
+    uint16_t client_groups[] = {
+        MBEDTLS_SSL_IANA_TLS_GROUP_SECP256R1,
+        MBEDTLS_SSL_IANA_TLS_GROUP_SECP384R1,
+        MBEDTLS_SSL_IANA_TLS_GROUP_NONE
+    };
+    uint16_t server_groups[] = {
+        MBEDTLS_SSL_IANA_TLS_GROUP_SECP384R1,
+        MBEDTLS_SSL_IANA_TLS_GROUP_NONE
+    };
+    const unsigned char cli_id[6] = { 192, 168, 1, 2, 0x12, 0x34 };
+    int ret;
+
+    memset(&client, 0, sizeof(client));
+    memset(&server, 0, sizeof(server));
+    mbedtls_ssl_cookie_init(&cookie_ctx);
+
+    MD_OR_USE_PSA_INIT();
+
+    mbedtls_test_init_handshake_options(&client_options);
+    mbedtls_test_init_handshake_options(&server_options);
+
+    client_options.dtls = 1;
+    client_options.client_min_version = MBEDTLS_SSL_VERSION_TLS1_3;
+    client_options.client_max_version = MBEDTLS_SSL_VERSION_TLS1_3;
+    client_options.expected_negotiated_version = MBEDTLS_SSL_VERSION_TLS1_3;
+    client_options.group_list = client_groups;
+
+    server_options.dtls = 1;
+    server_options.server_min_version = MBEDTLS_SSL_VERSION_TLS1_3;
+    server_options.server_max_version = MBEDTLS_SSL_VERSION_TLS1_3;
+    server_options.expected_negotiated_version = MBEDTLS_SSL_VERSION_TLS1_3;
+    server_options.group_list = server_groups;
+
+    TEST_EQUAL(mbedtls_test_ssl_endpoint_init(&client, MBEDTLS_SSL_IS_CLIENT,
+                                              &client_options), 0);
+    TEST_EQUAL(mbedtls_test_ssl_endpoint_init(&server, MBEDTLS_SSL_IS_SERVER,
+                                              &server_options), 0);
+
+    /* Legacy cookie callbacks (no secret).  Override the helper's
+     * default NULL-out at ssl_helpers.c:919. */
+    TEST_EQUAL(mbedtls_ssl_cookie_setup(&cookie_ctx), 0);
+    mbedtls_ssl_conf_dtls_cookies(&(server.conf),
+                                  mbedtls_ssl_cookie_write,
+                                  mbedtls_ssl_cookie_check,
+                                  &cookie_ctx);
+    TEST_EQUAL(mbedtls_ssl_set_client_transport_id(&(server.ssl),
+                                                   cli_id, sizeof(cli_id)), 0);
+
+    TEST_EQUAL(mbedtls_test_ssl_dtls_join_endpoints(&client, &server), 0);
+    TEST_EQUAL(mbedtls_test_mock_socket_connect(&client.socket,
+                                                &server.socket,
+                                                17000), 0);
+
+    ret = mbedtls_test_move_handshake_to_state(&(server.ssl),
+                                               &(client.ssl),
+                                               MBEDTLS_SSL_HELLO_RETRY_REQUEST);
+    TEST_EQUAL(ret, 0);
+
+    /* Run the HRR-write step itself. */
+    ret = mbedtls_ssl_handshake_step(&(server.ssl));
+    TEST_EQUAL(ret, 0);
+
+    /* Legacy path: handshake_params is still alive after HRR-send. */
+    TEST_ASSERT(server.ssl.MBEDTLS_PRIVATE(handshake) != NULL);
+    /* And the state machine is in MBEDTLS_SSL_CLIENT_HELLO, ready to
+     * receive CH2 inside the same handshake() call — NOT in
+     * MBEDTLS_SSL_TLS1_3_SERVER_HELLO_RETRY_REQUEST_SENT.  The latter
+     * is the Phase 2 stateless state; the former is the Phase 1
+     * stateful one which legacy callbacks must preserve. */
+    TEST_EQUAL(server.ssl.MBEDTLS_PRIVATE(state),
+               (int) MBEDTLS_SSL_CLIENT_HELLO);
+
+exit:
+    mbedtls_test_ssl_endpoint_free(&client);
+    mbedtls_test_ssl_endpoint_free(&server);
+    mbedtls_test_free_handshake_options(&client_options);
+    mbedtls_test_free_handshake_options(&server_options);
+    mbedtls_ssl_cookie_free(&cookie_ctx);
     MD_OR_USE_PSA_DONE();
 }
 /* END_CASE */

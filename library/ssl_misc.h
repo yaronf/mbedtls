@@ -769,6 +769,26 @@ struct mbedtls_ssl_handshake_params {
      */
     unsigned char dtls13_hrr_ch1_hash[MBEDTLS_TLS1_3_MD_MAX_SIZE];
     uint8_t dtls13_hrr_ch1_hash_len;
+
+    /**
+     * On the stateless CH2 recovery path (Phase 2 of the DTLS 1.3
+     * cookie work — see local-docs/cookie-impl-plan.md §2.5), we need
+     * to re-feed the HRR's wire bytes into the freshly-allocated
+     * transcript so the post-CH2 transcript hash matches the client's.
+     * The cookie extension in the HRR is one of the extension values
+     * we cannot re-derive deterministically (timestamp varies); the
+     * client echoes it back in CH2's cookie extension, so we stash
+     * those bytes here while parsing CH2 and consume them when
+     * reconstructing HRR for the transcript.
+     *
+     * Wire layout (full cookie extension as it appears in HRR/CH2):
+     *   type(2) || ext_data_len(2) || cookie_data_len(2) || cookie_data
+     * Total length is dtls13_hrr_recovered_cookie_ext_len.
+     *
+     * NULL/0 means the recovery path is not active for this handshake.
+     */
+    unsigned char *dtls13_hrr_recovered_cookie_ext;
+    size_t dtls13_hrr_recovered_cookie_ext_len;
 #endif
 
 #if defined(MBEDTLS_SSL_TLS1_3_COMPATIBILITY_MODE)
@@ -2461,6 +2481,20 @@ int mbedtls_ssl_tls13_write_change_cipher_spec(mbedtls_ssl_context *ssl);
 
 MBEDTLS_CHECK_RETURN_CRITICAL
 int mbedtls_ssl_reset_transcript_for_hrr(mbedtls_ssl_context *ssl);
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && \
+    defined(MBEDTLS_SSL_DTLS_HELLO_VERIFY) && defined(MBEDTLS_SSL_SRV_C)
+/* Phase 2 of the DTLS 1.3 cookie work
+ * (local-docs/cookie-impl-plan.md §2.5): when the server arrives at
+ * CH2 statelessly (handshake_params freshly allocated, no transcript),
+ * install the RFC 8446 §4.4.1 synthetic message_hash form recovered
+ * from the cookie's H(CH1) so subsequent transcript-hash computations
+ * match the stateful flow. */
+MBEDTLS_CHECK_RETURN_CRITICAL
+int mbedtls_ssl_dtls13_replay_ch1_into_transcript(
+    mbedtls_ssl_context *ssl,
+    const unsigned char *ch1_hash, size_t ch1_hash_len);
+#endif
 
 #if defined(PSA_WANT_ALG_ECDH) || defined(PSA_WANT_ALG_FFDH)
 MBEDTLS_CHECK_RETURN_CRITICAL

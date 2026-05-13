@@ -1502,6 +1502,55 @@ int mbedtls_ssl_reset_transcript_for_hrr(mbedtls_ssl_context *ssl)
     return ret;
 }
 
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && \
+    defined(MBEDTLS_SSL_DTLS_HELLO_VERIFY) && defined(MBEDTLS_SSL_SRV_C)
+/* Phase 2 of the DTLS 1.3 cookie work
+ * (local-docs/cookie-impl-plan.md §2.5): on a stateless server, the
+ * fresh handshake_params at CH2 has no transcript.  This helper
+ * installs the RFC 8446 §4.4.1 synthetic message_hash form
+ * (`MessageHash || hash_len || H(ClientHello1)`) recovered from the
+ * verified cookie, so subsequent transcript-hash computations match
+ * what they would have been in the stateful flow.
+ *
+ * Sibling of mbedtls_ssl_reset_transcript_for_hrr above; the only
+ * difference is that the H(CH1) comes from outside (the cookie)
+ * rather than from the in-memory running transcript. */
+int mbedtls_ssl_dtls13_replay_ch1_into_transcript(
+    mbedtls_ssl_context *ssl,
+    const unsigned char *ch1_hash, size_t ch1_hash_len)
+{
+    int ret;
+    unsigned char hash_transcript[PSA_HASH_MAX_SIZE + 4];
+
+    if (ch1_hash_len == 0 || ch1_hash_len > PSA_HASH_MAX_SIZE) {
+        return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
+    }
+
+    hash_transcript[0] = MBEDTLS_SSL_HS_MESSAGE_HASH;
+    hash_transcript[1] = 0;
+    hash_transcript[2] = 0;
+    hash_transcript[3] = (unsigned char) ch1_hash_len;
+    memcpy(hash_transcript + 4, ch1_hash, ch1_hash_len);
+
+    MBEDTLS_SSL_DEBUG_BUF(4, "Replayed CH1 hash into transcript",
+                          hash_transcript, ch1_hash_len + 4);
+
+    ret = mbedtls_ssl_reset_checksum(ssl);
+    if (ret != 0) {
+        MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_reset_checksum", ret);
+        return ret;
+    }
+    ret = ssl->handshake->update_checksum(ssl, hash_transcript,
+                                          ch1_hash_len + 4);
+    if (ret != 0) {
+        MBEDTLS_SSL_DEBUG_RET(1, "update_checksum", ret);
+        return ret;
+    }
+    return 0;
+}
+#endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_DTLS_HELLO_VERIFY
+          && MBEDTLS_SSL_SRV_C */
+
 #if defined(MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_SOME_EPHEMERAL_ENABLED)
 
 int mbedtls_ssl_tls13_read_public_xxdhe_share(mbedtls_ssl_context *ssl,
