@@ -6387,6 +6387,69 @@ exit:
 }
 /* END_CASE */
 
+/* BEGIN_CASE depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:PSA_WANT_ALG_ECB_NO_PADDING:PSA_WANT_KEY_TYPE_AES */
+/*
+ * Regression test for ultrareview bug_001: ssl_dtls13_sne_apply applied
+ * the WRONG mask byte for 1-byte sequence numbers (S=0 form).  RFC 9147
+ * §4.2.3 specifies the *leading* byte of the mask — mask[0] — for a
+ * 1-byte seq.  Pre-fix code XORed with mask[1].
+ *
+ * Why a unit test (rather than an interop test): mbedtls's write path
+ * always sets the unified-header S bit (S=1, 2-byte seq), so the 1-byte
+ * decode branch is unreachable from mbedtls↔mbedtls flows.  wolfSSL was
+ * surveyed (see local-docs/ultrareview-findings-2026-05-13.md §2):
+ * its DTLS 1.3 write path also unconditionally emits S=1
+ * (src/dtls13.c:1215, `*flags |= DTLS13_SEQ_LEN_BIT;` with no
+ * conditional).  No other DTLS 1.3 peer is available in this test
+ * matrix that emits S=0.  A direct unit test of the function — playing
+ * the role of a compliant short-seq peer's encode + asserting our
+ * decode recovers the plaintext — is the deterministic regression
+ * we can write today.
+ *
+ * The vectors below reuse the AES-GCM SNE samples from the existing
+ * ssl_dtls13_sne_mask_aes test data (vector set 3) and check the
+ * derived 1-byte case: for sample S with mask M = AES-ECB(sn_key, S)[0..1]
+ * and plaintext seq p (1 byte), the wire byte must be p XOR M[0].
+ */
+void ssl_dtls13_sne_apply_short_seq(data_t *sn_key,
+                                    data_t *sample,
+                                    int plain_byte,
+                                    int expected_enc_byte)
+{
+    unsigned char seq[1];
+    /* Pad sample to 32 bytes so it satisfies the ciphertext-length
+     * minimum (MBEDTLS_SSL_DTLS13_SNE_SAMPLE_LEN = 16).  Only the
+     * leading 16 bytes are read by ssl_dtls13_sne_compute_mask. */
+    unsigned char ciphertext[32];
+    TEST_EQUAL(sample->len, 16);
+    memcpy(ciphertext, sample->x, 16);
+    memset(ciphertext + 16, 0, 16);
+
+    USE_PSA_INIT();
+
+    seq[0] = (unsigned char) plain_byte;
+
+    /* Encrypt: XOR with mask[0]. */
+    TEST_EQUAL(ssl_dtls13_sne_apply(PSA_ALG_GCM,
+                                    sn_key->x, sn_key->len,
+                                    seq, 1,
+                                    ciphertext, sizeof(ciphertext)),
+               0);
+    TEST_EQUAL((int) seq[0], expected_enc_byte);
+
+    /* SNE is symmetric: applying again restores the plaintext. */
+    TEST_EQUAL(ssl_dtls13_sne_apply(PSA_ALG_GCM,
+                                    sn_key->x, sn_key->len,
+                                    seq, 1,
+                                    ciphertext, sizeof(ciphertext)),
+               0);
+    TEST_EQUAL((int) seq[0], plain_byte);
+
+exit:
+    USE_PSA_DONE();
+}
+/* END_CASE */
+
 /* BEGIN_CASE depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:MBEDTLS_CHACHA20_C */
 /*
  * Test DTLS 1.3 sequence-number encryption mask, ChaCha20 (Phase 1.7).

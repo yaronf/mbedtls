@@ -1326,6 +1326,30 @@ static inline int ssl_dtls13_epoch_pool_contains(
 void ssl_dtls13_epoch_pool_free(mbedtls_ssl_context *ssl);
 
 /**
+ * \brief  Apply DTLS 1.3 Sequence Number Encryption (SNE) per RFC 9147 §4.2.3.
+ *
+ * Computes a 2-byte mask from \p ciphertext using \p sn_key under \p psa_alg
+ * (PSA_ALG_GCM, PSA_ALG_CCM, or PSA_ALG_CHACHA20_POLY1305) and XORs the
+ * leading byte(s) of the mask into \p seq_in_header.  \p seq_len is either 1
+ * (S=0 short-seq form) or 2 (S=1 standard form).
+ *
+ * Symmetric: encrypt and decrypt are the same call.  Exposed via this header
+ * (rather than kept file-private in ssl_msg.c) so unit tests can exercise the
+ * 1-byte branch directly — mbedtls's write path only emits S=1, so the
+ * 1-byte branch is otherwise unreachable from mbedtls↔mbedtls flows.  See
+ * local-docs/ultrareview-findings-2026-05-13.md §2 (bug_001).
+ */
+MBEDTLS_CHECK_RETURN_CRITICAL
+int ssl_dtls13_sne_apply(
+    psa_algorithm_t psa_alg,
+    const unsigned char *sn_key,
+    size_t sn_key_len,
+    unsigned char *seq_in_header,
+    size_t seq_len,
+    const unsigned char *ciphertext,
+    size_t ct_len);
+
+/**
  * \brief  Free all heap-allocated bytes held by post-hs retransmit slots
  *         (KU/NCI/RCI), zero the slots, and clear the per-message pending
  *         flags (dtls13_ku_ack_pending, dtls13_cid_update_ack_pending,

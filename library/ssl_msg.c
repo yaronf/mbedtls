@@ -3493,7 +3493,7 @@ cleanup:
 #if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
 /* Forward declaration: defined later in this file. */
 MBEDTLS_CHECK_RETURN_CRITICAL
-static int ssl_dtls13_sne_apply(
+int ssl_dtls13_sne_apply(
     psa_algorithm_t psa_alg,
     const unsigned char *sn_key,
     size_t sn_key_len,
@@ -4973,7 +4973,7 @@ static int ssl_dtls13_sne_compute_mask(
  * The operation is symmetric: XOR with mask; calling twice restores original.
  */
 MBEDTLS_CHECK_RETURN_CRITICAL
-static int ssl_dtls13_sne_apply(
+int ssl_dtls13_sne_apply(
     psa_algorithm_t psa_alg,
     const unsigned char *sn_key,
     size_t sn_key_len,
@@ -4992,7 +4992,12 @@ static int ssl_dtls13_sne_apply(
     }
 
     if (seq_len == 1) {
-        seq_in_header[0] ^= mask[1]; /* use low byte of mask for 1-byte seq */
+        /* RFC 9147 §4.2.3: the encrypted sequence number is the on-wire
+         * seq XORed with the *leading* bytes of the mask, regardless of
+         * seq_len.  For the 1-byte form that's mask[0]; only the 2-byte
+         * form additionally consumes mask[1].  See
+         * local-docs/ultrareview-findings-2026-05-13.md §2 (bug_001). */
+        seq_in_header[0] ^= mask[0];
     } else {
         seq_in_header[0] ^= mask[0];
         seq_in_header[1] ^= mask[1];
