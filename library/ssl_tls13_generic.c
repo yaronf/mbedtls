@@ -83,10 +83,6 @@ int mbedtls_ssl_tls13_fetch_handshake_msg(mbedtls_ssl_context *ssl,
     if (ret == 0 &&
         ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
         ssl->handshake != NULL) {
-        MBEDTLS_SSL_DEBUG_MSG(1, ("DBG fetch_hs_msg: %s (type=%u) consumed, in_msg_seq %u->%u",
-                                  mbedtls_ssl_hs_type_name((unsigned)hs_type),
-                                  (unsigned)hs_type, ssl->handshake->in_msg_seq,
-                                  ssl->handshake->in_msg_seq + 1));
         ssl->handshake->in_msg_seq++;
         /* If the message was loaded from the DTLS reassembly buffer (i.e.
          * slot 0 was valid), free that slot and shift remaining slots so

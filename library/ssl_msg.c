@@ -6201,12 +6201,7 @@ static int ssl_buffer_message(mbedtls_ssl_context *ssl)
 
             /* We should never receive an old handshake
              * message - double-check nonetheless. */
-            MBEDTLS_SSL_DEBUG_MSG(1, ("DBG ssl_buffer_message: hs_type=%u recv_seq=%u in_msg_seq=%u",
-                                      (unsigned)ssl->in_msg[0], recv_msg_seq,
-                                      ssl->handshake->in_msg_seq));
             if (recv_msg_seq < ssl->handshake->in_msg_seq) {
-                MBEDTLS_SSL_DEBUG_MSG(1, ("DBG ssl_buffer_message: OLD seq %u < %u -- INTERNAL_ERROR",
-                                          recv_msg_seq, ssl->handshake->in_msg_seq));
                 MBEDTLS_SSL_DEBUG_MSG(1, ("should never happen"));
                 return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
             }
