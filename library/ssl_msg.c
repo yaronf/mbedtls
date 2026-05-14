@@ -8298,7 +8298,17 @@ static int ssl_tls13_session_hash_info(
 /* Retire *transform_p to the epoch pool (if not already present), NULLing
  * *transform_p to transfer ownership.  If *alias_p points to the same object,
  * it is also NULLed to prevent a double-free when the alias is later freed.
- * Used during KeyUpdate where transform_in/out may alias transform_application. */
+ * Used during KeyUpdate where transform_in/out may alias transform_application.
+ *
+ * Note: this function does *not* clear the cross-direction transform
+ * pointer (the direction not being retired).  Immediately after the
+ * handshake transform_in, transform_out and transform_application all
+ * point at the same struct, but only one direction is being retired —
+ * the other direction is still active and must continue to use that
+ * transform until its own KeyUpdate.  The lifetime hazard (the
+ * eviction-time UAF in bug_007) is handled in
+ * ssl_dtls13_epoch_pool_insert by skipping the victim when it would
+ * still be live. */
 static void ssl_dtls13_retire_transform_to_pool(
     mbedtls_ssl_context *ssl,
     mbedtls_ssl_transform **alias_p,
@@ -10246,19 +10256,48 @@ void ssl_dtls13_epoch_pool_insert(mbedtls_ssl_context *ssl,
     }
 
     if (target == NULL) {
+        mbedtls_ssl_transform *victim;
         /* All slots occupied — evict the slot with the lowest epoch number
-         * (i.e. the oldest epoch, least likely to be needed for decryption). */
-        evict      = 0;
-        oldest_epoch  = pool[0].retired_epoch;
-        for (i = 1; i < MBEDTLS_SSL_DTLS13_EPOCH_POOL_SIZE; i++) {
-            if (pool[i].retired_epoch < oldest_epoch) {
+         * (i.e. the oldest epoch, least likely to be needed for decryption).
+         *
+         * bug_007 protection: skip any slot whose transform is still
+         * aliased by transform_in / transform_out / transform_application.
+         * This happens on the first KeyUpdate after handshake completion,
+         * when the application transform is held in *both* directions and
+         * one direction retires its alias to the pool — the other
+         * direction's pointer is still live and must not be freed.  See
+         * local-docs/ultrareview-findings-2026-05-13.md §1. */
+        int found = 0;
+        evict = -1;
+        for (i = 0; i < MBEDTLS_SSL_DTLS13_EPOCH_POOL_SIZE; i++) {
+            mbedtls_ssl_transform *cand = pool[i].transform;
+            if (cand == ssl->transform_in ||
+                cand == ssl->transform_out ||
+                cand == ssl->transform_application) {
+                continue; /* still live elsewhere, can't free */
+            }
+            if (!found || pool[i].retired_epoch < oldest_epoch) {
                 oldest_epoch = pool[i].retired_epoch;
-                evict     = i;
+                evict        = i;
+                found        = 1;
             }
         }
-
-        mbedtls_ssl_transform_free(pool[evict].transform);
-        mbedtls_free(pool[evict].transform);
+        if (!found) {
+            /* Every pool slot is still aliased by a live context
+             * pointer.  Cannot evict.  Drop the incoming transform on
+             * the floor rather than leak a live one — caller's pointer
+             * is still NULLed below.  This is exceedingly unlikely
+             * (would require the four pool slots to be the four live
+             * transforms, which the rest of the state machine doesn't
+             * allow), but is the safe fallback. */
+            mbedtls_ssl_transform_free(transform);
+            mbedtls_free(transform);
+            *transform_p = NULL;
+            return;
+        }
+        victim = pool[evict].transform;
+        mbedtls_ssl_transform_free(victim);
+        mbedtls_free(victim);
         target = &pool[evict];
     }
 

@@ -6563,6 +6563,147 @@ exit:
 }
 /* END_CASE */
 
+/* BEGIN_CASE depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS */
+void dtls13_epoch_pool_eviction_skips_live_alias(int alias_slot,
+                                                 int alias_field)
+{
+    /* Regression test for ultrareview bug_007.  The DTLS 1.3 epoch
+     * pool's eviction logic, when all four slots are occupied, must
+     * skip any victim whose transform is still aliased by
+     * ssl->transform_in / transform_out / transform_application.
+     * Pre-fix the eviction code freed the lowest-retired-epoch slot
+     * unconditionally; combined with the post-handshake aliasing of
+     * the application transform across both directions, that produced
+     * a use-after-free.
+     *
+     * This test bypasses the handshake entirely and directly drives
+     * `ssl_dtls13_epoch_pool_insert` against a stubbed mbedtls_ssl_context:
+     *
+     *   1. Heap-allocate 5 minimal transform stubs T0..T4 with strictly
+     *      increasing dtls13_epoch (so T0 would be the eviction victim
+     *      by the lowest-retired-epoch rule).
+     *   2. Insert T0..T3 into the pool (fills all 4 slots).
+     *   3. Set one of ssl->transform_{in,out,application} to point at
+     *      T0 — simulating the post-handshake aliasing the bug needs.
+     *   4. Insert T4.  Pool is full; eviction runs.
+     *      - alias_field = -1 means no alias is set; T0 should be
+     *        evicted (baseline — the original algorithm's behaviour).
+     *      - alias_field >= 0 means transform_<that field> aliases T0;
+     *        the eviction must skip T0 and free T1 instead.
+     *   5. After insert returns, T4 is in the pool.  Verify the
+     *      surviving slots: T0 still present iff aliased, else the
+     *      next-oldest surviving slot starts from T1 instead of T0.
+     *
+     * No handshake state, no I/O, no timing — just the algorithm. */
+    mbedtls_ssl_context ssl;
+    mbedtls_ssl_transform *t[5] = { NULL };
+    int i;
+    int aliased_t0;
+
+    (void) alias_slot;  /* reserved for future per-slot variation */
+
+    USE_PSA_INIT();
+    mbedtls_ssl_init(&ssl);
+
+    /* Allocate transform stubs.  ssl_dtls13_epoch_pool_insert only
+     * reads transform->dtls13_epoch for the retired_epoch key and
+     * later calls mbedtls_ssl_transform_free / mbedtls_free on
+     * evicted slots; both work on a zero-initialised transform. */
+    for (i = 0; i < 5; i++) {
+        TEST_CALLOC(t[i], 1);
+        t[i]->dtls13_epoch = (uint16_t)(3 + i);  /* T0 lowest, T4 highest */
+    }
+
+    aliased_t0 = (alias_field >= 0);
+
+    /* Fill the 4 pool slots with T0..T3. */
+    for (i = 0; i < MBEDTLS_SSL_DTLS13_EPOCH_POOL_SIZE; i++) {
+        mbedtls_ssl_transform *tp = t[i];
+        ssl_dtls13_epoch_pool_insert(&ssl, &tp);
+        TEST_ASSERT(tp == NULL);  /* ownership transferred */
+    }
+
+    /* Verify T0..T3 are in the pool in some order. */
+    int found_mask = 0;
+    for (i = 0; i < MBEDTLS_SSL_DTLS13_EPOCH_POOL_SIZE; i++) {
+        int j;
+        for (j = 0; j < 4; j++) {
+            if (ssl.MBEDTLS_PRIVATE(dtls13_epoch_pool)[i].transform == t[j]) {
+                found_mask |= (1 << j);
+                break;
+            }
+        }
+    }
+    TEST_EQUAL(found_mask, 0x0F);
+
+    /* Install the alias on the requested context field, pointing at T0. */
+    if (alias_field == 0) {
+        ssl.MBEDTLS_PRIVATE(transform_in) = t[0];
+    } else if (alias_field == 1) {
+        ssl.MBEDTLS_PRIVATE(transform_out) = t[0];
+    } else if (alias_field == 2) {
+        ssl.MBEDTLS_PRIVATE(transform_application) = t[0];
+    }
+    /* alias_field == -1: no alias.  T0 should be evicted. */
+
+    /* Insert T4 — forces eviction. */
+    {
+        mbedtls_ssl_transform *tp = t[4];
+        ssl_dtls13_epoch_pool_insert(&ssl, &tp);
+        TEST_ASSERT(tp == NULL);
+    }
+
+    /* Determine which transforms survive. */
+    found_mask = 0;
+    for (i = 0; i < MBEDTLS_SSL_DTLS13_EPOCH_POOL_SIZE; i++) {
+        int j;
+        for (j = 0; j < 5; j++) {
+            if (t[j] != NULL &&
+                ssl.MBEDTLS_PRIVATE(dtls13_epoch_pool)[i].transform == t[j]) {
+                found_mask |= (1 << j);
+                break;
+            }
+        }
+    }
+
+    /* T4 always survives — it's the just-inserted one. */
+    TEST_ASSERT(found_mask & (1 << 4));
+
+    if (aliased_t0) {
+        /* The fix: T0 was aliased, eviction skipped it; T1 (next
+         * lowest retired_epoch) was evicted instead.  Surviving set:
+         * {T0, T2, T3, T4}. */
+        TEST_ASSERT(found_mask & (1 << 0));   /* T0 spared */
+        TEST_ASSERT(!(found_mask & (1 << 1))); /* T1 evicted (freed) */
+        TEST_ASSERT(found_mask & (1 << 2));
+        TEST_ASSERT(found_mask & (1 << 3));
+        /* Mark t[1] as gone — the pool freed it during eviction.
+         * Clear all aliases so ssl_free's pool walk doesn't double-
+         * free t[0] via a stale alias path. */
+        t[1] = NULL;
+        ssl.MBEDTLS_PRIVATE(transform_in) = NULL;
+        ssl.MBEDTLS_PRIVATE(transform_out) = NULL;
+        ssl.MBEDTLS_PRIVATE(transform_application) = NULL;
+    } else {
+        /* Baseline: no alias, T0 was the lowest retired_epoch, T0
+         * evicted.  Surviving set: {T1, T2, T3, T4}. */
+        TEST_ASSERT(!(found_mask & (1 << 0)));
+        TEST_ASSERT(found_mask & (1 << 1));
+        TEST_ASSERT(found_mask & (1 << 2));
+        TEST_ASSERT(found_mask & (1 << 3));
+        t[0] = NULL;  /* freed by pool eviction */
+    }
+
+exit:
+    /* Survivors are now owned by the pool; mbedtls_ssl_free walks the
+     * pool and frees them.  We don't need to (and must not) free any
+     * t[i] manually here — they're either in the pool, or NULL'd
+     * above to indicate they've already been freed. */
+    mbedtls_ssl_free(&ssl);
+    USE_PSA_DONE();
+}
+/* END_CASE */
+
 /* BEGIN_CASE depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:MBEDTLS_SSL_DTLS_HELLO_VERIFY:MBEDTLS_SSL_HANDSHAKE_WITH_CERT_ENABLED:PSA_WANT_ECC_SECP_R1_256:PSA_WANT_ECC_SECP_R1_384:PSA_WANT_ALG_SHA_256:MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL_ENABLED */
 void dtls13_hrr_secret_server_is_stateless(void)
 {

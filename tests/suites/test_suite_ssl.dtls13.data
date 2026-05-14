@@ -136,3 +136,18 @@ dtls13_hrr_secret_server_is_stateless:
 
 DTLS 1.3 HRR (legacy callbacks): server remains stateful after HRR-send [back-compat anchor]
 dtls13_hrr_legacy_callbacks_remain_stateful:
+
+
+
+
+DTLS 1.3 epoch pool eviction: baseline (no live alias) — oldest slot evicted
+dtls13_epoch_pool_eviction_skips_live_alias:0:-1
+
+DTLS 1.3 epoch pool eviction: live alias on transform_in — bug_007 regression
+dtls13_epoch_pool_eviction_skips_live_alias:0:0
+
+DTLS 1.3 epoch pool eviction: live alias on transform_out — bug_007 regression
+dtls13_epoch_pool_eviction_skips_live_alias:0:1
+
+DTLS 1.3 epoch pool eviction: live alias on transform_application — bug_007 regression
+dtls13_epoch_pool_eviction_skips_live_alias:0:2
