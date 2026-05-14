@@ -163,3 +163,9 @@ ssl_dtls13_sne_apply_short_seq:"554e0ac7e99a4dd3228bf8e3f19912f5":"d9c77b687be73
 
 DTLS 1.3 SNE short-seq (S=0): vec set 3 sample 2, plain 0x55 → 0x55^0x5e=0x0b
 ssl_dtls13_sne_apply_short_seq:"554e0ac7e99a4dd3228bf8e3f19912f5":"d9c77b687be73e65ef16903e8a7c567e":0x55:0x0b
+
+DTLS 1.3 post-HS retransmit: budget exhaust frees pending transform (bug_006a regression)
+dtls13_post_hs_timeout_budget_exhaust_frees_pending:
+
+DTLS 1.3 post-HS retransmit: retransmit-one fail clears pending flag (bug_006b regression)
+dtls13_post_hs_timeout_retransmit_fail_clears_flag:

@@ -231,7 +231,7 @@ static void ssl_dtls13_clear_post_hs_retransmit_slot(
     mbedtls_ssl_dtls13_post_hs_retransmit *slot);
 static void ssl_dtls13_post_hs_arm_timer(mbedtls_ssl_context *ssl);
 MBEDTLS_CHECK_RETURN_CRITICAL
-static int ssl_dtls13_post_hs_handle_timeout(mbedtls_ssl_context *ssl);
+int ssl_dtls13_post_hs_handle_timeout(mbedtls_ssl_context *ssl);
 #endif
 
 int mbedtls_ssl_check_record(mbedtls_ssl_context const *ssl,
@@ -7896,6 +7896,56 @@ static void ssl_dtls13_clear_post_hs_retransmit_slot(
     memset(slot, 0, sizeof(*slot));   /* type = NONE, all counters reset */
 }
 
+/* Abandon a post-HS pending operation: clear the slot AND the per-context
+ * state semantically tied to its type.  Used when the operation cannot
+ * succeed (budget-exhaust, retransmit failure) — distinct from
+ * clear_post_hs_retransmit_slot, which is used when the slot is rotating
+ * normally (ACK arrived, or being overwritten by a fresh registration of
+ * the same type) and the per-context state has already been transitioned
+ * by other code.
+ *
+ * For KEY_UPDATE: clear dtls13_ku_ack_pending so the public predicate
+ * mbedtls_ssl_dtls13_key_update_pending() returns 0; free
+ * dtls13_transform_pending_out so the next send_key_update doesn't leak
+ * the old transform; zeroize dtls13_ku_pending_secret.
+ *
+ * For NEW_CONNECTION_ID / REQUEST_CONNECTION_ID: clear the corresponding
+ * per-context pending flag.
+ *
+ * Idempotent on already-cleared slots (slot->type == NONE → no-op
+ * switch + harmless slot clear).
+ *
+ * See ultrareview merged_bug_006 /
+ * local-docs/ultrareview-findings-2026-05-13.md §4. */
+static void ssl_dtls13_abandon_post_hs_pending(mbedtls_ssl_context *ssl,
+                                               int slot_idx)
+{
+    mbedtls_ssl_dtls13_post_hs_retransmit *slot =
+        &ssl->dtls13_post_hs_retransmit[slot_idx];
+    switch (slot->type) {
+        case MBEDTLS_SSL_DTLS13_PENDING_ACK_KEY_UPDATE:
+            ssl->dtls13_ku_ack_pending = 0;
+            mbedtls_ssl_transform_free(ssl->dtls13_transform_pending_out);
+            mbedtls_free(ssl->dtls13_transform_pending_out);
+            ssl->dtls13_transform_pending_out = NULL;
+            mbedtls_platform_zeroize(ssl->dtls13_ku_pending_secret,
+                                     sizeof(ssl->dtls13_ku_pending_secret));
+            break;
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+        case MBEDTLS_SSL_DTLS13_PENDING_ACK_NEW_CONNECTION_ID:
+            ssl->dtls13_cid_update_ack_pending = 0;
+            break;
+        case MBEDTLS_SSL_DTLS13_PENDING_ACK_REQUEST_CONNECTION_ID:
+            ssl->dtls13_req_cid_pending = 0;
+            break;
+#endif
+        case MBEDTLS_SSL_DTLS13_PENDING_ACK_NONE:
+        default:
+            break;
+    }
+    ssl_dtls13_clear_post_hs_retransmit_slot(slot);
+}
+
 /* Find the retransmit slot for a given type, return its index or -1.
  * Slots are unique by type (re-sends overwrite the existing slot for that
  * type, just like register_pending_ack). */
@@ -8000,14 +8050,8 @@ void ssl_dtls13_post_hs_retransmit_reset(mbedtls_ssl_context *ssl)
 {
     int i;
     for (i = 0; i < MBEDTLS_SSL_DTLS13_MAX_POST_HS_RETRANSMIT; i++) {
-        ssl_dtls13_clear_post_hs_retransmit_slot(
-            &ssl->dtls13_post_hs_retransmit[i]);
+        ssl_dtls13_abandon_post_hs_pending(ssl, i);
     }
-    ssl->dtls13_ku_ack_pending = 0;
-#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
-    ssl->dtls13_cid_update_ack_pending = 0;
-    ssl->dtls13_req_cid_pending = 0;
-#endif
 }
 
 /* Map a wire HS message type (e.g. MBEDTLS_SSL_HS_KEY_UPDATE = 24) to the
@@ -8218,7 +8262,7 @@ restore:
  *     should re-enter fetch_input with the new timer armed.
  *   - other non-zero on transient/unrecoverable retransmit error. */
 MBEDTLS_CHECK_RETURN_CRITICAL
-static int ssl_dtls13_post_hs_handle_timeout(mbedtls_ssl_context *ssl)
+int ssl_dtls13_post_hs_handle_timeout(mbedtls_ssl_context *ssl)
 {
     uint32_t fired_ms;
     int i;
@@ -8257,19 +8301,17 @@ static int ssl_dtls13_post_hs_handle_timeout(mbedtls_ssl_context *ssl)
                                           i, (int) slot->type,
                                           (unsigned) slot->retransmit_timeout_ms,
                                           (unsigned) ssl->conf->hs_timeout_max));
-                /* Clear all per-message pending flags and slots so a reset
-                 * is well-defined.  The connection should be torn down by
-                 * the caller. */
-                ssl->dtls13_ku_ack_pending = 0;
-#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
-                ssl->dtls13_cid_update_ack_pending = 0;
-                ssl->dtls13_req_cid_pending = 0;
-#endif
+                /* Abandon every occupied slot: clears the slot AND the
+                 * matching per-context pending flag, and for KU also
+                 * frees dtls13_transform_pending_out (otherwise leaked
+                 * since dtls13_ku_ack_pending is cleared below, so the
+                 * overwrite guard in send_key_update no longer fires).
+                 * See ultrareview merged_bug_006(a).  The connection
+                 * should be torn down by the caller. */
                 {
                     int j;
                     for (j = 0; j < MBEDTLS_SSL_DTLS13_MAX_POST_HS_RETRANSMIT; j++) {
-                        ssl_dtls13_clear_post_hs_retransmit_slot(
-                            &ssl->dtls13_post_hs_retransmit[j]);
+                        ssl_dtls13_abandon_post_hs_pending(ssl, j);
                     }
                 }
                 return MBEDTLS_ERR_SSL_TIMEOUT;
@@ -8278,11 +8320,15 @@ static int ssl_dtls13_post_hs_handle_timeout(mbedtls_ssl_context *ssl)
             slot->retransmit_timeout_ms = new_timeout;
             ret = ssl_dtls13_post_hs_retransmit_one(ssl, i);
             if (ret != 0) {
-                /* Retransmit-one failed (e.g. epoch evicted).  Clear the
-                 * slot's pending flag so the application doesn't hang. */
+                /* Retransmit-one failed (e.g. epoch evicted).  Abandon
+                 * the pending operation entirely: drop the slot AND
+                 * clear the per-context pending flag so the
+                 * application's `while (key_update_pending) ssl_read`
+                 * drain idiom doesn't loop forever.  For KU also frees
+                 * dtls13_transform_pending_out.
+                 * See ultrareview merged_bug_006(b). */
                 MBEDTLS_SSL_DEBUG_RET(1, "post_hs_retransmit_one", ret);
-                /* Best-effort: drop this slot so timer-arm doesn't loop. */
-                ssl_dtls13_clear_post_hs_retransmit_slot(slot);
+                ssl_dtls13_abandon_post_hs_pending(ssl, i);
                 /* Continue the walk — other slots may still be valid. */
             }
         } else {

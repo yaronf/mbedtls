@@ -6767,6 +6767,148 @@ exit:
 }
 /* END_CASE */
 
+/* BEGIN_CASE depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS */
+void dtls13_post_hs_timeout_budget_exhaust_frees_pending(void)
+{
+    /* T-a from ultrareview merged_bug_006(a): budget-exhaust transform leak.
+     *
+     * Pre-fix, when ssl_dtls13_post_hs_handle_timeout hit the budget-
+     * exhaust branch with a KU slot occupied, it cleared
+     * dtls13_ku_ack_pending and the slot itself but left
+     * dtls13_transform_pending_out alive.  Subsequent calls to
+     * mbedtls_ssl_send_key_update would then overwrite the pointer
+     * (because the !dtls13_ku_ack_pending guard now passes), leaking
+     * the old transform.
+     *
+     * Post-fix, the abandon_post_hs_pending helper frees the pending
+     * transform along with clearing the flag.
+     *
+     * Test stages the state directly to avoid driving a full DTLS 1.3
+     * connection through the in-process mock-socket harness (which
+     * doesn't reliably handle back-to-back KUs — see merged_bug_006
+     * notes in local-docs/ultrareview-findings-2026-05-13.md §4). */
+    mbedtls_ssl_context ssl;
+    mbedtls_ssl_config conf;
+    mbedtls_ssl_transform *pending = NULL;
+    int ret;
+
+    USE_PSA_INIT();
+
+    mbedtls_ssl_init(&ssl);
+    mbedtls_ssl_config_init(&conf);
+
+    TEST_EQUAL(mbedtls_ssl_config_defaults(&conf,
+                                           MBEDTLS_SSL_IS_SERVER,
+                                           MBEDTLS_SSL_TRANSPORT_DATAGRAM,
+                                           MBEDTLS_SSL_PRESET_DEFAULT), 0);
+    TEST_EQUAL(mbedtls_ssl_setup(&ssl, &conf), 0);
+
+    /* Stage a "KU pending ACK" state. */
+    TEST_CALLOC(pending, 1);
+    ssl.MBEDTLS_PRIVATE(dtls13_transform_pending_out) = pending;
+    ssl.MBEDTLS_PRIVATE(dtls13_ku_ack_pending) = 1;
+    ssl.MBEDTLS_PRIVATE(dtls13_post_hs_retransmit)[0].type =
+        MBEDTLS_SSL_DTLS13_PENDING_ACK_KEY_UPDATE;
+    ssl.MBEDTLS_PRIVATE(dtls13_post_hs_retransmit)[0].send_epoch = 3;
+    /* Drive the slot to budget-exhaust: timeout_ms already at max. */
+    ssl.MBEDTLS_PRIVATE(dtls13_post_hs_retransmit)[0].retransmit_timeout_ms =
+        conf.MBEDTLS_PRIVATE(hs_timeout_max);
+
+    /* Sanity: predicates report pending KU. */
+    TEST_EQUAL(mbedtls_ssl_dtls13_key_update_pending(&ssl), 1);
+
+    /* Trigger handle_timeout.  Returns MBEDTLS_ERR_SSL_TIMEOUT on
+     * budget exhaust. */
+    ret = ssl_dtls13_post_hs_handle_timeout(&ssl);
+    TEST_EQUAL(ret, MBEDTLS_ERR_SSL_TIMEOUT);
+
+    /* Post-fix invariants: pending flag cleared, pending transform
+     * freed (pointer NULL), slot cleared.  Pre-fix the transform
+     * pointer would still be non-NULL. */
+    TEST_EQUAL(mbedtls_ssl_dtls13_key_update_pending(&ssl), 0);
+    TEST_ASSERT(ssl.MBEDTLS_PRIVATE(dtls13_transform_pending_out) == NULL);
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(dtls13_post_hs_retransmit)[0].type,
+               MBEDTLS_SSL_DTLS13_PENDING_ACK_NONE);
+
+exit:
+    /* `pending` is either NULL (the fix freed it via abandon) or still
+     * pointing at the live transform stored in
+     * ssl->dtls13_transform_pending_out (pre-fix leak path).  In the
+     * latter case mbedtls_ssl_free will free it via its
+     * dtls13_transform_pending_out cleanup.  Don't free `pending`
+     * directly here to avoid double-free. */
+    (void) pending;
+    mbedtls_ssl_free(&ssl);
+    mbedtls_ssl_config_free(&conf);
+    USE_PSA_DONE();
+}
+/* END_CASE */
+
+/* BEGIN_CASE depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS */
+void dtls13_post_hs_timeout_retransmit_fail_clears_flag(void)
+{
+    /* T-b from ultrareview merged_bug_006(b): retransmit-one fail
+     * leaves the per-context pending flag set forever.
+     *
+     * Trigger: a KU slot's send_epoch is not in the 4-slot
+     * dtls13_epoch_pool (simulating epoch eviction after rapid
+     * further KUs).  ssl_dtls13_post_hs_retransmit_one returns
+     * MBEDTLS_ERR_SSL_INTERNAL_ERROR.  Pre-fix the buggy site at
+     * ssl_msg.c:8329 cleared only the slot, leaving
+     * dtls13_ku_ack_pending = 1 forever; the public predicate
+     * mbedtls_ssl_dtls13_key_update_pending stayed truthy and the
+     * documented drain idiom looped indefinitely.
+     *
+     * Post-fix the abandon helper clears the flag too.
+     *
+     * Setup: stage a slot with send_epoch = 99 (not in the empty
+     * pool), retransmit_timeout_ms < hs_timeout_max so we hit the
+     * retransmit-one branch (not the budget-exhaust branch). */
+    mbedtls_ssl_context ssl;
+    mbedtls_ssl_config conf;
+    int ret;
+
+    USE_PSA_INIT();
+
+    mbedtls_ssl_init(&ssl);
+    mbedtls_ssl_config_init(&conf);
+
+    TEST_EQUAL(mbedtls_ssl_config_defaults(&conf,
+                                           MBEDTLS_SSL_IS_SERVER,
+                                           MBEDTLS_SSL_TRANSPORT_DATAGRAM,
+                                           MBEDTLS_SSL_PRESET_DEFAULT), 0);
+    TEST_EQUAL(mbedtls_ssl_setup(&ssl, &conf), 0);
+
+    ssl.MBEDTLS_PRIVATE(dtls13_ku_ack_pending) = 1;
+    ssl.MBEDTLS_PRIVATE(dtls13_post_hs_retransmit)[0].type =
+        MBEDTLS_SSL_DTLS13_PENDING_ACK_KEY_UPDATE;
+    ssl.MBEDTLS_PRIVATE(dtls13_post_hs_retransmit)[0].send_epoch = 99;
+    ssl.MBEDTLS_PRIVATE(dtls13_post_hs_retransmit)[0].retransmit_timeout_ms =
+        conf.MBEDTLS_PRIVATE(hs_timeout_min);
+
+    TEST_EQUAL(mbedtls_ssl_dtls13_key_update_pending(&ssl), 1);
+
+    /* Pool is empty (no epoch 99) → retransmit_one returns
+     * INTERNAL_ERROR → abandon path. */
+    ret = ssl_dtls13_post_hs_handle_timeout(&ssl);
+    /* handle_timeout returns WANT_READ on partial failure (continues
+     * walk), but the *slot* is gone.  We don't depend on the return
+     * code; the post-condition is what matters. */
+    (void) ret;
+
+    /* Post-fix: pending flag cleared, slot cleared.  Pre-fix the
+     * flag stayed at 1. */
+    TEST_EQUAL(mbedtls_ssl_dtls13_key_update_pending(&ssl), 0);
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(dtls13_post_hs_retransmit)[0].type,
+               MBEDTLS_SSL_DTLS13_PENDING_ACK_NONE);
+
+exit:
+    mbedtls_ssl_free(&ssl);
+    mbedtls_ssl_config_free(&conf);
+    USE_PSA_DONE();
+}
+/* END_CASE */
+
 /* BEGIN_CASE depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:MBEDTLS_SSL_DTLS_HELLO_VERIFY:MBEDTLS_SSL_HANDSHAKE_WITH_CERT_ENABLED:PSA_WANT_ECC_SECP_R1_256:PSA_WANT_ECC_SECP_R1_384:PSA_WANT_ALG_SHA_256:MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL_ENABLED */
 void dtls13_hrr_secret_server_is_stateless(void)
 {

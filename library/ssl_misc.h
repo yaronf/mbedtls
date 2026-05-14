@@ -1361,6 +1361,17 @@ int ssl_dtls13_sne_apply(
  */
 void ssl_dtls13_post_hs_retransmit_reset(mbedtls_ssl_context *ssl);
 
+/**
+ * \brief  Handle a BIO-timer expiry attributable to post-HS retransmit.
+ *         Exposed via this header (was file-static) so the
+ *         test_suite_ssl.dtls13 regression tests for ultrareview
+ *         merged_bug_006 can drive it directly with hand-built slot
+ *         state.  Not part of the public API; callers in the library
+ *         go through the timer-expiry plumbing in fetch_input.
+ */
+MBEDTLS_CHECK_RETURN_CRITICAL
+int ssl_dtls13_post_hs_handle_timeout(mbedtls_ssl_context *ssl);
+
 /* ----------------------------------------------------------------------------
  * Stack-managed DTLS cookie helpers (DTLS 1.2 HVR and DTLS 1.3 HRR),
  * keyed off the secret installed by mbedtls_ssl_conf_dtls_cookie_secret().
