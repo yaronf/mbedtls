@@ -402,14 +402,3 @@ file (e.g. `buffering handshake message: type=%u seq=%u (next expected=%u)`).
 Same pass: remove the `DBG fetch_hs_msg: ...` log at
 `ssl_tls13_generic.c:86` introduced during the post-handshake
 retransmit work.
-
----
-
-## Open question for the user
-
-Whether to verify each finding against current code (the review is a  
-snapshot, line numbers may have moved) before patching, or trust the  
-cited file:line as-is. My recommendation: verify each one before  
-fixing — it's cheap and catches the case where the area was already  
-refactored. Especially important for #4, which is in code I touched  
-recently. -- verify, of course.
