@@ -3274,6 +3274,29 @@ int mbedtls_ssl_write_handshake_msg_ext(mbedtls_ssl_context *ssl,
                 return ret;
             }
 
+            /* Post-handshake messages (KeyUpdate, NewConnectionId,
+             * RequestConnectionId) can reach this function with
+             * ssl->handshake == NULL — the entry guard at the top of
+             * the function permits exactly those hs_types in that
+             * state.  None of the currently-implemented post-HS
+             * messages can fragment under any realistic MTU
+             * (KU/RCI body = 1 byte; NCI body max = 2 + 2×(1+CID_LEN)
+             * + 1 ≤ 69 bytes), so we deliberately do NOT have a
+             * fragmentation path keyed off the post-HS retransmit
+             * slot.  If a future, larger post-HS message arrives at
+             * this site with handshake==NULL and out_msglen >
+             * remaining, return a hard error rather than NULL-deref
+             * on dtls13_frag_off below.  See ultrareview bug_008 /
+             * local-docs/ultrareview-findings-2026-05-13.md §3. */
+            if (ssl->out_msglen > (size_t) ret && ssl->handshake == NULL) {
+                MBEDTLS_SSL_DEBUG_MSG(
+                    1, ("post-HS handshake message (%u bytes) exceeds "
+                        "remaining datagram payload (%d bytes); fragmentation "
+                        "not supported for post-HS messages",
+                        (unsigned) ssl->out_msglen, ret));
+                return MBEDTLS_ERR_SSL_BUFFER_TOO_SMALL;
+            }
+
             if (ssl->out_msglen > (size_t) ret ||
                 (ssl->handshake != NULL &&
                  ssl->handshake->dtls13_frag_off > 0)) {
