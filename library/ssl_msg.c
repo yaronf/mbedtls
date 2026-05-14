@@ -3150,6 +3150,11 @@ int mbedtls_ssl_write_handshake_msg_ext(mbedtls_ssl_context *ssl,
                 size_t body_len = ssl->out_msglen - 12;
                 ret = mbedtls_ssl_add_hs_msg_to_checksum(
                           ssl, hs_type, ssl->out_msg + 12, body_len);
+                if (ret != 0) {
+                    MBEDTLS_SSL_DEBUG_RET(
+                        1, "mbedtls_ssl_add_hs_msg_to_checksum", ret);
+                    return ret;
+                }
             } else
 #endif
             {
