@@ -386,11 +386,9 @@ cases:
     # the NCI is lost.  Server's NCI retransmit budget should exhaust
     # and TIMEOUT should propagate.
     #
-    # Today this fails because mbedtls's NewConnectionId path uses
-    # dtls13_pending_acks[] for ACK matching but no retransmit machinery —
-    # same RFC 9147 §7 compliance gap as KeyUpdate.  See
-    # local-docs/keyupdate-retransmit-plan.md (broad-scope fix covers
-    # KU, NCI, and RCI symmetrically).
+    # Verifies post-HS retransmit for NewConnectionId (same machinery as
+    # KeyUpdate; commit de89228127).  See
+    # local-docs/keyupdate-retransmit-plan.md.
     #
     # Threshold set to 5 so c2s packets 1-5 (handshake CH×2 + Finished+ACK
     # + NST ACK + HTTP request) flow clean and packet 6 (the client's NCI

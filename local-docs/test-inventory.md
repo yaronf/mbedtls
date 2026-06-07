@@ -1,6 +1,6 @@
 # DTLS 1.3 Test Inventory
 
-**Last updated:** 2026-04-03 (Direction B wolfSSL interop expanded to 9 cases; all tests passing)
+**Last updated:** 2026-06-07 (cookie secret API, post-HS retransmit timeouts, cluster test)
 **Branch:** `dtls13`
 
 Tests are grouped by type. Status: `pass` = currently passing, `fail` = currently failing (expected), `todo` = not yet written.
@@ -14,7 +14,8 @@ Run all:
 cd build-dbg && ./tests/test_suite_ssl.dtls13
 ```
 
-**Total: 23 / 23 passing**
+**Total: 45 / 45 passing** (includes cookie-secret, HRR stateless/legacy,
+epoch-pool eviction, SNE short-seq, post-HS retransmit regressions)
 
 ### sn_key derivation (`ssl_dtls13_sne_key_derivation`)
 
@@ -77,7 +78,8 @@ Tests are defined as YAML case files under `tests/dtls13/cases/` and
 generated into `dtls13-tests.sh` and `dtls13-wolfssl-tests.sh` via
 `python3 tests/dtls13/generate.py`.
 
-**Total: 48 mbedtls-only + 12 wolfSSL Direction A + 9 wolfSSL Direction B = 69 integration tests, all passing**
+**Total: 69 mbedtls-only (68 `run_test` + 1 stateless cluster) + 12 wolfSSL
+Direction A + 9 wolfSSL Direction B = 90 integration tests, all passing**
 (wolfSSL tests require `WOLFSSL_DIR=~/misc/wolfssl`)
 
 ### Handshake (`cases/handshake.yaml`)
@@ -95,6 +97,24 @@ generated into `dtls13-tests.sh` and `dtls13-wolfssl-tests.sh` via
 | -------------------------------------------------------------------------- | ------ |
 | `DTLS 1.3: HRR+cookie exchange (cookie enabled)`                           | pass |
 | `DTLS 1.3: HRR+cookie: bad cookie on retry causes server handshake_failure`| pass |
+| `DTLS 1.3: DTLS 1.3 HRR cookie via secret API`                            | pass |
+| `DTLS 1.3: DTLS 1.3 HRR cookie: secret + legacy callbacks`                | pass |
+| `DTLS 1.3: DTLS 1.3 HRR cookie: bad HMAC / expired timestamp`             | pass |
+
+### Cookie secret API (`cases/cookie-secret.yaml`)
+
+| Test name                                                                  | Status |
+| -------------------------------------------------------------------------- | ------ |
+| `DTLS cookie secret API: secret + APPLY_TO_DTLS12`                          | pass |
+| `DTLS cookie secret API: secret without APPLY_TO_DTLS12`                    | pass |
+| `DTLS cookie secret API: secret + legacy callbacks (back-compat)`         | pass |
+| `DTLS cookie secret API: secret + APPLY_TO_DTLS12 + callbacks`            | pass |
+
+### Stateless cluster (`cluster-test.sh`, wired from `dtls13-tests.sh`)
+
+| Test name                                                                  | Status |
+| -------------------------------------------------------------------------- | ------ |
+| `DTLS 1.3: stateless cluster (CH1 → server A, CH2 → server B)`            | pass |
 
 ### Version Negotiation (`cases/version-negotiation.yaml`)
 
@@ -110,6 +130,7 @@ generated into `dtls13-tests.sh` and `dtls13-wolfssl-tests.sh` via
 | `DTLS 1.3 PSK: external PSK, psk_ephemeral key exchange`                                 | pass |
 | `DTLS 1.3 PSK: session resumption via NewSessionTicket PSK`                               | pass |
 | `DTLS 1.3 PSK: PSK with cookie enabled — no HRR/cookie exchange (RFC 9147 §5.1)`         | pass |
+| `DTLS 1.3 PSK: PSK-only key exchange mode (no ephemeral)`                                  | pass |
 
 ### KeyUpdate (`cases/keyupdate.yaml`)
 
@@ -127,6 +148,8 @@ generated into `dtls13-tests.sh` and `dtls13-wolfssl-tests.sh` via
 | `DTLS 1.3: bad KeyUpdate: invalid update_requested value triggers illegal_parameter` | pass |
 | `DTLS 1.3: double KeyUpdate: second blocked by pending-ACK guard`      | pass |
 | `DTLS 1.3: KeyUpdate preserves CID across epoch transition`            | pass |
+| `DTLS 1.3: KeyUpdate timeout: client-initiated, server ACK lost`       | pass |
+| `DTLS 1.3: KeyUpdate timeout: server-initiated, client ACK lost`       | pass |
 
 ### CID (`cases/cid.yaml`)
 
@@ -150,6 +173,7 @@ generated into `dtls13-tests.sh` and `dtls13-wolfssl-tests.sh` via
 | `DTLS 1.3 CID update: bad NewConnectionId: list_len=0 triggers server decode_error`        | pass |
 | `DTLS 1.3 CID update: bad NewConnectionId: cid_len too large triggers server illegal_parameter` | pass |
 | `DTLS 1.3 CID update: bad RequestConnectionId: empty body triggers server decode_error`    | pass |
+| `DTLS 1.3 CID update: NewConnectionId timeout: server-initiated, client ACK lost`          | pass |
 
 ### Proxy — Basic (`cases/proxy-basic.yaml`)
 

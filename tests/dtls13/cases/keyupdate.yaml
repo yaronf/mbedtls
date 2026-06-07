@@ -271,10 +271,9 @@ cases:
     # without an ACK, the sender retransmits; after the budget exhausts,
     # the connection times out.
     #
-    # Today this fails because mbedtls's KeyUpdate path doesn't enqueue the
-    # message into the retransmit machinery; it only uses dtls13_pending_acks[]
-    # for ACK matching.  No retransmit fires, so the client sits forever in
-    # mbedtls_ssl_read.  See local-docs/keyupdate-retransmit-plan.md.
+    # Verifies post-HS retransmit: dtls13_post_hs_retransmit[] retransmits
+    # until budget exhaust, then surfaces handshake timeout (commit
+    # de89228127).  See local-docs/keyupdate-retransmit-plan.md.
     skip_runners: [wolfssl]
     proxy:
       corrupt_after_pkt: 7
@@ -297,11 +296,10 @@ cases:
     # has been received so the client's ACK of the server's KU is lost.
     # Server's KU retransmit budget should exhaust and TIMEOUT propagate.
     #
-    # Same RFC compliance gap as the client-initiated case.  Threshold
-    # set to 6 so c2s packets 1-6 (handshake CH×2 + Finished+ACK + NST ACK
-    # + HTTP request) flow clean and packet 7 (the client's KU ACK) gets
-    # corrupted — exercising ONLY the KU ACK path, not NST_WAIT_ACK
-    # timeout (which is fixed in 46f89e8f2c).
+    # Threshold set to 6 so c2s packets 1-6 (handshake CH×2 + Finished+ACK
+    # + NST ACK + HTTP request) flow clean and packet 7 (the client's KU
+    # ACK) gets corrupted — exercising ONLY the KU ACK path, not
+    # NST_WAIT_ACK timeout (fixed in 46f89e8f2c).
     skip_runners: [wolfssl]
     proxy:
       corrupt_after_pkt: 6

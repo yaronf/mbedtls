@@ -3,15 +3,17 @@
 Branch: `dtls13`  
 Target tag: `mbedtls-4.1.0`  
 Date: 2026-04-01  
-Status: merge in progress (`git merge mbedtls-4.1.0 --no-commit --no-ff`)
+Status: **merged** — commit `a43cfaadf3` ("Merge: mbedtls 4.1.0 into dtls13
+branch", 2026-04-01). All conflicts resolved; post-merge steps below
+completed.
 
 ---
 
 ## Scope
 
 454 commits from upstream, 174 files changed (+4162/-30916 lines net). All
-automatic merges completed; 4 files have conflicts, 2 of which are partially
-resolved.
+conflicts resolved (4 files: `ssl_client.c`, `ssl_msg.c`,
+`test_suite_ssl.function`, `test_suite_ssl.data`).
 
 ---
 
@@ -83,7 +85,7 @@ widen the variable's declaration guard to `#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
 `#if defined(MBEDTLS_SSL_PROTO_DTLS)` runtime guard around the assignment so
 non-DTLS builds initialise it to the safe default (1 = always checksum).
 
-### `library/ssl_msg.c` — 2/3 RESOLVED, 1 REMAINING
+### `library/ssl_msg.c` — RESOLVED
 
 **Resolved:**
 - Conflict 1 (~line 3851): took upstream's fragmented DTLS 1.2 ClientHello
@@ -92,53 +94,11 @@ non-DTLS builds initialise it to the safe default (1 = always checksum).
   `MBEDTLS_PUT_UINT16_BE(rec.data_len, ...)` write (upstream restructured the
   code to not write this at all; our guard was rendered moot).
 
-**Remaining (line ~9270):**
+**Conflict 3 (buffering refactor):** Resolved with Option A — upstream's
+`ssl_buffering_shift_slots()` plus thin wrapper `mbedtls_ssl_dtls_advance_buffering()`
+calling `ssl_buffering_shift_slots(ssl, 1)`. See `ssl_msg.c:10583–10627`.
 
-Our HEAD:
-```c
-#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
-void mbedtls_ssl_dtls_advance_buffering(mbedtls_ssl_context *ssl)
-{
-    // frees slot 0, shifts remaining slots down by 1
-    ssl_buffering_free_slot(ssl, 0);
-    for (offset = 0; offset + 1 < MBEDTLS_SSL_MAX_BUFFERED_HS; ...)
-        *hs_buf = *(hs_buf + 1);
-    memset(hs_buf, 0, ...);
-}
-#endif
-```
-
-Upstream 4.1.0:
-```c
-static void ssl_buffering_shift_slots(mbedtls_ssl_context *ssl, unsigned shift)
-{
-    // frees first `shift` slots, shifts rest left by `shift`
-}
-```
-
-`shift > 1` is used in exactly one place: the fragmented DTLS 1.2 ClientHello
-path (line ~3872), where the server may receive a ClientHello with
-`message_seq > 0` after multiple retransmission round-trips and needs to skip
-ahead by `recv_msg_seq` slots at once. DTLS 1.3 always advances by 1 (no
-HelloVerifyRequest round-trips, sequential message consumption), so the
-existing callers in `ssl_tls13_generic.c` remain correct.
-
-**Resolution (Option A — recommended):** Take 4.1.0's `ssl_buffering_shift_slots`
-as the implementation, and add a thin public wrapper:
-
-```c
-#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
-void mbedtls_ssl_dtls_advance_buffering(mbedtls_ssl_context *ssl)
-{
-    ssl_buffering_shift_slots(ssl, 1);
-}
-#endif
-```
-
-This avoids touching callers in `ssl_tls13_generic.c` and preserves the
-declared symbol in `ssl_misc.h`.
-
-### `tests/suites/test_suite_ssl.function` — NOT RESOLVED
+### `tests/suites/test_suite_ssl.function` — RESOLVED
 
 Our HEAD adds (after line 6147): DTLS 1.3 unit tests —
 `ssl_dtls13_sne_key_derivation`, `ssl_dtls13_sne_mask_aes`,
@@ -156,7 +116,7 @@ tests appended. No functional overlap.
 attack in TLS stream mode; a DTLS 1.3 variant would verify the same protection
 holds for the DTLS HRR path.
 
-### `tests/suites/test_suite_ssl.data` — NOT RESOLVED
+### `tests/suites/test_suite_ssl.data` — RESOLVED
 
 Our HEAD adds: test data entries for the DTLS 1.3 SNE tests, handshake, and
 timeout test.

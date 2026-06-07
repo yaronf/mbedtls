@@ -1,6 +1,9 @@
 # Plan: Declarative DTLS Test Suite (YAML + Generated Runner)
 
-**Status:** Approved — implementation pending.
+**Status:** Implemented (2026-03). `tests/dtls13/` with YAML cases,
+`generate.py`, mbedtls + wolfSSL runners. Generated scripts
+(`dtls13-tests.sh`, `dtls13-wolfssl-tests.sh`, etc.) are committed
+alongside sources.
 
 ---
 

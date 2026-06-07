@@ -1,9 +1,9 @@
 # DTLS 1.3 cookie API — design decision
 
-**Status:** open. The recommendation below is option (a); (b), (c), (d)
-are kept in the doc as rejected alternatives with the reasoning, so the
-choice is reviewable. Resolves Area 12 finding #4 of the code-review
-plan.
+**Status:** accepted and implemented (option (a), 2026-05). Commits
+`cbadd6f328` (API) through `74501955dd` (stateless cluster test).
+(b), (c), (d) remain in the doc as rejected alternatives. Resolves
+Area 12 finding #4 of the code-review plan.
 
 **Context:** code-review plan finding §"Area 12 #4". RFC 9147 **§5.1**
 (Denial-of-Service Countermeasures, not §5.6 — that one is about

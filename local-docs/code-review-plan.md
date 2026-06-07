@@ -2,7 +2,8 @@
 
 **Branch:** `dtls13`
 **Created:** 2026-04-03
-**Status:** in progress
+**Status:** complete (all 16 areas reviewed; remaining follow-ons are
+optional hardening tests, not open implementation work)
 
 Each area has a focus question, specific line ranges to read, and what to look for.
 Areas are ordered roughly by risk — start at the top.
@@ -242,7 +243,7 @@ does nbio retry never double-hash any message?
 
 ---
 
-## Area 12: Handshake State Machine — DTLS 1.3 states and version downgrade (RFC 9147 §5.3–§5.6)
+## Area 12: Handshake State Machine — DTLS 1.3 states and version downgrade (RFC 9147 §5.3–§5.6) ✓ DONE
 
 **Focus:** Are the new DTLS 1.3 handshake states correctly reachable and exitable on both
 client and server, and does the DTLS 1.2 downgrade path leave no DTLS 1.3 state behind?
@@ -291,7 +292,9 @@ client and server, and does the DTLS 1.2 downgrade path leave no DTLS 1.3 state 
    - (b) New DTLS 1.3-specific callback type with a transcript hash parameter — clean but API-breaking; still leaves transcript binding to the application.
    - (c) Concatenate transcript hash into `cli_id` before calling — no API change, but silently breaks callers using the reference `mbedtls_ssl_cookie_check` (which doesn't know the format changed).
    - (d) Accept the limitation — document that DTLS 1.3 cookie provides reachability only; transcript consistency is not verified. Weakened but RFC-permissible (SHOULD not MUST).
-   **Status:** open design decision; needs resolution before Area 12 can be closed. Option (a) is preferred.
+   **Status:** FIXED (option (a) implemented). `mbedtls_ssl_conf_dtls_cookie_secret`
+   + stateless HRR path; commits `cbadd6f328` … `74501955dd`. See
+   `local-docs/cookie-api-decision.md` and `cookie-impl-plan.md`.
 
 5. **`MBEDTLS_SSL_EARLY_DATA` + `MBEDTLS_SSL_PROTO_DTLS` combination now rejected at compile time. DONE.**
    RFC 9147 §5.6 prohibits 0-RTT/early data in DTLS 1.3. Added `#error` to `library/mbedtls_check_config.h` to catch this misconfiguration at build time.
@@ -388,7 +391,7 @@ supported_versions, CID extension) and does the HVR cookie echo end up in the ri
 
 ---
 
-## Area 16: ssl_server2.c and ssl_client2.c — post-handshake API usage and fault injection (RFC 9147 §8, §9)
+## Area 16: ssl_server2.c and ssl_client2.c — post-handshake API usage and fault injection (RFC 9147 §8, §9) ✓ DONE
 
 **Focus:** Is every new DTLS 1.3 API called with correct arguments and in the correct
 program state? Do the fault-injection paths (bad_keyupdate, bad_new_cid, double_keyupdate,

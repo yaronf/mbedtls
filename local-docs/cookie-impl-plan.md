@@ -1,26 +1,21 @@
 # DTLS 1.3 cookie API — implementation plan
 
-**Status:** open. Depends on the design decision recorded in
-`local-docs/cookie-api-decision.md` (option (a) recommended). This doc
-plans the implementation work that resolves Area 12 finding #4 of the
-code-review plan.
+**Status:** complete (Phase 1 + Phase 2 landed 2026-05). Design:
+`local-docs/cookie-api-decision.md` (option (a)). Resolves Area 12
+finding #4 of the code-review plan.
 
-The work is split into two halves, sequenced as the design doc
-recommends ("API first, architectural change second"):
+**Phase 1 (API)** — commits `cbadd6f328` … `a680a68094`:
+`mbedtls_ssl_conf_dtls_cookie_secret`, transcript-bearing DTLS 1.3
+cookie format (`library/ssl_cookie_secret.c`), DTLS 1.2 HVR + DTLS 1.3
+HRR integration, unit + YAML tests (`cookie-secret.yaml`, `hrr-cookie.yaml`).
 
-- **Phase 1 (API):** introduce `mbedtls_ssl_conf_dtls_cookie_secret`
-  and the new transcript-bearing DTLS 1.3 cookie format. Library still
-  keeps `handshake_params` alive across HRR; the transcript-from-cookie
-  path is wired in but unused for state recovery (the in-memory
-  transcript is still authoritative). Wire format is locked in.
+**Phase 2 (Stateless server)** — commits `221a5437a2`, `74501955dd`:
+DTLS 1.2-style HVR escape (`SERVER_HELLO_RETRY_REQUEST_SENT` →
+`HELLO_VERIFY_REQUIRED`), transcript recovery from cookie on second CH
+(`mbedtls_ssl_dtls13_replay_ch1_into_transcript`), cluster test
+(`tests/dtls13/cluster-test.sh`).
 
-- **Phase 2 (Stateless server):** stop keeping `handshake_params`
-  alive across HRR. On second-CH receipt, rebuild the transcript from
-  the cookie's payload via `mbedtls_ssl_reset_transcript_for_hrr` (or
-  equivalent). The DoS-resistance claim materialises here.
-
-Each phase has its own commit topology and tests. They can be reviewed
-and shipped independently if needed.
+The sections below are the original plan (kept for review history).
 
 ---
 
@@ -929,8 +924,9 @@ force-discard hook).
   callbacks, and the `APPLY_TO_DTLS12` flag's purpose.
 - `ChangeLog.d/`: a fresh entry for the new feature, version-tagged
   per the project convention.
-- Either update or supersede `local-docs/cookie-api-decision.md` to
-  mark the design as accepted once Phase 1 lands.
+- ~~Either update or supersede `local-docs/cookie-api-decision.md` to
+  mark the design as accepted once Phase 1 lands.~~ Done — both docs
+  marked complete (2026-06).
 
 ### What's *not* in this plan
 

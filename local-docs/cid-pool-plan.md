@@ -1,9 +1,9 @@
 # CID Pool Plan
 
-**Status**: Partially implemented (inbound pool done; outbound pool pending)
+**Status**: Complete (inbound + outbound pools, 2026-04)
 **RFC reference**: RFC 9147 §9 (Connection ID), §11 (Security — address migration)
 **Created**: 2026-04-10
-**Updated**: 2026-04-11
+**Updated**: 2026-06-07
 
 ---
 
@@ -108,7 +108,7 @@ No changes needed here.
 
 ---
 
-### 4. handle_new_connection_id — store outbound pool (to be implemented)
+### 4. handle_new_connection_id — store outbound pool (implemented)
 
 Currently reads only the first CID and discards the rest. Change to:
 
@@ -164,14 +164,14 @@ No changes needed here.
 
 ---
 
-### 6. rotate_cids — rotate both directions (to be extended)
+### 6. rotate_cids — rotate both directions (implemented)
 
 Current implementation rotates only the inbound pool. Extend to:
 
 1. **Inbound rotation** (already done): promote spare inbound slot to `active_idx`,
    generate new random CID for vacated slot, send NewConnectionId to peer.
 
-2. **Outbound rotation** (to add): promote spare from `dtls13_peer_cid_pool` to
+2. **Outbound rotation**: promote spare from `dtls13_peer_cid_pool` to
    `active_idx`, update `transform_out->out_cid` (and pending transform if set)
    immediately. No message to peer needed — we already hold their spare CID.
 
@@ -244,18 +244,18 @@ primary correctness test.
 - Pool init at HANDSHAKE_OVER (ssl_misc.h)
 - Secondary CID match in `ssl_prepare_record_content` (ssl_msg.c:5451–5543)
 - `ssl_tls13_write_new_connection_id` generalized to send all active pool slots
-- `mbedtls_ssl_dtls13_rotate_cids` (inbound rotation only)
+- `mbedtls_ssl_dtls13_rotate_cids` (inbound + outbound rotation)
 - Forward declaration of `ssl_tls13_write_new_connection_id` before `ssl_prepare_record_content`
 - Test infrastructure: assertions, `rotate_cid=N` option in ssl_client2/ssl_server2
 - Test cases in `cid-update.yaml`
 
-## Still to implement (outbound pool)
+## Also implemented (outbound pool)
 
-1. Add `dtls13_peer_cid_pool[MBEDTLS_SSL_DTLS13_CID_POOL_SIZE]`, `dtls13_peer_cid_active_idx`,
-   `dtls13_peer_cid_pool_ready` to `mbedtls_ssl_context` (ssl.h)
-2. Init outbound pool at HANDSHAKE_OVER (ssl_misc.h)
-3. Parse full CID list in `handle_new_connection_id` and populate outbound pool (ssl_msg.c)
-4. Extend `rotate_cids` to also rotate outbound CID from pool (ssl_msg.c)
+1. `dtls13_peer_cid_pool[]`, `dtls13_peer_cid_active_idx`,
+   `dtls13_peer_cid_pool_ready` on `mbedtls_ssl_context` (`ssl.h`)
+2. Outbound pool init at `HANDSHAKE_OVER` (`ssl_tls.c`)
+3. Full CID list parse in `handle_new_connection_id` (`ssl_msg.c`)
+4. Outbound rotation in `mbedtls_ssl_dtls13_rotate_cids` (`ssl_msg.c`)
 
 ---
 

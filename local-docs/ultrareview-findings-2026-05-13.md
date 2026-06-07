@@ -38,6 +38,21 @@ the cited paths carefully before patching.
 Pre-fix step for each: verify the cited file:line still describes the
 current code. The ultrareview snapshot may not match HEAD.
 
+## Resolution (2026-05, all fixed on HEAD)
+
+| # | id | fix commit | notes |
+| - | -- | ---------- | ----- |
+| 1 | bug_007 | `08f47fb261` | Epoch pool eviction skips transforms still aliased by `transform_in/out/application` |
+| 2 | bug_001 | `27bbe87bb5` | SNE 1-byte seq uses `mask[0]` (leading byte per RFC 9147 §4.2.3) |
+| 3 | bug_008 | `1fb53feae8` | Refuse to fragment post-HS messages when `handshake == NULL` |
+| 4 | merged_bug_006 | `cd8267efdc` | Abandon post-HS retransmit slots + pending flags on budget exhaust / retransmit fail |
+| 5 | bug_011 | `32d9f9c04f` | Propagate error from `add_hs_msg_to_checksum` on DTLS 1.3 transcript path |
+| 6 | bug_003 | `098f5a995e` | Remove stale build-dir scripts violating `.gitignore` |
+| 7 | bug_005 | `098f5a995e` | Remove dev-debug breadcrumbs from `ssl_msg.c` |
+
+Unit regressions added in `test_suite_ssl.dtls13` for bug_001, bug_007,
+and merged_bug_006.
+
 ---
 
 ## 1. bug_007 — Use-after-free in DTLS 1.3 outbound transform on inbound-only KeyUpdate flood

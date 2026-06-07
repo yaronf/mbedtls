@@ -1,12 +1,19 @@
 # KeyUpdate Retransmit (and post-handshake message retransmit) Plan
 
-**Status**: Open. Failing test in tree (`b5ae66e562`); fix not yet implemented.
+**Status**: Implemented (2026-05). Sibling-array design in
+`dtls13_post_hs_retransmit[]`; covers KU, NCI, and RCI. Integration
+timeout tests in `keyupdate.yaml` and `cid-update.yaml` now expect
+passing behaviour (exit 1 + handshake timeout). Unit regressions for
+ultrareview `merged_bug_006` in `test_suite_ssl.dtls13`.
 **RFC reference**: RFC 9147 §5.8 (Retransmission), §7 (Acknowledgement Messages), §8 (KeyUpdate)
 **Created**: 2026-05-10
 **Related commits**:
 - `aef837a508` — TIMEOUT propagation in `wait_ack_step` (Area 12 finding 6)
 - `46f89e8f2c` — Re-arm retransmit timer for WAIT_ACK states
-- `b5ae66e562` — Re-add KeyUpdate timeout test as known-failing
+- `b5ae66e562` — KeyUpdate timeout tests added (were failing pre-fix)
+- `de89228127` — Post-handshake retransmit for KU/NCI/RCI (main fix)
+- `6af01a39ba` — Cleanup slots in session_reset and ssl_free
+- `cd8267efdc` — Pending-state cleanup on budget exhaust / retransmit fail
 
 ---
 
@@ -49,15 +56,12 @@ The same gap likely exists for `NewConnectionId` and
 `RequestConnectionId` (also post-handshake handshake messages); see
 "Scope" below.
 
-## Failing test
+## Regression tests (now passing)
 
-`tests/dtls13/cases/keyupdate.yaml` "KeyUpdate timeout: server ACK lost,
-client retransmit budget exhausts" — committed as known-failing in
-`b5ae66e562`. Asserts `client_handshake_timeout` ("handshake timeout"
-log line) on a scenario where the proxy corrupts every s2c packet
-starting from packet 8 (after the handshake is fully ACKed). Today the
-client hangs in `mbedtls_ssl_read`; the test expects exit 1 with the
-timeout log line.
+`tests/dtls13/cases/keyupdate.yaml` and `cid-update.yaml` timeout cases
+were committed as known-failing in `b5ae66e562` / `cabbe587ca` before
+the fix. They assert `client_handshake_timeout` / `server_handshake_timeout`
+when the proxy corrupts post-handshake ACKs; all pass since `de89228127`.
 
 ## Why the obvious fix didn't work — and the misdiagnosis
 
@@ -529,13 +533,12 @@ two more instances of the same RFC 9147 §7 compliance gap, and the
 scaling concern only points more strongly toward the shared-mechanism
 design.
 
-## Test plan — TDD: failing tests committed, implementation pending
+## Test plan — TDD: failing tests committed, then fixed
 
-Three failing tests have been committed (`cabbe587ca`, 2026-05-10).
-Implementation commits should flip them to passing one at a time. This
-locks in scope and provides a regression suite.
+Three tests were committed as known-failing (`cabbe587ca`, 2026-05-10)
+before `de89228127` landed. All now pass.
 
-### Failing tests in tree (today)
+### Integration timeout tests (passing)
 
 1. `tests/dtls13/cases/keyupdate.yaml` — "KeyUpdate timeout:
    client-initiated, server ACK lost". `corrupt_after_pkt: 7
@@ -613,11 +616,11 @@ Options when adding this test:
 This is out of scope for the failing-test commit. Defer to the
 implementation PR.
 
-### Subsequent commits: implementation, one test at a time
+### Implementation landed
 
-Each implementation commit should be expected to flip exactly one
-failing test to passing, with no regressions in the existing 56 tests.
-A reviewer can verify the diff against the matching test.
+Commit `de89228127` flipped all three integration timeout tests to
+passing, with unit regressions in `test_suite_ssl.dtls13` for budget
+exhaust and retransmit-fail cleanup (`merged_bug_006`).
 
 ### Regression tests to verify continue to pass
 
