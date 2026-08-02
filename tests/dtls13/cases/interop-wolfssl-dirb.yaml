@@ -3,15 +3,17 @@ requires:
   - wolfssl: true
 
 # Direction B: wolfSSL server ↔ mbedtls client.
-# wolfSSL server uses DTLS 1.3 (-u -v 4 -d -b -i).
+# wolfSSL server uses DTLS 1.3 (-u -v 4 -d -i -Y); see runners/wolfssl-dirb.yaml.
 # mbedtls client: server_addr=127.0.0.1 server_name=example.com
 #   ca_file=$WOLFSSL_DIR/certs/ca-cert.pem
 # wolfSSL cert SAN includes dNSName=example.com and iPAddress=127.0.0.1.
+# Keep client debug_level at 0 unless an assert needs library debug lines —
+# debug_level=2 widens a connected-UDP app-data read race on WSL.
 
 cases:
   - name: "full 1-RTT handshake"
     client:
-      debug_level: 2
+      debug_level: 0
     expect:
       exit: 0
       assert:
@@ -21,7 +23,7 @@ cases:
   - name: "application data exchange"
     # wolfSSL server serves one request per connection; single exchange only.
     client:
-      debug_level: 2
+      debug_level: 0
     expect:
       exit: 0
       assert:
@@ -55,7 +57,7 @@ cases:
     server:
       force_ciphersuite: TLS_AES_128_GCM_SHA256
     client:
-      debug_level: 2
+      debug_level: 0
       force_ciphersuite: TLS1-3-AES-128-GCM-SHA256
     expect:
       exit: 0
@@ -71,7 +73,7 @@ cases:
       delay: 5
       duplicate: 5
     client:
-      debug_level: 2
+      debug_level: 0
       hs_timeout: [1000, 10000]
     expect:
       exit: 0
@@ -87,7 +89,7 @@ cases:
       delay: 8
       duplicate: 8
     client:
-      debug_level: 2
+      debug_level: 0
       hs_timeout: [1000, 16000]
     expect:
       exit: 0

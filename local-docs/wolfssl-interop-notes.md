@@ -77,7 +77,11 @@ Key flags:
 - `-i`  loop (server accepts multiple connections)
 - `-d`  disable peer certificate verification (useful for testing)
 - `-p PORT`  port number
-- `-b`  enable all debug/trace output (very verbose)
+- `-b`  **server:** bind any interface (not debug!). **client:** benchmark N connections
+- `-Y`  server: pre-generate P-256 key share (recommended for Dir B interop)
+- `-h` / `--help`  full flag list
+
+For verbose wolfSSL tracing, rebuild with debug options / `DEBUG_WOLFSSL` — there is no `-b` debug switch on the examples.
 
 Self-test (both sides from same dir):
 
@@ -145,6 +149,20 @@ Full handshake + application data + PSK (psk_ephemeral):
 
 **wolfSSL build requirement for PSK:** must include `--enable-psk` in configure flags.
 Without it, `NO_PSK` is defined and the `-s`/`--openssl-psk` flags are compiled out.
+
+### Direction B flake: connected-UDP ICMP (`-0x4C`) [mitigated]
+
+On WSL/Linux, `ssl_client2` uses a **connected** UDP socket. The wolfSSL example
+server (`-u -i`) sets `clientfd == sockfd` and `CloseSocket`s it right after the
+app reply + `wolfSSL_shutdown`. Late client ACKs then elicit ICMP port-unreachable,
+which surfaces as `ECONNREFUSED` / `MBEDTLS_ERR_NET_RECV_FAILED` (`-0x4C`) — even
+when the reply datagram is already queued. `debug_level≥2` (needed for ACK/HRR
+asserts) widens the race; `debug_level=0` and `-Y` (P-256) shrink it.
+
+Mitigations:
+- Runner uses `-Y` and keeps client debug at 0 unless an assert needs library lines.
+- `mbedtls_net_recv` retries once after `ECONNREFUSED` / `WSAECONNREFUSED` so a
+  queued datagram can still be read.
 
 ---
 

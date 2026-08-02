@@ -1,6 +1,10 @@
 # wolfSSL interop runner — Direction B: wolfSSL server ↔ mbedtls client.
 #
-# wolfSSL server with DTLS 1.3 (-u -v 4 -d -b -i).
+# wolfSSL server with DTLS 1.3 (-u -v 4 -d -i -Y).
+#   -Y pre-generates a P-256 key share (avoids slow SECP521 default and
+#      shrinks a WSL connected-UDP race where the client can see -0x4C on
+#      the app-data read even after the server has already ServerWrite'd).
+#   Note: -b means "bind any interface", NOT debug — do not pass -b here.
 # mbedtls client connects with:
 #   server_addr=127.0.0.1   (actual IP — wolfSSL cert has 127.0.0.1 as SAN)
 #   server_name=example.com  (SNI — must match wolfSSL cert CN/SAN)
@@ -19,7 +23,7 @@ case_glob:
 runner_requires:
   - wolfssl: true
 
-server_cmd: "cd $WOLFSSL_DIR && exec stdbuf -oL $WOLFSSL_SRV -u -v 4 -d -b -i -p $SRV_PORT"
+server_cmd: "cd $WOLFSSL_DIR && exec stdbuf -oL $WOLFSSL_SRV -u -v 4 -d -i -Y -p $SRV_PORT"
 client_cmd: "$P_CLI dtls=1 force_version=dtls13 server_addr=127.0.0.1 server_name=example.com ca_file=$WOLFSSL_DIR/certs/ca-cert.pem"
 proxy_cmd:  "$P_PXY"
 

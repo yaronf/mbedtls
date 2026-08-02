@@ -292,7 +292,10 @@ EMIT_FOOTER = """\
 # it lives in a standalone script and is invoked here as a synthetic
 # test entry that integrates with ssl-opt.sh's TESTS/PASSES/FAILS
 # counters.  print_name handles TESTS++; we just emit PASS/FAIL.
-if [ -x "$(dirname "$0")/cluster-test.sh" ]; then
+# Honor -f/-e like run_test so filtered runs do not always pull this
+# mbedtls↔mbedtls cluster case in.
+if [ -x "$(dirname "$0")/cluster-test.sh" ] && \\
+   ! is_excluded "DTLS 1.3: stateless cluster (CH1 → server A, CH2 → server B)"; then
     print_name "DTLS 1.3: stateless cluster (CH1 → server A, CH2 → server B)"
     cluster_log="$(mktemp -t cluster-test.XXXXXX)"
     if "$(dirname "$0")/cluster-test.sh" >"$cluster_log" 2>&1; then

@@ -547,6 +547,24 @@ int mbedtls_net_recv(void *ctx, unsigned char *buf, size_t len)
         if (WSAGetLastError() == WSAECONNRESET) {
             return MBEDTLS_ERR_NET_CONN_RESET;
         }
+
+        /*
+         * Connected UDP reports ICMP port-unreachable as WSAECONNREFUSED.
+         * That can race with a peer that already closed its UDP port while a
+         * datagram is still queued here — clear the soft error and retry once.
+         */
+        if (WSAGetLastError() == WSAECONNREFUSED) {
+            ret = (int) read(fd, buf, len);
+            if (ret >= 0) {
+                return ret;
+            }
+            if (net_would_block(ctx) != 0) {
+                return MBEDTLS_ERR_SSL_WANT_READ;
+            }
+            if (WSAGetLastError() == WSAECONNRESET) {
+                return MBEDTLS_ERR_NET_CONN_RESET;
+            }
+        }
 #else
         if (errno == EPIPE || errno == ECONNRESET) {
             return MBEDTLS_ERR_NET_CONN_RESET;
@@ -554,6 +572,29 @@ int mbedtls_net_recv(void *ctx, unsigned char *buf, size_t len)
 
         if (errno == EINTR) {
             return MBEDTLS_ERR_SSL_WANT_READ;
+        }
+
+        /*
+         * Connected UDP reports asynchronous ICMP errors (commonly
+         * ECONNREFUSED for port unreachable) on recv.  Peers such as the
+         * wolfSSL example server close the UDP socket right after the app
+         * reply; a late ACK from us can then poison the socket with ICMP
+         * even when the reply datagram is already queued.  Retry once.
+         */
+        if (errno == ECONNREFUSED) {
+            ret = (int) read(fd, buf, len);
+            if (ret >= 0) {
+                return ret;
+            }
+            if (net_would_block(ctx) != 0) {
+                return MBEDTLS_ERR_SSL_WANT_READ;
+            }
+            if (errno == EPIPE || errno == ECONNRESET) {
+                return MBEDTLS_ERR_NET_CONN_RESET;
+            }
+            if (errno == EINTR) {
+                return MBEDTLS_ERR_SSL_WANT_READ;
+            }
         }
 #endif
 
