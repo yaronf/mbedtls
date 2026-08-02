@@ -5674,8 +5674,10 @@ static int ssl_prepare_record_content(mbedtls_ssl_context *ssl,
                         MBEDTLS_SSL_DEBUG_MSG(2, ("CID pool replenished"));
 
                         /* Schedule a NewConnectionId to offer the fresh spare.
-                         * Skip if one is already outstanding. */
-                        if (!ssl->dtls13_cid_update_ack_pending) {
+                         * Skip if one is already outstanding or a KeyUpdate ACK
+                         * is still pending (bis-02 §8: no post-HS until KU ACK). */
+                        if (!ssl->dtls13_cid_update_ack_pending &&
+                            !ssl->dtls13_ku_ack_pending) {
                             /* Ignore send error: data exchange succeeded;
                              * replenishment is best-effort. */
                             int cid_ret = ssl_tls13_write_new_connection_id(
@@ -7011,6 +7013,7 @@ static int ssl_dtls13_write_ack(mbedtls_ssl_context *ssl)
  */
 /* Forward declaration: defined later, called from ssl_dtls13_process_ack(). */
 static void ssl_dtls13_key_update_install_outbound(mbedtls_ssl_context *ssl);
+static void ssl_dtls13_maybe_install_ku_outbound(mbedtls_ssl_context *ssl);
 
 /* Walk the handshake flight list and mark any item whose (epoch, seq) matches
  * the given ACK record number.  Returns 1 if at least one item was newly
@@ -7127,11 +7130,12 @@ static int ssl_dtls13_process_ack(mbedtls_ssl_context *ssl,
                 switch (slot->type) {
                     case MBEDTLS_SSL_DTLS13_PENDING_ACK_KEY_UPDATE:
                         MBEDTLS_SSL_DEBUG_MSG(2, ("ACK: KeyUpdate acknowledged "
-                                                  "(epoch=%llu seq=%llu) — installing "
-                                                  "pending outbound transform",
+                                                  "(epoch=%llu seq=%llu)",
                                                   (unsigned long long) epoch,
                                                   (unsigned long long) seq));
-                        ssl_dtls13_key_update_install_outbound(ssl);
+                        /* bis-02 §8: do not install until preceding same-epoch
+                         * post-HS messages are also ACKed. */
+                        ssl->dtls13_ku_acked = 1;
                         break;
 #if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
                     case MBEDTLS_SSL_DTLS13_PENDING_ACK_NEW_CONNECTION_ID:
@@ -7156,6 +7160,7 @@ static int ssl_dtls13_process_ack(mbedtls_ssl_context *ssl,
                         break;
                 }
                 slot->type = MBEDTLS_SSL_DTLS13_PENDING_ACK_NONE;
+                ssl_dtls13_maybe_install_ku_outbound(ssl);
             }
         }
 
@@ -7969,6 +7974,8 @@ static void ssl_dtls13_abandon_post_hs_pending(mbedtls_ssl_context *ssl,
     switch (slot->type) {
         case MBEDTLS_SSL_DTLS13_PENDING_ACK_KEY_UPDATE:
             ssl->dtls13_ku_ack_pending = 0;
+            ssl->dtls13_ku_acked = 0;
+            ssl->dtls13_ku_sent_epoch = 0;
             mbedtls_ssl_transform_free(ssl->dtls13_transform_pending_out);
             mbedtls_free(ssl->dtls13_transform_pending_out);
             ssl->dtls13_transform_pending_out = NULL;
@@ -8448,8 +8455,9 @@ static void ssl_dtls13_retire_transform_to_pool(
 }
 
 /*
- * Install the pending outbound KeyUpdate transform once its ACK has arrived.
- * Called from ssl_dtls13_process_ack().
+ * Install the pending outbound KeyUpdate transform once its ACK has arrived
+ * and all same-epoch preceding post-HS messages have also been ACKed
+ * (draft-ietf-tls-rfc9147bis-02 §8).
  */
 static void ssl_dtls13_key_update_install_outbound(mbedtls_ssl_context *ssl)
 {
@@ -8484,10 +8492,42 @@ static void ssl_dtls13_key_update_install_outbound(mbedtls_ssl_context *ssl)
     mbedtls_platform_zeroize(ssl->dtls13_ku_pending_secret,
                              sizeof(ssl->dtls13_ku_pending_secret));
     ssl->dtls13_ku_ack_pending = 0;
+    ssl->dtls13_ku_acked = 0;
+    ssl->dtls13_ku_sent_epoch = 0;
 
     MBEDTLS_SSL_DEBUG_MSG(2, ("KeyUpdate: new outbound transform installed "
                               "(epoch %u)",
                               (unsigned) ssl->transform_out->dtls13_epoch));
+}
+
+/* bis-02 §8: install new outbound keys only after the KeyUpdate and all
+ * same-epoch preceding post-HS messages (NCI/RCI) have been ACKed. */
+static void ssl_dtls13_maybe_install_ku_outbound(mbedtls_ssl_context *ssl)
+{
+    int i;
+
+    if (ssl->dtls13_transform_pending_out == NULL ||
+        !ssl->dtls13_ku_acked) {
+        return;
+    }
+
+    for (i = 0; i < MBEDTLS_SSL_DTLS13_MAX_PENDING_ACKS; i++) {
+        mbedtls_ssl_dtls13_pending_ack *slot = &ssl->dtls13_pending_acks[i];
+        if (slot->type == MBEDTLS_SSL_DTLS13_PENDING_ACK_NONE ||
+            slot->type == MBEDTLS_SSL_DTLS13_PENDING_ACK_KEY_UPDATE) {
+            continue;
+        }
+        if (slot->sent_epoch == (uint64_t) ssl->dtls13_ku_sent_epoch) {
+            MBEDTLS_SSL_DEBUG_MSG(2, ("KeyUpdate: deferring outbound install — "
+                                      "preceding post-HS type %d still unacked "
+                                      "in epoch %u",
+                                      (int) slot->type,
+                                      (unsigned) ssl->dtls13_ku_sent_epoch));
+            return;
+        }
+    }
+
+    ssl_dtls13_key_update_install_outbound(ssl);
 }
 #endif /* MBEDTLS_SSL_PROTO_DTLS - ssl_dtls13_key_update_install_outbound */
 
@@ -8623,6 +8663,9 @@ static int ssl_tls13_write_key_update(mbedtls_ssl_context *ssl,
             goto cleanup;
         }
         ssl->dtls13_ku_ack_pending = 1;
+        ssl->dtls13_ku_acked = 0;
+        ssl->dtls13_ku_sent_epoch =
+            (uint16_t) MBEDTLS_GET_UINT16_BE(ssl->cur_out_ctr, 0);
 
         /* Arm the BIO timer to the post-hs retransmit deadline.  RFC 9147
          * §5.8 / §7.2: if the peer's ACK is lost, fetch_input will fire
@@ -8901,6 +8944,13 @@ static int ssl_tls13_write_new_connection_id(mbedtls_ssl_context *ssl,
         ssl->transform_out->out_cid_len == 0) {
         MBEDTLS_SSL_DEBUG_MSG(2, ("NewConnectionId: CID not negotiated, skip"));
         return 0;
+    }
+
+    /* bis-02 §8: KeyUpdate terminates the post-HS stream in an epoch;
+     * while waiting for the KU ACK the next epoch is not yet active. */
+    if (ssl->dtls13_ku_ack_pending) {
+        MBEDTLS_SSL_DEBUG_MSG(2, ("NewConnectionId: blocked — KeyUpdate ACK pending"));
+        return MBEDTLS_ERR_SSL_WANT_WRITE;
     }
 
     /* RFC 9147 §9: MUST NOT have more than one NewConnectionId outstanding. */
@@ -9207,6 +9257,12 @@ static int ssl_tls13_write_request_connection_id(mbedtls_ssl_context *ssl,
         MBEDTLS_SSL_DEBUG_MSG(1, ("RequestConnectionId: CID not negotiated, "
                                   "MUST NOT send"));
         return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
+    }
+
+    /* bis-02 §8: no further post-HS until KeyUpdate ACK installs new epoch. */
+    if (ssl->dtls13_ku_ack_pending) {
+        MBEDTLS_SSL_DEBUG_MSG(2, ("RequestConnectionId: blocked — KeyUpdate ACK pending"));
+        return MBEDTLS_ERR_SSL_WANT_WRITE;
     }
 
     /* RFC 9147 §9: MUST NOT send a RequestConnectionId when an existing
@@ -9574,28 +9630,51 @@ static int ssl_tls13_is_new_session_ticket(mbedtls_ssl_context *ssl)
 #endif /* MBEDTLS_SSL_CLI_C */
 
 MBEDTLS_CHECK_RETURN_CRITICAL
-static int ssl_tls13_handle_hs_message_post_handshake(mbedtls_ssl_context *ssl)
+int ssl_tls13_handle_hs_message_post_handshake(mbedtls_ssl_context *ssl)
 {
 
     MBEDTLS_SSL_DEBUG_MSG(3, ("received post-handshake message"));
 
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
-    /* KeyUpdate (RFC 9147 §8) — DTLS 1.3 only in this implementation. */
-    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
-        ssl->in_msg[0] == MBEDTLS_SSL_HS_KEY_UPDATE) {
-        return ssl_tls13_handle_key_update(ssl);
-    }
+    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+        /* draft-ietf-tls-rfc9147bis-02 §8: KeyUpdate terminates the post-HS
+         * stream in that epoch.  A later post-HS HS message on the closed
+         * epoch is a protocol violation. */
+        if (ssl->dtls13_peer_post_hs_closed_valid &&
+            ssl->in_epoch == ssl->dtls13_peer_post_hs_closed_epoch &&
+            (ssl->in_msg[0] == MBEDTLS_SSL_HS_KEY_UPDATE
 #if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
-    /* NewConnectionId / RequestConnectionId (RFC 9147 §9) — DTLS 1.3 only. */
-    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
-        ssl->in_msg[0] == MBEDTLS_SSL_HS_NEW_CONNECTION_ID) {
-        return ssl_tls13_handle_new_connection_id(ssl);
-    }
-    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
-        ssl->in_msg[0] == MBEDTLS_SSL_HS_REQUEST_CONNECTION_ID) {
-        return ssl_tls13_handle_request_connection_id(ssl);
-    }
+             || ssl->in_msg[0] == MBEDTLS_SSL_HS_NEW_CONNECTION_ID
+             || ssl->in_msg[0] == MBEDTLS_SSL_HS_REQUEST_CONNECTION_ID
+#endif
+            )) {
+            MBEDTLS_SSL_DEBUG_MSG(1, ("DTLS 1.3: post-HS message type %u on "
+                                      "epoch %u after peer KeyUpdate",
+                                      (unsigned) ssl->in_msg[0],
+                                      (unsigned) ssl->in_epoch));
+            MBEDTLS_SSL_PEND_FATAL_ALERT(
+                MBEDTLS_SSL_ALERT_MSG_UNEXPECTED_MESSAGE,
+                MBEDTLS_ERR_SSL_UNEXPECTED_MESSAGE);
+            return MBEDTLS_ERR_SSL_UNEXPECTED_MESSAGE;
+        }
+
+        /* KeyUpdate (RFC 9147 §8) — DTLS 1.3 only in this implementation. */
+        if (ssl->in_msg[0] == MBEDTLS_SSL_HS_KEY_UPDATE) {
+            /* Close this epoch's post-HS stream before advancing inbound keys. */
+            ssl->dtls13_peer_post_hs_closed_epoch = ssl->in_epoch;
+            ssl->dtls13_peer_post_hs_closed_valid = 1;
+            return ssl_tls13_handle_key_update(ssl);
+        }
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+        /* NewConnectionId / RequestConnectionId (RFC 9147 §9). */
+        if (ssl->in_msg[0] == MBEDTLS_SSL_HS_NEW_CONNECTION_ID) {
+            return ssl_tls13_handle_new_connection_id(ssl);
+        }
+        if (ssl->in_msg[0] == MBEDTLS_SSL_HS_REQUEST_CONNECTION_ID) {
+            return ssl_tls13_handle_request_connection_id(ssl);
+        }
 #endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
+    }
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
 
 #if defined(MBEDTLS_SSL_CLI_C)

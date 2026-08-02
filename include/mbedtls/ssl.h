@@ -1936,6 +1936,15 @@ struct mbedtls_ssl_context {
     mbedtls_ssl_transform *MBEDTLS_PRIVATE(dtls13_transform_pending_out);
     unsigned char MBEDTLS_PRIVATE(dtls13_ku_pending_secret)[MBEDTLS_TLS1_3_MD_MAX_SIZE];
     uint8_t  MBEDTLS_PRIVATE(dtls13_ku_ack_pending); /*!< 1 while waiting for KeyUpdate ACK */
+    /** Epoch of the outbound KeyUpdate record (bis-02 §8: install only after
+     *  KU and all same-epoch preceding post-HS messages are ACKed). */
+    uint16_t MBEDTLS_PRIVATE(dtls13_ku_sent_epoch);
+    /** Set when the KeyUpdate record itself has been ACKed; cleared on install. */
+    uint8_t  MBEDTLS_PRIVATE(dtls13_ku_acked);
+    /** Peer epoch whose post-HS stream was closed by their KeyUpdate (bis-02 §8). */
+    uint16_t MBEDTLS_PRIVATE(dtls13_peer_post_hs_closed_epoch);
+    /** 1 if dtls13_peer_post_hs_closed_epoch is meaningful. */
+    uint8_t  MBEDTLS_PRIVATE(dtls13_peer_post_hs_closed_valid);
 
 #if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
     /** Set while waiting for peer to ACK our NewConnectionId.

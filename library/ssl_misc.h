@@ -1406,6 +1406,15 @@ void ssl_dtls13_post_hs_retransmit_reset(mbedtls_ssl_context *ssl);
 MBEDTLS_CHECK_RETURN_CRITICAL
 int ssl_dtls13_post_hs_handle_timeout(mbedtls_ssl_context *ssl);
 
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+/**
+ * \brief  Dispatch a post-handshake TLS 1.3 handshake message.
+ *         Exposed for unit tests of bis-02 §8 peer post-HS stream rules.
+ */
+MBEDTLS_CHECK_RETURN_CRITICAL
+int ssl_tls13_handle_hs_message_post_handshake(mbedtls_ssl_context *ssl);
+#endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
+
 /* ----------------------------------------------------------------------------
  * Stack-managed DTLS cookie helpers (DTLS 1.2 HVR and DTLS 1.3 HRR),
  * keyed off the secret installed by mbedtls_ssl_conf_dtls_cookie_secret().

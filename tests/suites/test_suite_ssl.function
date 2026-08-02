@@ -7517,6 +7517,10 @@ void dtls13_session_reset_clears_connection_state(void)
     ssl.MBEDTLS_PRIVATE(dtls13_post_hs_msg_seq) = 0x1234;
     ssl.MBEDTLS_PRIVATE(dtls13_post_hs_in_msg_seq) = 0x5678;
     ssl.MBEDTLS_PRIVATE(dtls13_ku_ack_pending) = 1;
+    ssl.MBEDTLS_PRIVATE(dtls13_ku_sent_epoch) = 0xabcd;
+    ssl.MBEDTLS_PRIVATE(dtls13_ku_acked) = 1;
+    ssl.MBEDTLS_PRIVATE(dtls13_peer_post_hs_closed_epoch) = 0x3456;
+    ssl.MBEDTLS_PRIVATE(dtls13_peer_post_hs_closed_valid) = 1;
     memset(ssl.MBEDTLS_PRIVATE(dtls13_ku_pending_secret), 0x5a,
            sizeof(ssl.MBEDTLS_PRIVATE(dtls13_ku_pending_secret)));
 #if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
@@ -7552,6 +7556,10 @@ void dtls13_session_reset_clears_connection_state(void)
     TEST_EQUAL(ssl.MBEDTLS_PRIVATE(dtls13_post_hs_msg_seq), 0);
     TEST_EQUAL(ssl.MBEDTLS_PRIVATE(dtls13_post_hs_in_msg_seq), 0);
     TEST_EQUAL(ssl.MBEDTLS_PRIVATE(dtls13_ku_ack_pending), 0);
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(dtls13_ku_sent_epoch), 0);
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(dtls13_ku_acked), 0);
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(dtls13_peer_post_hs_closed_epoch), 0);
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(dtls13_peer_post_hs_closed_valid), 0);
     TEST_ASSERT(sizeof(zeros) >= sizeof(ssl.MBEDTLS_PRIVATE(dtls13_ku_pending_secret)));
     TEST_MEMORY_COMPARE(ssl.MBEDTLS_PRIVATE(dtls13_ku_pending_secret),
                         sizeof(ssl.MBEDTLS_PRIVATE(dtls13_ku_pending_secret)),
@@ -7822,6 +7830,178 @@ void dtls13_ack_processed_after_hrr_selection(void)
     TEST_EQUAL(ssl.MBEDTLS_PRIVATE(send_alert), 1);
     TEST_EQUAL(ssl.MBEDTLS_PRIVATE(alert_type),
                MBEDTLS_SSL_ALERT_MSG_ILLEGAL_PARAMETER);
+
+exit:
+    mbedtls_ssl_free(&ssl);
+    mbedtls_ssl_config_free(&conf);
+    USE_PSA_DONE();
+}
+/* END_CASE */
+
+/* BEGIN_CASE depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:MBEDTLS_SSL_DTLS_CONNECTION_ID */
+void dtls13_ku_install_waits_for_preceding_nci_ack(void)
+{
+    /* bis-02 §8: MUST NOT install new outbound keys until KeyUpdate and
+     * all preceding same-epoch post-HS messages are ACKed. */
+    mbedtls_ssl_context ssl;
+    mbedtls_ssl_config conf;
+    mbedtls_ssl_transform *pending = NULL;
+    unsigned char *p;
+    int ret;
+
+    USE_PSA_INIT();
+    mbedtls_ssl_init(&ssl);
+    mbedtls_ssl_config_init(&conf);
+
+    TEST_EQUAL(mbedtls_ssl_config_defaults(&conf,
+                                           MBEDTLS_SSL_IS_CLIENT,
+                                           MBEDTLS_SSL_TRANSPORT_DATAGRAM,
+                                           MBEDTLS_SSL_PRESET_DEFAULT), 0);
+    TEST_EQUAL(mbedtls_ssl_setup(&ssl, &conf), 0);
+
+    ssl.tls_version = MBEDTLS_SSL_VERSION_TLS1_3;
+    ssl.MBEDTLS_PRIVATE(state) = MBEDTLS_SSL_HANDSHAKE_OVER;
+
+    TEST_CALLOC(pending, 1);
+    ssl.MBEDTLS_PRIVATE(dtls13_transform_pending_out) = pending;
+    ssl.MBEDTLS_PRIVATE(dtls13_ku_ack_pending) = 1;
+    ssl.MBEDTLS_PRIVATE(dtls13_ku_acked) = 0;
+    ssl.MBEDTLS_PRIVATE(dtls13_ku_sent_epoch) = 3;
+    ssl.MBEDTLS_PRIVATE(dtls13_cid_update_ack_pending) = 1;
+
+    /* NCI then KU in epoch 3 (NCI precedes KU). */
+    ssl.MBEDTLS_PRIVATE(dtls13_pending_acks)[0].type =
+        MBEDTLS_SSL_DTLS13_PENDING_ACK_NEW_CONNECTION_ID;
+    ssl.MBEDTLS_PRIVATE(dtls13_pending_acks)[0].sent_epoch = 3;
+    ssl.MBEDTLS_PRIVATE(dtls13_pending_acks)[0].sent_seq = 1;
+    ssl.MBEDTLS_PRIVATE(dtls13_pending_acks)[1].type =
+        MBEDTLS_SSL_DTLS13_PENDING_ACK_KEY_UPDATE;
+    ssl.MBEDTLS_PRIVATE(dtls13_pending_acks)[1].sent_epoch = 3;
+    ssl.MBEDTLS_PRIVATE(dtls13_pending_acks)[1].sent_seq = 2;
+
+    /* ACK only the KeyUpdate — install must wait for NCI. */
+    ssl.MBEDTLS_PRIVATE(in_msgtype) = MBEDTLS_SSL_MSG_ACK;
+    memset(ssl.MBEDTLS_PRIVATE(in_ctr), 0, 8);
+    ssl.MBEDTLS_PRIVATE(in_ctr)[1] = 3;
+    TEST_ASSERT(ssl.MBEDTLS_PRIVATE(in_msg) != NULL);
+    p = ssl.MBEDTLS_PRIVATE(in_msg);
+    MBEDTLS_PUT_UINT16_BE(16, p, 0);
+    MBEDTLS_PUT_UINT64_BE(3, p, 2);
+    MBEDTLS_PUT_UINT64_BE(2, p, 10);
+    ssl.MBEDTLS_PRIVATE(in_msglen) = 18;
+    ssl.MBEDTLS_PRIVATE(in_hslen) = 0;
+
+    ret = mbedtls_ssl_handle_message_type(&ssl);
+    TEST_EQUAL(ret, MBEDTLS_ERR_SSL_NON_FATAL);
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(dtls13_ku_ack_pending), 1);
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(dtls13_ku_acked), 1);
+    TEST_ASSERT(ssl.MBEDTLS_PRIVATE(dtls13_transform_pending_out) == pending);
+
+    /* ACK the preceding NCI — now install. */
+    ssl.MBEDTLS_PRIVATE(in_msgtype) = MBEDTLS_SSL_MSG_ACK;
+    memset(ssl.MBEDTLS_PRIVATE(in_ctr), 0, 8);
+    ssl.MBEDTLS_PRIVATE(in_ctr)[1] = 3;
+    p = ssl.MBEDTLS_PRIVATE(in_msg);
+    MBEDTLS_PUT_UINT16_BE(16, p, 0);
+    MBEDTLS_PUT_UINT64_BE(3, p, 2);
+    MBEDTLS_PUT_UINT64_BE(1, p, 10);
+    ssl.MBEDTLS_PRIVATE(in_msglen) = 18;
+    ssl.MBEDTLS_PRIVATE(send_alert) = 0;
+
+    ret = mbedtls_ssl_handle_message_type(&ssl);
+    TEST_EQUAL(ret, MBEDTLS_ERR_SSL_WANT_READ); /* KU pending cleared */
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(dtls13_ku_ack_pending), 0);
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(dtls13_ku_acked), 0);
+    TEST_ASSERT(ssl.MBEDTLS_PRIVATE(dtls13_transform_pending_out) == NULL);
+    TEST_ASSERT(ssl.MBEDTLS_PRIVATE(transform_out) == pending);
+    pending = NULL; /* owned by ssl now */
+
+exit:
+    (void) pending;
+    mbedtls_ssl_free(&ssl);
+    mbedtls_ssl_config_free(&conf);
+    USE_PSA_DONE();
+}
+/* END_CASE */
+
+/* BEGIN_CASE depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:MBEDTLS_SSL_DTLS_CONNECTION_ID */
+void dtls13_nci_blocked_while_ku_ack_pending(void)
+{
+    /* bis-02 §8: after sending KeyUpdate, MUST NOT send further post-HS
+     * in that epoch (next epoch not active until ACK). */
+    mbedtls_ssl_context ssl;
+    mbedtls_ssl_config conf;
+    mbedtls_ssl_transform *transform = NULL;
+    mbedtls_ssl_session *session = NULL;
+    int ret;
+
+    USE_PSA_INIT();
+    mbedtls_ssl_init(&ssl);
+    mbedtls_ssl_config_init(&conf);
+
+    TEST_EQUAL(mbedtls_ssl_config_defaults(&conf,
+                                           MBEDTLS_SSL_IS_CLIENT,
+                                           MBEDTLS_SSL_TRANSPORT_DATAGRAM,
+                                           MBEDTLS_SSL_PRESET_DEFAULT), 0);
+    TEST_EQUAL(mbedtls_ssl_setup(&ssl, &conf), 0);
+
+    ssl.tls_version = MBEDTLS_SSL_VERSION_TLS1_3;
+    ssl.MBEDTLS_PRIVATE(state) = MBEDTLS_SSL_HANDSHAKE_OVER;
+    ssl.MBEDTLS_PRIVATE(dtls13_ku_ack_pending) = 1;
+
+    TEST_CALLOC(session, 1);
+    ssl.MBEDTLS_PRIVATE(session) = session;
+    TEST_CALLOC(transform, 1);
+    transform->out_cid_len = 4;
+    ssl.MBEDTLS_PRIVATE(transform_out) = transform;
+
+    ret = mbedtls_ssl_dtls13_send_new_connection_id(&ssl);
+    TEST_EQUAL(ret, MBEDTLS_ERR_SSL_WANT_WRITE);
+
+exit:
+    /* ssl_free frees session/transform via context ownership. */
+    mbedtls_ssl_free(&ssl);
+    mbedtls_ssl_config_free(&conf);
+    USE_PSA_DONE();
+}
+/* END_CASE */
+
+/* BEGIN_CASE depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:MBEDTLS_SSL_DTLS_CONNECTION_ID */
+void dtls13_reject_post_hs_after_peer_ku_same_epoch(void)
+{
+    /* bis-02 §8: peer post-HS on an epoch already closed by their KeyUpdate
+     * → unexpected_message. */
+    mbedtls_ssl_context ssl;
+    mbedtls_ssl_config conf;
+    int ret;
+
+    USE_PSA_INIT();
+    mbedtls_ssl_init(&ssl);
+    mbedtls_ssl_config_init(&conf);
+
+    TEST_EQUAL(mbedtls_ssl_config_defaults(&conf,
+                                           MBEDTLS_SSL_IS_CLIENT,
+                                           MBEDTLS_SSL_TRANSPORT_DATAGRAM,
+                                           MBEDTLS_SSL_PRESET_DEFAULT), 0);
+    TEST_EQUAL(mbedtls_ssl_setup(&ssl, &conf), 0);
+
+    ssl.tls_version = MBEDTLS_SSL_VERSION_TLS1_3;
+    ssl.MBEDTLS_PRIVATE(state) = MBEDTLS_SSL_HANDSHAKE_OVER;
+    ssl.MBEDTLS_PRIVATE(in_epoch) = 3;
+    ssl.MBEDTLS_PRIVATE(dtls13_peer_post_hs_closed_epoch) = 3;
+    ssl.MBEDTLS_PRIVATE(dtls13_peer_post_hs_closed_valid) = 1;
+
+    ssl.MBEDTLS_PRIVATE(in_msgtype) = MBEDTLS_SSL_MSG_HANDSHAKE;
+    TEST_ASSERT(ssl.MBEDTLS_PRIVATE(in_msg) != NULL);
+    ssl.MBEDTLS_PRIVATE(in_msg)[0] = MBEDTLS_SSL_HS_NEW_CONNECTION_ID;
+    ssl.MBEDTLS_PRIVATE(in_hslen) = 12;
+    ssl.MBEDTLS_PRIVATE(in_msglen) = 12;
+
+    ret = ssl_tls13_handle_hs_message_post_handshake(&ssl);
+    TEST_EQUAL(ret, MBEDTLS_ERR_SSL_UNEXPECTED_MESSAGE);
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(send_alert), 1);
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(alert_type),
+               MBEDTLS_SSL_ALERT_MSG_UNEXPECTED_MESSAGE);
 
 exit:
     mbedtls_ssl_free(&ssl);

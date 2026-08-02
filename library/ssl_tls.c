@@ -1431,6 +1431,10 @@ void mbedtls_ssl_session_reset_msg_layer(mbedtls_ssl_context *ssl,
     ssl->dtls13_post_hs_msg_seq = 0;
     ssl->dtls13_post_hs_in_msg_seq = 0;
     ssl->dtls13_ku_ack_pending = 0;
+    ssl->dtls13_ku_sent_epoch = 0;
+    ssl->dtls13_ku_acked = 0;
+    ssl->dtls13_peer_post_hs_closed_epoch = 0;
+    ssl->dtls13_peer_post_hs_closed_valid = 0;
 #if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
     ssl->dtls13_cid_update_ack_pending = 0;
     ssl->dtls13_req_cid_count = 0;

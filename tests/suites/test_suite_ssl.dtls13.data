@@ -187,3 +187,12 @@ dtls13_ack_epoch0_ignored_before_version_selected_server:
 
 DTLS 1.3 ACK: process after HRR selection (bis-02 §7)
 dtls13_ack_processed_after_hrr_selection:
+
+DTLS 1.3 KeyUpdate: defer outbound install until preceding NCI ACK (bis-02 §8)
+dtls13_ku_install_waits_for_preceding_nci_ack:
+
+DTLS 1.3 KeyUpdate: block NCI while KU ACK pending (bis-02 §8)
+dtls13_nci_blocked_while_ku_ack_pending:
+
+DTLS 1.3 KeyUpdate: reject peer post-HS after KU same epoch (bis-02 §8)
+dtls13_reject_post_hs_after_peer_ku_same_epoch:

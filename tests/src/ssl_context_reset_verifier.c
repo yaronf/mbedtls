@@ -141,6 +141,30 @@ int mbedtls_test_ssl_check_context_after_session_reset(const mbedtls_ssl_context
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
 
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    TEST_ASSERT(after->dtls13_ku_sent_epoch == initial.dtls13_ku_sent_epoch);
+#endif
+#endif
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    TEST_ASSERT(after->dtls13_ku_acked == initial.dtls13_ku_acked);
+#endif
+#endif
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    TEST_ASSERT(after->dtls13_peer_post_hs_closed_epoch == initial.dtls13_peer_post_hs_closed_epoch);
+#endif
+#endif
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    TEST_ASSERT(after->dtls13_peer_post_hs_closed_valid == initial.dtls13_peer_post_hs_closed_valid);
+#endif
+#endif
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
 
 #if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
     TEST_ASSERT(after->dtls13_cid_update_ack_pending == initial.dtls13_cid_update_ack_pending);
