@@ -6959,6 +6959,62 @@ static int ssl_dtls13_write_ack(mbedtls_ssl_context *ssl)
 
     count = ssl->dtls13_received_record_count;
 
+    /* bis-02 §7: ACK epoch must be >= every cited record epoch.  Mid-handshake
+     * the client often still has outbound epoch 0 while ACKing epoch-2
+     * fragments; upgrade outbound permanently to a sufficient transform.
+     * Prefer handshake over application when both satisfy max_cited so we do
+     * not emit epoch-3 ACKs before the peer has installed app inbound keys. */
+    if (count > 0) {
+        uint64_t max_cited = 0;
+        uint16_t out_epoch;
+        mbedtls_ssl_transform *upgrade = NULL;
+
+        for (i = 0; i < count; i++) {
+            if (ssl->dtls13_received_records[i].epoch > max_cited) {
+                max_cited = ssl->dtls13_received_records[i].epoch;
+            }
+        }
+
+        out_epoch = MBEDTLS_GET_UINT16_BE(ssl->cur_out_ctr, 0);
+        if (max_cited > (uint64_t) out_epoch) {
+            mbedtls_ssl_transform *hs_tr =
+                (ssl->handshake != NULL) ? ssl->handshake->transform_handshake
+                                         : NULL;
+
+            if (hs_tr != NULL &&
+                hs_tr->dtls13_epoch != 1 &&
+                (uint64_t) hs_tr->dtls13_epoch >= max_cited) {
+                upgrade = hs_tr;
+            } else if (ssl->transform_application != NULL &&
+                       (uint64_t) ssl->transform_application->dtls13_epoch >=
+                       max_cited) {
+                upgrade = ssl->transform_application;
+            }
+
+            if (upgrade == NULL) {
+                /* Invariant: decrypting an e>=2 record requires the HS
+                 * transform, so this should be unreachable.  Fail closed —
+                 * do not send an illegal ACK and do not WANT_WRITE-spin. */
+                MBEDTLS_SSL_DEBUG_MSG(1,
+                    ("DTLS 1.3: cannot ACK cited epoch %llu from outbound "
+                     "epoch %u — no sufficient transform",
+                     (unsigned long long) max_cited,
+                     (unsigned) out_epoch));
+                ssl->dtls13_ack_pending = 0;
+                ssl->dtls13_received_record_count = 0;
+                return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+            }
+
+            if (ssl->transform_out != upgrade) {
+                MBEDTLS_SSL_DEBUG_MSG(2,
+                    ("DTLS 1.3: upgrading outbound epoch %u -> %u for ACK",
+                     (unsigned) out_epoch,
+                     (unsigned) upgrade->dtls13_epoch));
+                mbedtls_ssl_set_outbound_transform(ssl, upgrade);
+            }
+        }
+    }
+
     /* 2-byte length field + 16 bytes per RecordNumber */
     ssl->out_msglen = 2 + count * 16;
     ssl->out_msgtype = MBEDTLS_SSL_MSG_ACK;

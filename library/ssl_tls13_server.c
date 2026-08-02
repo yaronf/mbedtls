@@ -3099,10 +3099,12 @@ static int ssl_tls13_write_encrypted_extensions(mbedtls_ssl_context *ssl)
 
     /* Only switch the outbound transform on the first attempt.  On DTLS 1.3
      * nbio retries dtls13_frag_off is non-zero, and set_outbound_transform
-     * would reset cur_out_ctr — causing duplicate sequence numbers. */
+     * would reset cur_out_ctr — causing duplicate sequence numbers.
+     * Also skip if outbound is already the handshake transform. */
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
     if (ssl->conf->transport != MBEDTLS_SSL_TRANSPORT_DATAGRAM ||
-        ssl->handshake->dtls13_frag_off == 0)
+        (ssl->handshake->dtls13_frag_off == 0 &&
+         ssl->transform_out != ssl->handshake->transform_handshake))
 #endif
     {
         mbedtls_ssl_set_outbound_transform(ssl,

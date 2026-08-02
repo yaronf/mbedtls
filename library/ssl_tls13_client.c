@@ -2878,10 +2878,12 @@ static int ssl_tls13_write_client_certificate(mbedtls_ssl_context *ssl)
      * nbio retries dtls13_frag_off is non-zero, and set_outbound_transform
      * would reset cur_out_ctr to zero — causing all retry fragments to be
      * encrypted with sequence number 0 (triggering anti-replay rejection on
-     * the peer). */
+     * the peer).  Also skip if an earlier ACK already upgraded outbound to
+     * the handshake transform (bis-02 §7 epoch rule). */
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
     if (ssl->conf->transport != MBEDTLS_SSL_TRANSPORT_DATAGRAM ||
-        ssl->handshake->dtls13_frag_off == 0)
+        (ssl->handshake->dtls13_frag_off == 0 &&
+         ssl->transform_out != ssl->handshake->transform_handshake))
 #endif
     {
         MBEDTLS_SSL_DEBUG_MSG(1,
