@@ -7595,6 +7595,60 @@ exit:
 }
 /* END_CASE */
 
+/* BEGIN_CASE depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS */
+void dtls13_ack_rejects_future_epoch_in_record_numbers(void)
+{
+    /* draft-ietf-tls-rfc9147bis-02 §7.2:
+     * If any element of record_numbers in the ACK references an epoch
+     * higher than the epoch in which the ACK was received, terminate
+     * with illegal_parameter.
+     *
+     * Construct an ACK received at epoch 2 that claims to acknowledge
+     * a record from epoch 3. */
+    mbedtls_ssl_context ssl;
+    mbedtls_ssl_config conf;
+    unsigned char *p;
+    int ret;
+
+    USE_PSA_INIT();
+    mbedtls_ssl_init(&ssl);
+    mbedtls_ssl_config_init(&conf);
+
+    TEST_EQUAL(mbedtls_ssl_config_defaults(&conf,
+                                           MBEDTLS_SSL_IS_CLIENT,
+                                           MBEDTLS_SSL_TRANSPORT_DATAGRAM,
+                                           MBEDTLS_SSL_PRESET_DEFAULT), 0);
+    TEST_EQUAL(mbedtls_ssl_setup(&ssl, &conf), 0);
+
+    ssl.tls_version = MBEDTLS_SSL_VERSION_TLS1_3;
+    ssl.MBEDTLS_PRIVATE(in_msgtype) = MBEDTLS_SSL_MSG_ACK;
+    /* ACK record header epoch = 2 (first two bytes of in_ctr). */
+    memset(ssl.MBEDTLS_PRIVATE(in_ctr), 0, 8);
+    ssl.MBEDTLS_PRIVATE(in_ctr)[0] = 0;
+    ssl.MBEDTLS_PRIVATE(in_ctr)[1] = 2;
+
+    /* ACK body: list_len=16, one RecordNumber { epoch=3, seq=1 }. */
+    TEST_ASSERT(ssl.MBEDTLS_PRIVATE(in_msg) != NULL);
+    p = ssl.MBEDTLS_PRIVATE(in_msg);
+    MBEDTLS_PUT_UINT16_BE(16, p, 0);
+    MBEDTLS_PUT_UINT64_BE(3, p, 2);   /* epoch */
+    MBEDTLS_PUT_UINT64_BE(1, p, 10);  /* seq */
+    ssl.MBEDTLS_PRIVATE(in_msglen) = 18;
+    ssl.MBEDTLS_PRIVATE(in_hslen) = 0;
+
+    ret = mbedtls_ssl_handle_message_type(&ssl);
+    TEST_EQUAL(ret, MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER);
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(send_alert), 1);
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(alert_type),
+               MBEDTLS_SSL_ALERT_MSG_ILLEGAL_PARAMETER);
+
+exit:
+    mbedtls_ssl_free(&ssl);
+    mbedtls_ssl_config_free(&conf);
+    USE_PSA_DONE();
+}
+/* END_CASE */
+
 /* BEGIN_CASE depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:MBEDTLS_SSL_DTLS_HELLO_VERIFY:MBEDTLS_SSL_HANDSHAKE_WITH_CERT_ENABLED:PSA_WANT_ECC_SECP_R1_256:PSA_WANT_ECC_SECP_R1_384:PSA_WANT_ALG_SHA_256:MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL_ENABLED */
 void dtls13_hrr_secret_server_is_stateless(void)
 {

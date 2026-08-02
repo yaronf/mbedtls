@@ -7045,6 +7045,8 @@ static int ssl_dtls13_process_ack(mbedtls_ssl_context *ssl,
     int all_acked;
     int newly_acked = 0; /* bool */
     mbedtls_ssl_flight_item *item;
+    /* Epoch of the ACK record itself (draft-ietf-tls-rfc9147bis-02 §7.2). */
+    uint64_t ack_epoch;
 
     /* Need at least 2 bytes for the length field. */
     if (end - buf < 2) {
@@ -7071,6 +7073,8 @@ static int ssl_dtls13_process_ack(mbedtls_ssl_context *ssl,
     count = list_len / 16;
     MBEDTLS_SSL_DEBUG_MSG(2, ("ACK received: %u record numbers", (unsigned) count));
 
+    ack_epoch = (uint64_t) MBEDTLS_GET_UINT16_BE(ssl->in_ctr, 0);
+
     for (i = 0; i < count; i++) {
         uint64_t epoch = MBEDTLS_GET_UINT64_BE(buf,  0);
         uint64_t seq   = MBEDTLS_GET_UINT64_BE(buf,  8);
@@ -7079,6 +7083,19 @@ static int ssl_dtls13_process_ack(mbedtls_ssl_context *ssl,
         MBEDTLS_SSL_DEBUG_MSG(3, ("ACK: epoch=%llu seq=%llu",
                                   (unsigned long long) epoch,
                                   (unsigned long long) seq));
+
+        /* bis-02 §7.2: record_numbers must not cite an epoch higher than
+         * the epoch in which the ACK was received. */
+        if (epoch > ack_epoch) {
+            MBEDTLS_SSL_DEBUG_MSG(1, ("ACK: record_numbers cite epoch %llu "
+                                      "> ACK epoch %llu",
+                                      (unsigned long long) epoch,
+                                      (unsigned long long) ack_epoch));
+            MBEDTLS_SSL_PEND_FATAL_ALERT(
+                MBEDTLS_SSL_ALERT_MSG_ILLEGAL_PARAMETER,
+                MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER);
+            return MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER;
+        }
 
         /* Check pending-ACK slots for standalone post-handshake messages. */
         {
@@ -7336,7 +7353,13 @@ int mbedtls_ssl_handle_message_type(mbedtls_ssl_context *ssl)
                                      ssl->in_msg + ssl->in_msglen);
         if (ret != 0) {
             MBEDTLS_SSL_DEBUG_RET(1, "ssl_dtls13_process_ack", ret);
-            /* Non-fatal: a malformed ACK should not kill the connection. */
+            /* Fatal protocol violations (e.g. bis-02 §7.2 future-epoch
+             * citation) must not be soft-ignored. */
+            if (ret == MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER) {
+                return ret;
+            }
+            /* Other parse errors: a malformed ACK should not kill the
+             * connection. */
             return MBEDTLS_ERR_SSL_NON_FATAL;
         }
         /* If this ACK cleared a pending KeyUpdate, surface to the caller

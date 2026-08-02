@@ -172,3 +172,6 @@ dtls13_post_hs_timeout_retransmit_fail_clears_flag:
 
 DTLS 1.3 session_reset: clears prior-connection DTLS 1.3 state
 dtls13_session_reset_clears_connection_state:
+
+DTLS 1.3 ACK: reject record_numbers citing epoch > ACK epoch (bis-02 §7.2)
+dtls13_ack_rejects_future_epoch_in_record_numbers:
