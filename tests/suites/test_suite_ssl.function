@@ -7488,6 +7488,113 @@ exit:
 }
 /* END_CASE */
 
+/* BEGIN_CASE depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS */
+void dtls13_session_reset_clears_connection_state(void)
+{
+    /* session_reset must not leave prior-connection DTLS 1.3 state
+     * (peer CIDs, ACK/seq counters, epoch tracking) for the next peer. */
+    mbedtls_ssl_context ssl;
+    mbedtls_ssl_config conf;
+    unsigned char zeros[512];
+
+    MD_OR_USE_PSA_INIT();
+    mbedtls_ssl_init(&ssl);
+    mbedtls_ssl_config_init(&conf);
+    memset(zeros, 0, sizeof(zeros));
+
+    TEST_EQUAL(0, mbedtls_ssl_config_defaults(&conf,
+                                              MBEDTLS_SSL_IS_CLIENT,
+                                              MBEDTLS_SSL_TRANSPORT_DATAGRAM,
+                                              MBEDTLS_SSL_PRESET_DEFAULT));
+    TEST_EQUAL(0, mbedtls_ssl_setup(&ssl, &conf));
+
+    /* Mark negotiated DTLS 1.3 so the DTLS 1.3 reset arm runs. */
+    ssl.tls_version = MBEDTLS_SSL_VERSION_TLS1_3;
+
+    memset(ssl.MBEDTLS_PRIVATE(dtls13_epoch_max_seq), 0xa5,
+           sizeof(ssl.MBEDTLS_PRIVATE(dtls13_epoch_max_seq)));
+    ssl.MBEDTLS_PRIVATE(dtls13_ack_pending) = 1;
+    ssl.MBEDTLS_PRIVATE(dtls13_post_hs_msg_seq) = 0x1234;
+    ssl.MBEDTLS_PRIVATE(dtls13_post_hs_in_msg_seq) = 0x5678;
+    ssl.MBEDTLS_PRIVATE(dtls13_ku_ack_pending) = 1;
+    memset(ssl.MBEDTLS_PRIVATE(dtls13_ku_pending_secret), 0x5a,
+           sizeof(ssl.MBEDTLS_PRIVATE(dtls13_ku_pending_secret)));
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+    ssl.MBEDTLS_PRIVATE(dtls13_cid_update_ack_pending) = 1;
+    ssl.MBEDTLS_PRIVATE(dtls13_req_cid_count) = 7;
+    ssl.MBEDTLS_PRIVATE(dtls13_req_cid_pending) = 1;
+    memset(ssl.MBEDTLS_PRIVATE(dtls13_own_cid_pool), 0xb3,
+           sizeof(ssl.MBEDTLS_PRIVATE(dtls13_own_cid_pool)));
+    ssl.MBEDTLS_PRIVATE(dtls13_own_cid_active_idx) = 1;
+    ssl.MBEDTLS_PRIVATE(dtls13_own_cid_pool_ready) = 1;
+    memset(ssl.MBEDTLS_PRIVATE(dtls13_peer_cid_pool), 0xc4,
+           sizeof(ssl.MBEDTLS_PRIVATE(dtls13_peer_cid_pool)));
+    ssl.MBEDTLS_PRIVATE(dtls13_peer_cid_active_idx) = 1;
+    ssl.MBEDTLS_PRIVATE(dtls13_peer_cid_pool_ready) = 1;
+#endif
+    memset(ssl.MBEDTLS_PRIVATE(dtls13_pending_acks), 0xd5,
+           sizeof(ssl.MBEDTLS_PRIVATE(dtls13_pending_acks)));
+    memset(ssl.MBEDTLS_PRIVATE(dtls13_received_records), 0xe6,
+           sizeof(ssl.MBEDTLS_PRIVATE(dtls13_received_records)));
+    ssl.MBEDTLS_PRIVATE(dtls13_received_record_count) = 3;
+    ssl.MBEDTLS_PRIVATE(dtls13_epoch_pool)[0].epoch = 42;
+    ssl.MBEDTLS_PRIVATE(dtls13_epoch_pool)[0].retired_epoch = 7;
+    ssl.MBEDTLS_PRIVATE(dtls13_epoch_pool)[0].in_window = 0xffffffffffffffffULL;
+    ssl.MBEDTLS_PRIVATE(dtls13_epoch_pool)[0].in_window_top = 99;
+
+    TEST_EQUAL(0, mbedtls_ssl_session_reset(&ssl));
+
+    TEST_ASSERT(sizeof(zeros) >= sizeof(ssl.MBEDTLS_PRIVATE(dtls13_epoch_max_seq)));
+    TEST_MEMORY_COMPARE(ssl.MBEDTLS_PRIVATE(dtls13_epoch_max_seq),
+                        sizeof(ssl.MBEDTLS_PRIVATE(dtls13_epoch_max_seq)),
+                        zeros, sizeof(ssl.MBEDTLS_PRIVATE(dtls13_epoch_max_seq)));
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(dtls13_ack_pending), 0);
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(dtls13_post_hs_msg_seq), 0);
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(dtls13_post_hs_in_msg_seq), 0);
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(dtls13_ku_ack_pending), 0);
+    TEST_ASSERT(sizeof(zeros) >= sizeof(ssl.MBEDTLS_PRIVATE(dtls13_ku_pending_secret)));
+    TEST_MEMORY_COMPARE(ssl.MBEDTLS_PRIVATE(dtls13_ku_pending_secret),
+                        sizeof(ssl.MBEDTLS_PRIVATE(dtls13_ku_pending_secret)),
+                        zeros, sizeof(ssl.MBEDTLS_PRIVATE(dtls13_ku_pending_secret)));
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(dtls13_cid_update_ack_pending), 0);
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(dtls13_req_cid_count), 0);
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(dtls13_req_cid_pending), 0);
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(dtls13_own_cid_pool_ready), 0);
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(dtls13_own_cid_active_idx), 0);
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(dtls13_peer_cid_pool_ready), 0);
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(dtls13_peer_cid_active_idx), 0);
+    TEST_ASSERT(sizeof(zeros) >= sizeof(ssl.MBEDTLS_PRIVATE(dtls13_own_cid_pool)));
+    TEST_MEMORY_COMPARE(ssl.MBEDTLS_PRIVATE(dtls13_own_cid_pool),
+                        sizeof(ssl.MBEDTLS_PRIVATE(dtls13_own_cid_pool)),
+                        zeros, sizeof(ssl.MBEDTLS_PRIVATE(dtls13_own_cid_pool)));
+    TEST_ASSERT(sizeof(zeros) >= sizeof(ssl.MBEDTLS_PRIVATE(dtls13_peer_cid_pool)));
+    TEST_MEMORY_COMPARE(ssl.MBEDTLS_PRIVATE(dtls13_peer_cid_pool),
+                        sizeof(ssl.MBEDTLS_PRIVATE(dtls13_peer_cid_pool)),
+                        zeros, sizeof(ssl.MBEDTLS_PRIVATE(dtls13_peer_cid_pool)));
+#endif
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(dtls13_received_record_count), 0);
+    TEST_ASSERT(sizeof(zeros) >= sizeof(ssl.MBEDTLS_PRIVATE(dtls13_pending_acks)));
+    TEST_MEMORY_COMPARE(ssl.MBEDTLS_PRIVATE(dtls13_pending_acks),
+                        sizeof(ssl.MBEDTLS_PRIVATE(dtls13_pending_acks)),
+                        zeros, sizeof(ssl.MBEDTLS_PRIVATE(dtls13_pending_acks)));
+    TEST_ASSERT(sizeof(zeros) >= sizeof(ssl.MBEDTLS_PRIVATE(dtls13_received_records)));
+    TEST_MEMORY_COMPARE(ssl.MBEDTLS_PRIVATE(dtls13_received_records),
+                        sizeof(ssl.MBEDTLS_PRIVATE(dtls13_received_records)),
+                        zeros, sizeof(ssl.MBEDTLS_PRIVATE(dtls13_received_records)));
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(dtls13_epoch_pool)[0].epoch, 0);
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(dtls13_epoch_pool)[0].retired_epoch, 0);
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(dtls13_epoch_pool)[0].in_window, 0);
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(dtls13_epoch_pool)[0].in_window_top, 0);
+    TEST_ASSERT(ssl.MBEDTLS_PRIVATE(dtls13_epoch_pool)[0].transform == NULL);
+
+exit:
+    mbedtls_ssl_free(&ssl);
+    mbedtls_ssl_config_free(&conf);
+    USE_PSA_DONE();
+}
+/* END_CASE */
+
 /* BEGIN_CASE depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:MBEDTLS_SSL_DTLS_HELLO_VERIFY:MBEDTLS_SSL_HANDSHAKE_WITH_CERT_ENABLED:PSA_WANT_ECC_SECP_R1_256:PSA_WANT_ECC_SECP_R1_384:PSA_WANT_ALG_SHA_256:MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL_ENABLED */
 void dtls13_hrr_secret_server_is_stateless(void)
 {

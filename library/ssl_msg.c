@@ -10452,6 +10452,10 @@ void ssl_dtls13_epoch_pool_free(mbedtls_ssl_context *ssl)
             mbedtls_free(pool[i].transform);
             pool[i].transform = NULL;
         }
+        /* Clear epoch metadata (epoch id, counters, anti-replay window)
+         * so a subsequent session_reset / free does not leave prior-
+         * connection tracking bits behind. */
+        mbedtls_platform_zeroize(&pool[i], sizeof(pool[i]));
     }
 }
 #endif /* MBEDTLS_SSL_PROTO_DTLS && MBEDTLS_SSL_PROTO_TLS1_3 */

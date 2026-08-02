@@ -1421,6 +1421,33 @@ void mbedtls_ssl_session_reset_msg_layer(mbedtls_ssl_context *ssl,
      * pending flags (dtls13_ku_ack_pending, dtls13_cid_update_ack_pending,
      * dtls13_req_cid_pending). */
     ssl_dtls13_post_hs_retransmit_reset(ssl);
+
+    /* Drop all prior-connection DTLS 1.3 state so a reused context cannot
+     * inherit peer CIDs, ACK/seq counters, or epoch tracking from the last
+     * peer.  own_cid / own_cid_len stay (KEEP): they are application-set. */
+    mbedtls_platform_zeroize(ssl->dtls13_epoch_max_seq,
+                             sizeof(ssl->dtls13_epoch_max_seq));
+    ssl->dtls13_ack_pending = 0;
+    ssl->dtls13_post_hs_msg_seq = 0;
+    ssl->dtls13_post_hs_in_msg_seq = 0;
+    ssl->dtls13_ku_ack_pending = 0;
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+    ssl->dtls13_cid_update_ack_pending = 0;
+    ssl->dtls13_req_cid_count = 0;
+    ssl->dtls13_req_cid_pending = 0;
+    mbedtls_platform_zeroize(ssl->dtls13_own_cid_pool,
+                             sizeof(ssl->dtls13_own_cid_pool));
+    ssl->dtls13_own_cid_active_idx = 0;
+    ssl->dtls13_own_cid_pool_ready = 0;
+    mbedtls_platform_zeroize(ssl->dtls13_peer_cid_pool,
+                             sizeof(ssl->dtls13_peer_cid_pool));
+    ssl->dtls13_peer_cid_active_idx = 0;
+    ssl->dtls13_peer_cid_pool_ready = 0;
+#endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
+    mbedtls_platform_zeroize(ssl->dtls13_pending_acks,
+                             sizeof(ssl->dtls13_pending_acks));
+    mbedtls_platform_zeroize(ssl->dtls13_received_records,
+                             sizeof(ssl->dtls13_received_records));
     ssl->dtls13_received_record_count = 0;
 #endif
 
