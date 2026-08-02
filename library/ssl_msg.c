@@ -4290,6 +4290,11 @@ int mbedtls_ssl_update_handshake_status(mbedtls_ssl_context *ssl)
             ret = mbedtls_ssl_add_hs_msg_to_checksum(ssl, ssl->in_msg[0],
                                                      ssl->in_msg + 12,
                                                      body_len);
+            if (ret != 0) {
+                MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_add_hs_msg_to_checksum",
+                                      ret);
+                return ret;
+            }
         } else
 #endif
         {
