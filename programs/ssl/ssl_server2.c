@@ -61,6 +61,7 @@ void mbedtls_ssl_dtls13_test_set_hrr_cookie_fault(int fault_mode,
 #endif
 
 #include "test/psa_crypto_helpers.h"
+#include "test/ssl_helpers.h"
 
 #include "mbedtls/pk.h"
 #if defined(MBEDTLS_PK_HAVE_PRIVATE_HEADER)
@@ -392,9 +393,6 @@ void mbedtls_ssl_dtls13_test_set_hrr_cookie_fault(int fault_mode,
 #define USAGE_ANTI_REPLAY ""
 #endif
 
-#define USAGE_BADMAC_LIMIT \
-    "    badmac_limit=%%d     default: (library default: disabled)\n"
-
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
 #define USAGE_DTLS \
     "    dtls=%%d             default: 0 (TLS)\n"                           \
@@ -403,7 +401,8 @@ void mbedtls_ssl_dtls13_test_set_hrr_cookie_fault(int fault_mode,
     "    mtu=%%d              default: (library default: unlimited)\n"  \
     "    dgram_packing=%%d    default: 1 (allowed)\n"                   \
     "                        allow or forbid packing of multiple\n" \
-    "                        records within a single datgram.\n"
+    "                        records within a single datagram.\n" \
+    "    badmac_limit=%%d     default: (library default: disabled)\n"
 #else
 #define USAGE_DTLS ""
 #endif
@@ -579,7 +578,6 @@ void mbedtls_ssl_dtls13_test_set_hrr_cookie_fault(int fault_mode,
     USAGE_SRTP                                              \
     USAGE_COOKIES                                           \
     USAGE_ANTI_REPLAY                                       \
-    USAGE_BADMAC_LIMIT                                      \
     "\n"
 #define USAGE2 \
     "    auth_mode=%%s        default: (library default: none)\n"      \
@@ -3652,7 +3650,15 @@ reset:
 
     mbedtls_net_free(&client_fd);
 
+    /* Dump the SSL context before resetting it. This will be used below
+     * to check if the reset function worked properly. */
+    mbedtls_ssl_context ssl_before = ssl;
     mbedtls_ssl_session_reset(&ssl);
+    if (mbedtls_test_ssl_check_context_after_session_reset(&ssl_before, &ssl) != 0) {
+        mbedtls_printf(
+            " failed\n  ! mbedtls_ssl_session_reset didn't properly reset ssl context\n\n");
+        goto exit;
+    }
 
     /*
      * 3. Wait until a client connects

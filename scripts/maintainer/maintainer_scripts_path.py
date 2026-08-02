@@ -1,8 +1,8 @@
-"""Add our Python library directory to the module search path.
+"""Add our Python library directories for maintainer scripts to the module search path.
 
 Usage:
 
-    import scripts_path # pylint: disable=unused-import
+    import maintainer_scripts_path # pylint: disable=unused-import
 """
 
 # Copyright The Mbed TLS Contributors
@@ -14,10 +14,7 @@ import sys
 
 sys.path.append(os.path.join(os.path.dirname(__file__),
                              os.path.pardir, os.path.pardir,
-                             'scripts'))
-sys.path.append(os.path.join(os.path.dirname(__file__),
-                             os.path.pardir, os.path.pardir,
                              'framework', 'scripts'))
 sys.path.append(os.path.join(os.path.dirname(__file__),
                              os.path.pardir, os.path.pardir,
-                             'tf-psa-crypto', 'scripts', 'project_knowledge'))
+                             'framework', 'util'))

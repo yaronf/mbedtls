@@ -22,6 +22,7 @@ int main(void)
 #else /* !MBEDTLS_SSL_TEST_IMPOSSIBLE && MBEDTLS_SSL_CLI_C */
 
 #include "test/psa_crypto_helpers.h"
+#include "test/ssl_helpers.h"
 
 /* DTLS 1.3 fault-injection helpers — TEST ONLY, declared in library/ssl_misc.h
  * (internal header, not in our include path).  Forward-declare here so we can
@@ -111,6 +112,7 @@ int mbedtls_ssl_dtls13_test_send_bad_request_connection_id(
 #define DFL_HS_TO_MIN           0
 #define DFL_HS_TO_MAX           0
 #define DFL_DTLS_MTU            -1
+#define DFL_BADMAC_LIMIT        -1
 #define DFL_DGRAM_PACKING        1
 #define DFL_FALLBACK            -1
 #define DFL_EXTENDED_MS         -1
@@ -294,7 +296,8 @@ int mbedtls_ssl_dtls13_test_send_bad_request_connection_id(
     "    mtu=%%d              default: (library default: unlimited)\n"  \
     "    dgram_packing=%%d    default: 1 (allowed)\n"                   \
     "                        allow or forbid packing of multiple\n" \
-    "                        records within a single datgram.\n"
+    "                        records within a single datagram.\n"  \
+    "    badmac_limit=%%d     default: (library default: disabled)\n"
 #else
 #define USAGE_DTLS ""
 #endif
@@ -357,7 +360,7 @@ int mbedtls_ssl_dtls13_test_send_bad_request_connection_id(
 #if defined(MBEDTLS_SSL_RENEGOTIATION)
 #define USAGE_RENEGO \
     "    renegotiation=%%d    default: 0 (disabled)\n"      \
-    "    renegotiate=%%d      default: 0 (disabled)\n"      \
+    "    renegotiate=%%d      default: 0 (disabled), 1 immediately, 2 after first exchange\n"      \
     "    renego_delay=%%d     default: -2 (library default)\n"
 #else
 #define USAGE_RENEGO ""
@@ -556,7 +559,7 @@ struct options {
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
     int renegotiation;          /* enable / disable renegotiation           */
     int allow_legacy;           /* allow legacy renegotiation               */
-    int renegotiate;            /* attempt renegotiation?                   */
+    int renegotiate;            /* attempt renegotiation? 1: before data, 2: after first exchange */
     int renego_delay;           /* delay before enforcing renegotiation     */
     int key_update;             /* send DTLS 1.3 KeyUpdate after handshake  */
     int bad_keyupdate;          /* send malformed KeyUpdate (coverage test) */
@@ -594,6 +597,7 @@ struct options {
     int dtls_mtu;               /* UDP Maximum transport unit for DTLS       */
     int fallback;               /* is this a fallback connection?           */
     int dgram_packing;          /* allow/forbid datagram packing            */
+    int badmac_limit;           /* Limit of records with bad MAC            */
     int extended_ms;            /* negotiate extended master secret?        */
     int etm;                    /* negotiate encrypt then mac?              */
     int context_crt_cb;         /* use context-specific CRT verify callback */
@@ -1046,6 +1050,7 @@ int main(int argc, char *argv[])
     opt.extended_ms         = DFL_EXTENDED_MS;
     opt.etm                 = DFL_ETM;
     opt.dgram_packing       = DFL_DGRAM_PACKING;
+    opt.badmac_limit        = DFL_BADMAC_LIMIT;
     opt.serialize           = DFL_SERIALIZE;
     opt.context_file        = DFL_CONTEXT_FILE;
     opt.eap_tls             = DFL_EAP_TLS;
@@ -1251,7 +1256,7 @@ usage:
             opt.renego_delay = (atoi(q));
         } else if (strcmp(p, "renegotiate") == 0) {
             opt.renegotiate = atoi(q);
-            if (opt.renegotiate < 0 || opt.renegotiate > 1) {
+            if (opt.renegotiate < 0 || opt.renegotiate > 2) {
                 goto usage;
             }
         } else if (strcmp(p, "key_update") == 0) {
@@ -1512,6 +1517,11 @@ usage:
             opt.dgram_packing = atoi(q);
             if (opt.dgram_packing != 0 &&
                 opt.dgram_packing != 1) {
+                goto usage;
+            }
+        } else if (strcmp(p, "badmac_limit") == 0) {
+            opt.badmac_limit = atoi(q);
+            if (opt.badmac_limit < 0) {
                 goto usage;
             }
         } else if (strcmp(p, "recsplit") == 0) {
@@ -1976,6 +1986,10 @@ usage:
 
     if (opt.dgram_packing != DFL_DGRAM_PACKING) {
         mbedtls_ssl_set_datagram_packing(&ssl, opt.dgram_packing);
+    }
+
+    if (opt.badmac_limit != DFL_BADMAC_LIMIT) {
+        mbedtls_ssl_conf_dtls_badmac_limit(&conf, opt.badmac_limit);
     }
 
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
@@ -2594,7 +2608,7 @@ usage:
 #endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
 
 #if defined(MBEDTLS_SSL_RENEGOTIATION)
-    if (opt.renegotiate) {
+    if (opt.renegotiate == 1) {
         /*
          * Perform renegotiation (this must be done when the server is waiting
          * for input from our side).
@@ -3113,9 +3127,18 @@ send_request:
         memset(peer_crt_info, 0, sizeof(peer_crt_info));
 #endif /* MBEDTLS_SSL_HANDSHAKE_WITH_CERT_ENABLED */
 
+        /* Dump the SSL context before resetting it. This will be used below
+         * to check if the reset function worked properly. */
+        mbedtls_ssl_context ssl_before = ssl;
         if ((ret = mbedtls_ssl_session_reset(&ssl)) != 0) {
             mbedtls_printf(" failed\n  ! mbedtls_ssl_session_reset returned -0x%x\n\n",
                            (unsigned int) -ret);
+            goto exit;
+        }
+
+        if (mbedtls_test_ssl_check_context_after_session_reset(&ssl_before, &ssl) != 0) {
+            mbedtls_printf(
+                " failed\n  ! mbedtls_ssl_session_reset didn't properly reset ssl context\n\n");
             goto exit;
         }
 
@@ -3142,6 +3165,44 @@ send_request:
 
         goto send_request;
     }
+
+#if defined(MBEDTLS_SSL_RENEGOTIATION)
+    if (opt.renegotiate == 2) {
+        /* Perform renegotiation after the first data exchange.
+         * This is a one-time thing, we won't renegotiate even if there are
+         * more data exchanges that cause a `goto send_request` later.
+         */
+        opt.renegotiate = 0;
+
+        mbedtls_printf("  . Performing renegotiation...");
+        fflush(stdout);
+        while ((ret = mbedtls_ssl_renegotiate(&ssl)) != 0) {
+            if (ret != MBEDTLS_ERR_SSL_WANT_READ &&
+                ret != MBEDTLS_ERR_SSL_WANT_WRITE &&
+                ret != MBEDTLS_ERR_SSL_CRYPTO_IN_PROGRESS) {
+                mbedtls_printf(" failed\n  ! mbedtls_ssl_renegotiate returned %d\n\n",
+                               ret);
+                goto exit;
+            }
+
+#if defined(MBEDTLS_ECP_RESTARTABLE)
+            if (ret == MBEDTLS_ERR_SSL_CRYPTO_IN_PROGRESS) {
+                continue;
+            }
+#endif
+
+            /* For event-driven IO, wait for socket to become available */
+            if (opt.event == 1 /* level triggered IO */) {
+#if defined(MBEDTLS_TIMING_C)
+                idle(&server_fd, &timer, ret);
+#else
+                idle(&server_fd, ret);
+#endif
+            }
+        }
+        mbedtls_printf(" ok\n");
+    }
+#endif /* MBEDTLS_SSL_RENEGOTIATION */
 
     /*
      * 7c. Simulate serialize/deserialize and go back to data exchange
