@@ -93,6 +93,28 @@ RULES = {
     'p_export_keys': ssl_session_reset_check.ResetBehavior.KEEP,
     'user_data': ssl_session_reset_check.ResetBehavior.SPECIAL,
     'unused': ssl_session_reset_check.ResetBehavior.IGNORE,
+    # DTLS 1.3 connection state — wiped in session_reset_msg_layer.
+    'dtls13_epoch_pool': ssl_session_reset_check.ResetBehavior.RESET,
+    'dtls13_epoch_max_seq': ssl_session_reset_check.ResetBehavior.RESET,
+    'dtls13_ack_pending': ssl_session_reset_check.ResetBehavior.RESET,
+    'dtls13_post_hs_msg_seq': ssl_session_reset_check.ResetBehavior.RESET,
+    'dtls13_post_hs_in_msg_seq': ssl_session_reset_check.ResetBehavior.RESET,
+    'dtls13_transform_pending_out': ssl_session_reset_check.ResetBehavior.RESET,
+    'dtls13_ku_pending_secret': ssl_session_reset_check.ResetBehavior.RESET,
+    'dtls13_ku_ack_pending': ssl_session_reset_check.ResetBehavior.RESET,
+    'dtls13_cid_update_ack_pending': ssl_session_reset_check.ResetBehavior.RESET,
+    'dtls13_req_cid_count': ssl_session_reset_check.ResetBehavior.RESET,
+    'dtls13_req_cid_pending': ssl_session_reset_check.ResetBehavior.RESET,
+    'dtls13_own_cid_pool': ssl_session_reset_check.ResetBehavior.RESET,
+    'dtls13_own_cid_active_idx': ssl_session_reset_check.ResetBehavior.RESET,
+    'dtls13_own_cid_pool_ready': ssl_session_reset_check.ResetBehavior.RESET,
+    'dtls13_peer_cid_pool': ssl_session_reset_check.ResetBehavior.RESET,
+    'dtls13_peer_cid_active_idx': ssl_session_reset_check.ResetBehavior.RESET,
+    'dtls13_peer_cid_pool_ready': ssl_session_reset_check.ResetBehavior.RESET,
+    'dtls13_pending_acks': ssl_session_reset_check.ResetBehavior.RESET,
+    'dtls13_post_hs_retransmit': ssl_session_reset_check.ResetBehavior.RESET,
+    'dtls13_received_records': ssl_session_reset_check.ResetBehavior.RESET,
+    'dtls13_received_record_count': ssl_session_reset_check.ResetBehavior.RESET,
 }
 
 SPECIAL_BEHAVIORS = {

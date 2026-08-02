@@ -5,7 +5,7 @@
 
 /*
  * The following function was automatically generated through the script
- * ./tests/scripts/generate_ssl_session_reset_check.py.
+ * tests/scripts/generate_ssl_session_reset_check.py.
  */
 
 #include <test/ssl_helpers.h>
@@ -68,6 +68,9 @@ int mbedtls_test_ssl_check_context_after_session_reset(const mbedtls_ssl_context
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
     TEST_ASSERT(after->transform_application == initial.transform_application);
 #endif
+#if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    TEST_MEMORY_COMPARE(after->dtls13_epoch_pool, sizeof(after->dtls13_epoch_pool), initial.dtls13_epoch_pool, sizeof(initial.dtls13_epoch_pool));
+#endif
     TEST_ASSERT(before->p_timer == after->p_timer);
     TEST_ASSERT(before->f_set_timer == after->f_set_timer);
     TEST_ASSERT(before->f_get_timer == after->f_get_timer);
@@ -92,6 +95,153 @@ int mbedtls_test_ssl_check_context_after_session_reset(const mbedtls_ssl_context
 #endif
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
     TEST_ASSERT(after->next_record_offset == initial.next_record_offset);
+#endif
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    TEST_MEMORY_COMPARE(after->dtls13_epoch_max_seq, sizeof(after->dtls13_epoch_max_seq), initial.dtls13_epoch_max_seq, sizeof(initial.dtls13_epoch_max_seq));
+#endif
+#endif
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    TEST_ASSERT(after->dtls13_ack_pending == initial.dtls13_ack_pending);
+#endif
+#endif
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    TEST_ASSERT(after->dtls13_post_hs_msg_seq == initial.dtls13_post_hs_msg_seq);
+#endif
+#endif
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    TEST_ASSERT(after->dtls13_post_hs_in_msg_seq == initial.dtls13_post_hs_in_msg_seq);
+#endif
+#endif
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    TEST_ASSERT(after->dtls13_transform_pending_out == initial.dtls13_transform_pending_out);
+#endif
+#endif
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    TEST_MEMORY_COMPARE(after->dtls13_ku_pending_secret, sizeof(after->dtls13_ku_pending_secret), initial.dtls13_ku_pending_secret, sizeof(initial.dtls13_ku_pending_secret));
+#endif
+#endif
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    TEST_ASSERT(after->dtls13_ku_ack_pending == initial.dtls13_ku_ack_pending);
+#endif
+#endif
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+    TEST_ASSERT(after->dtls13_cid_update_ack_pending == initial.dtls13_cid_update_ack_pending);
+#endif
+#endif
+#endif
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+    TEST_ASSERT(after->dtls13_req_cid_count == initial.dtls13_req_cid_count);
+#endif
+#endif
+#endif
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+    TEST_ASSERT(after->dtls13_req_cid_pending == initial.dtls13_req_cid_pending);
+#endif
+#endif
+#endif
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+    TEST_MEMORY_COMPARE(after->dtls13_own_cid_pool, sizeof(after->dtls13_own_cid_pool), initial.dtls13_own_cid_pool, sizeof(initial.dtls13_own_cid_pool));
+#endif
+#endif
+#endif
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+    TEST_ASSERT(after->dtls13_own_cid_active_idx == initial.dtls13_own_cid_active_idx);
+#endif
+#endif
+#endif
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+    TEST_ASSERT(after->dtls13_own_cid_pool_ready == initial.dtls13_own_cid_pool_ready);
+#endif
+#endif
+#endif
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+    TEST_MEMORY_COMPARE(after->dtls13_peer_cid_pool, sizeof(after->dtls13_peer_cid_pool), initial.dtls13_peer_cid_pool, sizeof(initial.dtls13_peer_cid_pool));
+#endif
+#endif
+#endif
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+    TEST_ASSERT(after->dtls13_peer_cid_active_idx == initial.dtls13_peer_cid_active_idx);
+#endif
+#endif
+#endif
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+    TEST_ASSERT(after->dtls13_peer_cid_pool_ready == initial.dtls13_peer_cid_pool_ready);
+#endif
+#endif
+#endif
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    TEST_MEMORY_COMPARE(after->dtls13_pending_acks, sizeof(after->dtls13_pending_acks), initial.dtls13_pending_acks, sizeof(initial.dtls13_pending_acks));
+#endif
+#endif
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    TEST_MEMORY_COMPARE(after->dtls13_post_hs_retransmit, sizeof(after->dtls13_post_hs_retransmit), initial.dtls13_post_hs_retransmit, sizeof(initial.dtls13_post_hs_retransmit));
+#endif
+#endif
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    TEST_MEMORY_COMPARE(after->dtls13_received_records, sizeof(after->dtls13_received_records), initial.dtls13_received_records, sizeof(initial.dtls13_received_records));
+#endif
+#endif
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    TEST_ASSERT(after->dtls13_received_record_count == initial.dtls13_received_record_count);
+#endif
 #endif
 #if defined(MBEDTLS_SSL_DTLS_ANTI_REPLAY)
     TEST_ASSERT(after->in_window_top == initial.in_window_top);
