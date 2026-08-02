@@ -4148,7 +4148,8 @@ int mbedtls_ssl_prepare_handshake_record(mbedtls_ssl_context *ssl)
                  * which messages the receiver is missing so it can retransmit
                  * selectively rather than waiting for the full timer. */
                 if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
-                    ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+                    ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
+                    mbedtls_ssl_dtls13_version_selected(ssl)) {
                     ssl->dtls13_ack_pending = 1;
                 }
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
@@ -5928,6 +5929,11 @@ static void ssl_dtls13_flush_ack_if_pending(mbedtls_ssl_context *ssl)
     if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
         ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
         ssl->dtls13_ack_pending) {
+        /* bis-02 §7: do not send ACKs until DTLS 1.3 is selected. */
+        if (!mbedtls_ssl_dtls13_version_selected(ssl)) {
+            ssl->dtls13_ack_pending = 0;
+            return;
+        }
         int ack_ret = ssl_dtls13_write_ack(ssl);
         if (ack_ret != 0) {
             MBEDTLS_SSL_DEBUG_RET(1, "ssl_dtls13_write_ack", ack_ret);
@@ -6368,7 +6374,8 @@ static int ssl_buffer_message(mbedtls_ssl_context *ssl)
              * send an ACK listing the records received so far.  This tells the
              * sender which messages are missing and prompts an early selective
              * retransmit instead of waiting for the full retransmit timer. */
-            if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3) {
+            if (ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+                mbedtls_ssl_dtls13_version_selected(ssl)) {
                 ssl->dtls13_ack_pending = 1;
             }
 #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
@@ -6747,6 +6754,7 @@ static int ssl_get_next_record(mbedtls_ssl_context *ssl)
                  * spec for exactly this case. */
                 if (ssl->handshake != NULL &&
                     ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
+                    mbedtls_ssl_dtls13_version_selected(ssl) &&
                     MBEDTLS_GET_UINT16_BE(rec.ctr, 0) > ssl->in_epoch) {
                     ssl->dtls13_ack_pending = 1;
                     MBEDTLS_SSL_DEBUG_MSG(2, ("DTLS 1.3: future-epoch record "
@@ -6929,6 +6937,12 @@ static int ssl_dtls13_write_ack(mbedtls_ssl_context *ssl)
     unsigned char *p;
     size_t count;
     size_t i;
+
+    /* bis-02 §7: ACKs MUST NOT be sent before DTLS 1.3 is selected. */
+    if (!mbedtls_ssl_dtls13_version_selected(ssl)) {
+        ssl->dtls13_ack_pending = 0;
+        return 0;
+    }
 
     /* If there is already pending output from a previous operation (e.g. a
      * partially-sent flight retransmit), we cannot safely encode a new record
@@ -7340,6 +7354,13 @@ int mbedtls_ssl_handle_message_type(mbedtls_ssl_context *ssl)
     if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM &&
         ssl->tls_version == MBEDTLS_SSL_VERSION_TLS1_3 &&
         ssl->in_msgtype == MBEDTLS_SSL_MSG_ACK) {
+        /* bis-02 §7: ignore epoch-0 ACKs until DTLS 1.3 is selected. */
+        if (!mbedtls_ssl_dtls13_version_selected(ssl) &&
+            MBEDTLS_GET_UINT16_BE(ssl->in_ctr, 0) == 0) {
+            MBEDTLS_SSL_DEBUG_MSG(2, ("DTLS 1.3: ignoring epoch-0 ACK before "
+                                      "version selection"));
+            return MBEDTLS_ERR_SSL_NON_FATAL;
+        }
         /* Process incoming ACK message (RFC 9147 §7). */
         int ku_was_pending = ssl->dtls13_ku_ack_pending;
 #if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)

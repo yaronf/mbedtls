@@ -175,3 +175,15 @@ dtls13_session_reset_clears_connection_state:
 
 DTLS 1.3 ACK: reject record_numbers citing epoch > ACK epoch (bis-02 §7.2)
 dtls13_ack_rejects_future_epoch_in_record_numbers:
+
+DTLS 1.3 ACK: must not send before version selected (bis-02 §7)
+dtls13_ack_not_sent_before_version_selected:
+
+DTLS 1.3 ACK: ignore epoch-0 ACK before version selected, client (bis-02 §7)
+dtls13_ack_epoch0_ignored_before_version_selected:
+
+DTLS 1.3 ACK: ignore epoch-0 ACK before version selected, server (bis-02 §7)
+dtls13_ack_epoch0_ignored_before_version_selected_server:
+
+DTLS 1.3 ACK: process after HRR selection (bis-02 §7)
+dtls13_ack_processed_after_hrr_selection:

@@ -1269,6 +1269,40 @@ static inline int mbedtls_ssl_transform_uses_aead(
 
 #if defined(MBEDTLS_SSL_PROTO_DTLS) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
 /*
+ * DTLS 1.3 has been selected for this connection (draft-ietf-tls-rfc9147bis-02
+ * §7).  tls_version alone is insufficient: it is initialised from
+ * conf->max_tls_version at setup, before any SH/HRR/CH selection.
+ *
+ * Client: HRR already selected 1.3 (state may return to CLIENT_HELLO /
+ * SERVER_HELLO), or we have moved past waiting for the first SH/HRR.
+ * Server: left CLIENT_HELLO after selecting TLS 1.3 from the ClientHello.
+ * Post-handshake: HANDSHAKE_OVER with tls_version TLS 1.3.
+ */
+static inline int mbedtls_ssl_dtls13_version_selected(const mbedtls_ssl_context *ssl)
+{
+    if (ssl->conf == NULL ||
+        ssl->conf->transport != MBEDTLS_SSL_TRANSPORT_DATAGRAM) {
+        return 0;
+    }
+    if (ssl->tls_version != MBEDTLS_SSL_VERSION_TLS1_3) {
+        return 0;
+    }
+    if (ssl->state == MBEDTLS_SSL_HANDSHAKE_OVER) {
+        return 1;
+    }
+    if (ssl->handshake == NULL) {
+        return 0;
+    }
+    if (ssl->conf->endpoint == MBEDTLS_SSL_IS_CLIENT) {
+        if (ssl->handshake->hello_retry_request_flag) {
+            return 1;
+        }
+        return ssl->state > MBEDTLS_SSL_SERVER_HELLO;
+    }
+    return ssl->state > MBEDTLS_SSL_CLIENT_HELLO;
+}
+
+/*
  * DTLS 1.3 epoch pool helpers  (defined in ssl_msg.c).
  *
  * The pool retains inbound transforms from superseded epochs so that

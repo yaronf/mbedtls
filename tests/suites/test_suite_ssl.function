@@ -7649,6 +7649,187 @@ exit:
 }
 /* END_CASE */
 
+/* BEGIN_CASE depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS */
+void dtls13_ack_not_sent_before_version_selected(void)
+{
+    /* draft-ietf-tls-rfc9147bis-02 §7: empty ACKs MUST NOT be sent until
+     * DTLS 1.3 is selected.  Client waiting for first SH/HRR is at
+     * SERVER_HELLO with hello_retry_request_flag==0; tls_version may
+     * already be TLS1_3 from max_tls_version. */
+    mbedtls_ssl_context ssl;
+    mbedtls_ssl_config conf;
+    int ret;
+
+    USE_PSA_INIT();
+    mbedtls_ssl_init(&ssl);
+    mbedtls_ssl_config_init(&conf);
+
+    TEST_EQUAL(mbedtls_ssl_config_defaults(&conf,
+                                           MBEDTLS_SSL_IS_CLIENT,
+                                           MBEDTLS_SSL_TRANSPORT_DATAGRAM,
+                                           MBEDTLS_SSL_PRESET_DEFAULT), 0);
+    TEST_EQUAL(mbedtls_ssl_setup(&ssl, &conf), 0);
+
+    ssl.tls_version = MBEDTLS_SSL_VERSION_TLS1_3;
+    ssl.MBEDTLS_PRIVATE(state) = MBEDTLS_SSL_SERVER_HELLO;
+    TEST_ASSERT(ssl.MBEDTLS_PRIVATE(handshake) != NULL);
+    ssl.MBEDTLS_PRIVATE(handshake)->hello_retry_request_flag = 0;
+    ssl.MBEDTLS_PRIVATE(dtls13_ack_pending) = 1;
+
+    /* No bio: without the selection gate write_ack fails and leaves
+     * pending set; with the gate, flush clears pending and never sends. */
+    ret = mbedtls_ssl_read_record(&ssl, 0);
+    (void) ret;
+
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(dtls13_ack_pending), 0);
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(out_left), 0);
+
+exit:
+    mbedtls_ssl_free(&ssl);
+    mbedtls_ssl_config_free(&conf);
+    USE_PSA_DONE();
+}
+/* END_CASE */
+
+/* BEGIN_CASE depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS */
+void dtls13_ack_epoch0_ignored_before_version_selected(void)
+{
+    /* bis-02 §7: epoch-0 ACKs received before DTLS 1.3 is selected MUST
+     * be ignored.  Use a would-be-fatal body (cites future epoch) so a
+     * mistaken process_ack path is distinguishable from soft-ignore. */
+    mbedtls_ssl_context ssl;
+    mbedtls_ssl_config conf;
+    unsigned char *p;
+    int ret;
+
+    USE_PSA_INIT();
+    mbedtls_ssl_init(&ssl);
+    mbedtls_ssl_config_init(&conf);
+
+    TEST_EQUAL(mbedtls_ssl_config_defaults(&conf,
+                                           MBEDTLS_SSL_IS_CLIENT,
+                                           MBEDTLS_SSL_TRANSPORT_DATAGRAM,
+                                           MBEDTLS_SSL_PRESET_DEFAULT), 0);
+    TEST_EQUAL(mbedtls_ssl_setup(&ssl, &conf), 0);
+
+    ssl.tls_version = MBEDTLS_SSL_VERSION_TLS1_3;
+    ssl.MBEDTLS_PRIVATE(state) = MBEDTLS_SSL_SERVER_HELLO;
+    TEST_ASSERT(ssl.MBEDTLS_PRIVATE(handshake) != NULL);
+    ssl.MBEDTLS_PRIVATE(handshake)->hello_retry_request_flag = 0;
+
+    ssl.MBEDTLS_PRIVATE(in_msgtype) = MBEDTLS_SSL_MSG_ACK;
+    memset(ssl.MBEDTLS_PRIVATE(in_ctr), 0, 8); /* epoch 0 */
+    TEST_ASSERT(ssl.MBEDTLS_PRIVATE(in_msg) != NULL);
+    p = ssl.MBEDTLS_PRIVATE(in_msg);
+    MBEDTLS_PUT_UINT16_BE(16, p, 0);
+    MBEDTLS_PUT_UINT64_BE(3, p, 2);   /* epoch 3 > ACK epoch 0 */
+    MBEDTLS_PUT_UINT64_BE(1, p, 10);
+    ssl.MBEDTLS_PRIVATE(in_msglen) = 18;
+    ssl.MBEDTLS_PRIVATE(in_hslen) = 0;
+
+    ret = mbedtls_ssl_handle_message_type(&ssl);
+    TEST_EQUAL(ret, MBEDTLS_ERR_SSL_NON_FATAL);
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(send_alert), 0);
+
+exit:
+    mbedtls_ssl_free(&ssl);
+    mbedtls_ssl_config_free(&conf);
+    USE_PSA_DONE();
+}
+/* END_CASE */
+
+/* BEGIN_CASE depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS */
+void dtls13_ack_epoch0_ignored_before_version_selected_server(void)
+{
+    /* Server still in CLIENT_HELLO has not selected DTLS 1.3 yet. */
+    mbedtls_ssl_context ssl;
+    mbedtls_ssl_config conf;
+    unsigned char *p;
+    int ret;
+
+    USE_PSA_INIT();
+    mbedtls_ssl_init(&ssl);
+    mbedtls_ssl_config_init(&conf);
+
+    TEST_EQUAL(mbedtls_ssl_config_defaults(&conf,
+                                           MBEDTLS_SSL_IS_SERVER,
+                                           MBEDTLS_SSL_TRANSPORT_DATAGRAM,
+                                           MBEDTLS_SSL_PRESET_DEFAULT), 0);
+    TEST_EQUAL(mbedtls_ssl_setup(&ssl, &conf), 0);
+
+    ssl.tls_version = MBEDTLS_SSL_VERSION_TLS1_3;
+    ssl.MBEDTLS_PRIVATE(state) = MBEDTLS_SSL_CLIENT_HELLO;
+    TEST_ASSERT(ssl.MBEDTLS_PRIVATE(handshake) != NULL);
+
+    ssl.MBEDTLS_PRIVATE(in_msgtype) = MBEDTLS_SSL_MSG_ACK;
+    memset(ssl.MBEDTLS_PRIVATE(in_ctr), 0, 8);
+    TEST_ASSERT(ssl.MBEDTLS_PRIVATE(in_msg) != NULL);
+    p = ssl.MBEDTLS_PRIVATE(in_msg);
+    MBEDTLS_PUT_UINT16_BE(16, p, 0);
+    MBEDTLS_PUT_UINT64_BE(3, p, 2);
+    MBEDTLS_PUT_UINT64_BE(1, p, 10);
+    ssl.MBEDTLS_PRIVATE(in_msglen) = 18;
+    ssl.MBEDTLS_PRIVATE(in_hslen) = 0;
+
+    ret = mbedtls_ssl_handle_message_type(&ssl);
+    TEST_EQUAL(ret, MBEDTLS_ERR_SSL_NON_FATAL);
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(send_alert), 0);
+
+exit:
+    mbedtls_ssl_free(&ssl);
+    mbedtls_ssl_config_free(&conf);
+    USE_PSA_DONE();
+}
+/* END_CASE */
+
+/* BEGIN_CASE depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS */
+void dtls13_ack_processed_after_hrr_selection(void)
+{
+    /* After HRR, client has selected DTLS 1.3 even while waiting at
+     * SERVER_HELLO again — epoch-0 ACK bodies are processed. */
+    mbedtls_ssl_context ssl;
+    mbedtls_ssl_config conf;
+    unsigned char *p;
+    int ret;
+
+    USE_PSA_INIT();
+    mbedtls_ssl_init(&ssl);
+    mbedtls_ssl_config_init(&conf);
+
+    TEST_EQUAL(mbedtls_ssl_config_defaults(&conf,
+                                           MBEDTLS_SSL_IS_CLIENT,
+                                           MBEDTLS_SSL_TRANSPORT_DATAGRAM,
+                                           MBEDTLS_SSL_PRESET_DEFAULT), 0);
+    TEST_EQUAL(mbedtls_ssl_setup(&ssl, &conf), 0);
+
+    ssl.tls_version = MBEDTLS_SSL_VERSION_TLS1_3;
+    ssl.MBEDTLS_PRIVATE(state) = MBEDTLS_SSL_SERVER_HELLO;
+    TEST_ASSERT(ssl.MBEDTLS_PRIVATE(handshake) != NULL);
+    ssl.MBEDTLS_PRIVATE(handshake)->hello_retry_request_flag = 1;
+
+    ssl.MBEDTLS_PRIVATE(in_msgtype) = MBEDTLS_SSL_MSG_ACK;
+    memset(ssl.MBEDTLS_PRIVATE(in_ctr), 0, 8);
+    TEST_ASSERT(ssl.MBEDTLS_PRIVATE(in_msg) != NULL);
+    p = ssl.MBEDTLS_PRIVATE(in_msg);
+    MBEDTLS_PUT_UINT16_BE(16, p, 0);
+    MBEDTLS_PUT_UINT64_BE(3, p, 2);
+    MBEDTLS_PUT_UINT64_BE(1, p, 10);
+    ssl.MBEDTLS_PRIVATE(in_msglen) = 18;
+    ssl.MBEDTLS_PRIVATE(in_hslen) = 0;
+
+    ret = mbedtls_ssl_handle_message_type(&ssl);
+    TEST_EQUAL(ret, MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER);
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(send_alert), 1);
+    TEST_EQUAL(ssl.MBEDTLS_PRIVATE(alert_type),
+               MBEDTLS_SSL_ALERT_MSG_ILLEGAL_PARAMETER);
+
+exit:
+    mbedtls_ssl_free(&ssl);
+    mbedtls_ssl_config_free(&conf);
+    USE_PSA_DONE();
+}
+/* END_CASE */
+
 /* BEGIN_CASE depends_on:MBEDTLS_SSL_PROTO_TLS1_3:MBEDTLS_SSL_PROTO_DTLS:MBEDTLS_SSL_DTLS_HELLO_VERIFY:MBEDTLS_SSL_HANDSHAKE_WITH_CERT_ENABLED:PSA_WANT_ECC_SECP_R1_256:PSA_WANT_ECC_SECP_R1_384:PSA_WANT_ALG_SHA_256:MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL_ENABLED */
 void dtls13_hrr_secret_server_is_stateless(void)
 {
