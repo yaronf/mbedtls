@@ -410,6 +410,19 @@ run_test    "DTLS 1.3: fragmenting — proxy MTU, nbio" \
             -c "Protocol is DTLSv1.3" \
             -C "error"
 
+requires_config_enabled MBEDTLS_SSL_PROTO_DTLS
+requires_max_content_len 2048
+run_test    "DTLS 1.3: fragmenting — ServerHello reassembly" \
+            -p "" \
+            "$P_SRV dtls=1 force_version=dtls13 dgram_packing=0 debug_level=2 hs_timeout=10000-60000 mtu=100 response_size=40" \
+            "$P_CLI dtls=1 force_version=dtls13 dgram_packing=0 debug_level=2 hs_timeout=10000-60000 mtu=100" \
+            0 \
+            -c "found fragmented DTLS handshake message" \
+            -c "ServerHello handshake message has been buffered and reassembled" \
+            -s "Protocol is DTLSv1.3" \
+            -c "Protocol is DTLSv1.3" \
+            -C "error"
+
 # ======================================================================
 # Cases from: handshake.yaml
 # ======================================================================

@@ -28,6 +28,7 @@ param_map:
   groups:         "groups={value}"
   mtu:            "mtu={value}"
   exchanges:      "exchanges={value}"
+  response_size:  "response_size={value}"
   force_version:  "force_version={value}"
   cookies:        "cookies={value}"
   min_version:    "min_version={value}"
@@ -150,6 +151,9 @@ assertion_map:
   server_fragmented_hs:
     flag: "-s"
     string: "found fragmented DTLS handshake message"
+  client_serverhello_reassembled:
+    flag: "-c"
+    string: "ServerHello handshake message has been buffered and reassembled"
   client_no_error:
     flag: "-C"
     string: "error"

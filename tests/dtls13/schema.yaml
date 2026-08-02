@@ -276,5 +276,9 @@ assertions:
     description: Client reassembled a fragmented handshake message.
   server_fragmented_hs:
     description: Server reassembled a fragmented handshake message.
+  client_serverhello_reassembled:
+    description: >
+      Client loaded a fragmented ServerHello from the DTLS reassembly buffer
+      (exercises the DTLS ServerHello path that bypasses fetch_handshake_msg).
   client_no_error:
     description: Client output contains no "error" string.

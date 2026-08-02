@@ -64,3 +64,30 @@ cases:
         - server_dtls13_negotiated
         - client_dtls13_negotiated
         - client_no_error
+
+  # Regression: client DTLS ServerHello path bypasses fetch_handshake_msg and
+  # must call mbedtls_ssl_dtls_advance_buffering() after consuming a reassembled
+  # ServerHello.  MTU 100 forces ServerHello itself to fragment (MTU 512 usually
+  # only fragments larger messages such as Certificate).  response_size must fit
+  # in one app record under this MTU (record expansion ~45 → ~55-byte payload).
+  - name: "fragmenting \u2014 ServerHello reassembly"
+    skip_runners: [wolfssl]
+    server:
+      dgram_packing: false
+      debug_level: 2
+      hs_timeout: [10000, 60000]
+      mtu: 100
+      response_size: 40
+    client:
+      dgram_packing: false
+      debug_level: 2
+      hs_timeout: [10000, 60000]
+      mtu: 100
+    expect:
+      exit: 0
+      assert:
+        - client_fragmented_hs
+        - client_serverhello_reassembled
+        - server_dtls13_negotiated
+        - client_dtls13_negotiated
+        - client_no_error

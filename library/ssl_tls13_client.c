@@ -2169,8 +2169,10 @@ static int ssl_tls13_process_server_hello(mbedtls_ssl_context *ssl)
             goto cleanup;
         }
 
-        /* Advance in_msg_seq and set buf/buf_len as fetch_handshake_msg would */
+        /* Advance in_msg_seq / buffering and set buf/buf_len as
+         * fetch_handshake_msg would. */
         ssl->handshake->in_msg_seq++;
+        mbedtls_ssl_dtls_advance_buffering(ssl);
         size_t hs_hdr_len = mbedtls_ssl_hs_hdr_len(ssl);
         buf     = ssl->in_msg   + hs_hdr_len;
         buf_len = ssl->in_hslen - hs_hdr_len;
