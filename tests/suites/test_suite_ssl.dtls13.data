@@ -196,3 +196,9 @@ dtls13_nci_blocked_while_ku_ack_pending:
 
 DTLS 1.3 KeyUpdate: reject peer post-HS after KU same epoch (bis-02 §8)
 dtls13_reject_post_hs_after_peer_ku_same_epoch:
+
+DTLS 1.3: client rejects HRR selecting an un-offered group
+dtls13_reject_hrr_selecting_unoffered_group:
+
+DTLS 1.3: reject TLS 1.2 second ClientHello after HRR
+dtls13_hrr_then_tls12_second_client_hello:
